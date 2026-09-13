@@ -1,0 +1,32 @@
+JAYTEC NOTION ↔ OPENAI BRIDGE
+
+IMPORTANT:
+An uploaded ZIP/document cannot itself create a live network connection from Notion AI.
+Notion AI needs a reachable HTTPS MCP server URL.
+
+THIS PACKAGE IS THE SERVER.
+
+Once it is hosted and connected in Notion, Notion AI can directly call the OpenAI model using:
+- ask_openai
+- review_notion_answer
+- collaborate
+- bridge_status
+
+DO NOT paste your OpenAI API key into Notion AI or into a page.
+Store OPENAI_API_KEY only as a secret/environment variable on the hosting service.
+
+NOTION CONNECTION:
+1. Host this folder on a service that gives it a public HTTPS URL.
+2. Set OPENAI_API_KEY and MCP_AUTH_TOKEN as private environment secrets.
+3. Your MCP URL will normally be:
+   https://YOUR-HOSTNAME/mcp
+4. In Notion:
+   Settings → Connections / Notion AI → enable custom MCP servers
+   or Custom Agent → Settings → Tools & Access → Add connection → Custom MCP server
+5. Enter the /mcp URL.
+6. Choose header/bearer authentication and use MCP_AUTH_TOKEN as the bearer token.
+7. Enable the tools.
+8. Add the contents of NOTION_AGENT_INSTRUCTIONS.md to your Custom Agent instructions.
+
+If you only upload this ZIP to a normal Notion AI chat without hosting/connecting it,
+Notion may read the instructions/code but it cannot turn that file into a running server.

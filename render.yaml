@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: jaytec-notion-openai-bridge
+    runtime: docker
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /mcp
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-5.6-sol
+      - key: MCP_AUTH_TOKEN
+        sync: false
