@@ -4,7 +4,6 @@ services:
     runtime: docker
     plan: starter
     autoDeploy: true
-    healthCheckPath: /mcp
     envVars:
       - key: OPENAI_API_KEY
         sync: false
