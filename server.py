@@ -3,11 +3,19 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
+
+from circuit_breaker import CircuitBreaker
+from orchestration import (
+    ExecutionRegistry,
+    PacketValidationError,
+    execute_task_packet_core,
+    parse_packet_json,
+)
 
 # --- Runtime configuration (NO secrets in code) ---
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -17,12 +25,32 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol").strip()
 # IMPORTANT: We do NOT assume a model ID. You must set this in hosting env.
 CODEX_MODEL = os.environ.get("CODEX_MODEL", "").strip()
 
+# OpenRouter route for Gemini research (optional; disabled unless configured).
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "google/gemini-3.1-pro-preview").strip()
+GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
+
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 PORT = int(os.environ.get("PORT", "8000"))
 
 # Timeouts / retries (bounded)
 OPENAI_TIMEOUT_S = float(os.environ.get("OPENAI_TIMEOUT_S", "45"))
 OPENAI_MAX_RETRIES = int(os.environ.get("OPENAI_MAX_RETRIES", "2"))
+
+# Circuit breaker
+CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
+CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
+
+# Durable idempotency (production candidate)
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+# If set, production-candidate runtime MUST have durable store and MUST fail closed.
+REQUIRE_DURABLE_STORE = os.environ.get("REQUIRE_DURABLE_STORE", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 BRIDGE_ID_CODEX = "BRIDGE_CODEX_ENGINEERING"
 
@@ -31,6 +59,10 @@ if not OPENAI_API_KEY:
 if not MCP_AUTH_TOKEN:
     raise RuntimeError(
         "MCP_AUTH_TOKEN is not set. Refusing to start an unauthenticated remote MCP server."
+    )
+if REQUIRE_DURABLE_STORE and not DATABASE_URL:
+    raise RuntimeError(
+        "REQUIRE_DURABLE_STORE is set but DATABASE_URL is not configured; refusing to start without durable idempotency."
     )
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -177,6 +209,173 @@ def collaborate(task: str, notion_analysis: str = "", context: str = "") -> str:
 @mcp.tool
 def bridge_status() -> str:
     return f"JAYTEC Notion/OpenAI bridge is online. OpenAI model: {OPENAI_MODEL}"
+
+
+# ---------------- Unified orchestration surface (production-candidate) ----------------
+
+# Idempotency registry selection:
+# - If DATABASE_URL is set: use Postgres registry and fail closed if schema unavailable.
+# - Else: process-memory registry only when REQUIRE_DURABLE_STORE is false.
+if DATABASE_URL:
+    from idempotency_postgres import PostgresExecutionRegistry
+
+    REGISTRY: ExecutionRegistry = PostgresExecutionRegistry(
+        database_url=DATABASE_URL,
+        ttl_seconds=ExecutionRegistry().ttl_seconds,
+    )
+    REGISTRY.ensure_schema()
+    IDEMPOTENCY_STORE = "postgres"
+else:
+    REGISTRY = ExecutionRegistry()
+    IDEMPOTENCY_STORE = "process_memory"
+
+CODEX_CIRCUIT = CircuitBreaker(
+    failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+    reset_after_seconds=CIRCUIT_RESET_SECONDS,
+)
+GEMINI_CIRCUIT = CircuitBreaker(
+    failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+    reset_after_seconds=CIRCUIT_RESET_SECONDS,
+)
+
+OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY)
+OPENROUTER_CLIENT = (
+    OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
+)
+
+
+def _codex_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+    if not CODEX_MODEL:
+        raise RuntimeError("CODEX_MODEL is not configured on this bridge")
+    # NOTE: We intentionally dispatch with the configured model, but orchestration.py
+    # will fail-closed if the worker response 'model' does not match gpt-5.3-codex.
+    prompt = (
+        "ROLE: GPT-5.3 CODEX ENGINEERING\n"
+        "Return ONLY one JSON object. Preserve task_id and subtask_id.\n"
+        "Do not attempt side effects.\n\n"
+        "TASK_PACKET_JSON:\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
+    )
+    response = OPENAI_CLIENT.responses.create(
+        model=CODEX_MODEL,
+        input=prompt,
+        reasoning={"effort": "high"},
+    )
+    from worker_json import json_object
+
+    result = json_object(response.output_text or "")
+    result.setdefault("model", CODEX_MODEL)
+    return result
+
+
+def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+    if OPENROUTER_CLIENT is None:
+        raise RuntimeError("OPENROUTER_API_KEY is not configured on this bridge")
+    prompt = (
+        "JAYTEC_GEMINI_RESEARCH_MODE v1.1.0\n"
+        "Return ONLY one JSON object (no markdown). Preserve TASK_ID and SUBTASK_ID.\n\n"
+        + "TASK_ID: " + str(packet.get("task_id", ""))
+        + "\nSUBTASK_ID: " + str(packet.get("subtask_id", ""))
+        + "\nTASK_PACKET_JSON:\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
+    )
+    response = OPENROUTER_CLIENT.chat.completions.create(
+        model=GEMINI_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        timeout=GEMINI_TIMEOUT_S,
+        stream=False,
+        extra_body={
+            "provider": {
+                "sort": "price",
+                "allow_fallbacks": True,
+            }
+        },
+    )
+    if not response.choices:
+        raise RuntimeError("Gemini returned no choices")
+    from worker_json import json_object
+
+    result = json_object(response.choices[0].message.content or "")
+    result.setdefault("model", GEMINI_MODEL)
+    return result
+
+
+CODEX_DISPATCH = CODEX_CIRCUIT.guard(_codex_dispatch)
+GEMINI_DISPATCH = GEMINI_CIRCUIT.guard(_gemini_dispatch)
+
+
+@mcp.tool
+def orchestration_status() -> str:
+    return json.dumps(
+        {
+            "status": "PRODUCTION_CANDIDATE",
+            "operation": "execute_task_packet",
+            "codex_model_configured": bool(CODEX_MODEL),
+            "codex_adapter_configured": bool(OPENAI_API_KEY),
+            "codex_circuit": CODEX_CIRCUIT.snapshot(),
+            "gemini_model": GEMINI_MODEL,
+            "gemini_adapter_configured": bool(OPENROUTER_API_KEY),
+            "gemini_provider_routing": "price",
+            "gemini_circuit": GEMINI_CIRCUIT.snapshot(),
+            "idempotency_store": IDEMPOTENCY_STORE,
+            "require_durable_store": REQUIRE_DURABLE_STORE,
+            "production_ready": False,
+        },
+        sort_keys=True,
+    )
+
+
+@mcp.tool
+def execute_task_packet(packet_json: str) -> str:
+    packet, parse_errors = parse_packet_json(packet_json)
+    if packet is None:
+        return json.dumps(
+            {
+                "execution_id": "invalid",
+                "task_id": "",
+                "subtask_id": "",
+                "overall_status": "INVALID_PACKET",
+                "unresolved_items": list(parse_errors),
+                "return_schema_version": "1.0",
+            },
+            sort_keys=True,
+        )
+
+    # Map Postgres conflicting duplicate to PacketValidationError semantics.
+    def _lookup(key: str, digest: str, now=None):
+        try:
+            return REGISTRY.lookup(key, digest, now=now)
+        except ValueError as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise PacketValidationError("CONFLICTING_DUPLICATE")
+            raise
+
+    def _store(key: str, digest: str, result, now=None):
+        try:
+            return REGISTRY.store(key, digest, result, now=now)
+        except ValueError as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise PacketValidationError("CONFLICTING_DUPLICATE")
+            raise
+
+    if IDEMPOTENCY_STORE == "postgres":
+        # Wrap registry with the same interface expected by execute_task_packet_core.
+        class _Wrapper(ExecutionRegistry):
+            def lookup(self, key, packet_hash, *, now=None):
+                return _lookup(key, packet_hash, now=now)
+
+            def store(self, key, packet_hash, result, *, now=None):
+                return _store(key, packet_hash, result, now=now)
+
+        registry = _Wrapper()
+    else:
+        registry = REGISTRY
+
+    result = execute_task_packet_core(
+        packet,
+        {"codex": CODEX_DISPATCH, "gemini": GEMINI_DISPATCH},
+        registry,
+    )
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 # ---------------- Codex engineering bridge surface ----------------
@@ -410,7 +609,7 @@ CAN_ENGINEERING_CONTINUE_IN_PARALLEL:
             subtask_id=subtask_id,
             error_class=cls["error_class"],
             http_or_provider_status="",
-            retryable=cls["retryable"],
+            retryable=cls[n"retryable"],
             message="Upstream call failed during codex_send_task.",
             safe_technical_detail=str(exc)[:300],
             suggested_action=cls["suggested_action"],
