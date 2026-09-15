@@ -10,5 +10,7 @@ services:
         sync: false
       - key: OPENAI_MODEL
         value: gpt-5.6-sol
+      - key: CODEX_MODEL
+        value: gpt-5.3-codex
       - key: MCP_AUTH_TOKEN
         sync: false
