@@ -25,6 +25,14 @@ class TestPostgresRegistrySemantics(unittest.TestCase):
         out = self.reg.lookup("k1", "h1", now=now)
         self.assertEqual({"ok": True}, out)
 
+    def test_same_key_same_hash_is_safe(self):
+        now = datetime.now(timezone.utc)
+        self.reg.store("k_same", "h_same", {"n": 1}, now=now)
+        # same key + same hash should not crash and should overwrite payload safely
+        self.reg.store("k_same", "h_same", {"n": 2}, now=now)
+        out = self.reg.lookup("k_same", "h_same", now=now)
+        self.assertEqual({"n": 2}, out)
+
     def test_conflicting_duplicate_atomic_reject(self):
         now = datetime.now(timezone.utc)
         self.reg.store("k2", "h2", {"ok": True}, now=now)
