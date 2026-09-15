@@ -3,11 +3,11 @@
 Date: 2026-09-15  
 Task: `JAYTEC-2026-0001`  
 Workflow: `WORKFLOW_ARCHITECTURE_DECISION`  
-Status: **24/24 local unit tests PASS; source not production-deployed**
+Status: **27/27 staging unit tests PASS in GitHub Actions; source not production-deployed**
 
-Command used: `python -m unittest -v test_orchestration.py`
+Command used by CI: `python -m unittest discover -v`
 
-Covered tests:
+Covered orchestration tests:
 
 1. valid packet
 2. malformed JSON
@@ -34,12 +34,28 @@ Covered tests:
 23. provider unavailable retry path fails closed after budget
 24. credential/Authorization redaction
 
+Circuit-breaker tests:
+
+25. opens after bounded failure threshold and blocks further dispatch
+26. successful dispatch resets failure state
+27. reset window re-allows a half-open probe
+
+Latest verified GitHub Actions run for staging head `4562f7f645ca2de7350638143356120663a960f2`: **SUCCESS**. The workflow successfully ran full unit-test discovery and Python compile checks.
+
+Additional staging controls now present:
+
+- dedicated per-specialist circuit breakers
+- Gemini OpenRouter provider sorting explicitly set to `price` while preserving exact model `google/gemini-3.1-pro-preview`
+- provider fallbacks remain enabled
+- staging server uses the same proven `StaticTokenVerifier` authentication pattern as production
+
 Not yet production-verified:
 
-- real Codex dispatch through current Notion Custom Agent (currently blocked at tool execution/approval layer)
-- real non-trivial Gemini research dispatch (current worker JSON serialization defect)
-- live combined fan-out/fan-in
-- durable idempotency store across Render process restarts (current staging core uses in-memory registry; production requires persistent storage)
-- circuit breaker state across processes
-- real Notion visible approval prompt count / Always Ask vs Run Automatically vs Always Allow comparison
-- production deployment, rollback, and agent publication
+- real Codex dispatch through current Notion Custom Agent (currently blocked at the MCP approval/tool-execution layer)
+- real non-trivial Gemini research dispatch through the existing Notion Worker (current worker JSON serialization defect)
+- direct server-side Gemini staging dispatch with the OpenRouter key configured
+- live combined Codex + Gemini fan-out/fan-in
+- durable idempotency/circuit state across Render process restarts (current staging uses process memory; production requires persistent storage if restart-safe guarantees are required)
+- real Notion visible approval prompt count after the MCP connection is changed to `Always allow` or `Run automatically`
+- separate staging deployment (the automated Render service-creation action was blocked by the connector safety gate)
+- production merge/deployment, rollback test, and agent publication
