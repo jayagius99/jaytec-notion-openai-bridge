@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, Mapping
 
 from fastmcp import FastMCP
@@ -55,39 +56,59 @@ OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
 
 CODEX_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
-Required keys: status, model, findings, evidence, confidence, conclusion,
-unresolved_items, files_or_artifacts, architecture_changes_required,
-knowledge_writeback_proposal, side_effects_attempted, requested_operations.
-status must be one of SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION,
-POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED.
-model must be exactly gpt-5.3-codex. Never include credentials or secrets.
-requested_operations MUST be a JSON array of strings and MUST be a subset of the
-task packet allowed_operations; use [] when none are requested. Do not return an
-object such as {performed: [...], unauthorized: [...]} for requested_operations.
-side_effects_attempted MUST be a JSON array; for this harmless staging validation
-it MUST be []."""
+
+REQUIRED SHAPE (types are strict):
+- status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
+- model: string exactly gpt-5.3-codex
+- findings: JSON array of strings (NOT an object)
+- evidence: JSON array of strings (NOT an object)
+- confidence: string|null
+- conclusion: any JSON (object/string/etc) or null
+- unresolved_items: JSON array of strings
+- files_or_artifacts: JSON array
+- architecture_changes_required: JSON array
+- knowledge_writeback_proposal: JSON array
+- side_effects_attempted: JSON array (MUST be [])
+- requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
+
+Never include markdown fences or surrounding prose. Never include credentials or secrets."""
 
 GEMINI_RESEARCH_MODE_V1_1 = """JAYTEC_GEMINI_RESEARCH_MODE v1.1.0
 ROLE: RESEARCH SPECIALIST. Treat each request as stateless.
-Preserve TASK_ID and SUBTASK_ID exactly. Investigate the supplied objective,
-separate verified facts/evidence from inference, report confidence and unresolved
-questions, and hand findings back to Notion. Do not perform engineering writes.
-Never expose credentials. Return ONLY one JSON object using the requested result
-contract. model must be exactly google/gemini-3.1-pro-preview.
-The status field is mandatory and MUST be exactly one of: SUCCESS,
-PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED,
-INVALID_PACKET, TIMEOUT, RATE_LIMITED. Do not invent synonyms such as completed,
-ok, error, failed, or done. For a harmless request that completed normally with
-no unresolved blocker, use status SUCCESS.
-requested_operations MUST be a JSON array of strings and MUST be a subset of the
-task packet allowed_operations; use [] when none are requested.
-side_effects_attempted MUST be a JSON array; for this harmless staging validation
-it MUST be []."""
+
+Return ONLY one JSON object (no markdown fences). Preserve TASK_ID and SUBTASK_ID.
+
+REQUIRED SHAPE (types are strict):
+- status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
+- model: string exactly google/gemini-3.1-pro-preview
+- findings: JSON array of strings
+- evidence: JSON array of strings
+- confidence: string|null
+- conclusion: any JSON or null
+- unresolved_items: JSON array of strings
+- files_or_artifacts: JSON array
+- architecture_changes_required: JSON array
+- knowledge_writeback_proposal: JSON array
+- side_effects_attempted: JSON array (MUST be [])
+- requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
+
+Never expose credentials. Do not perform engineering writes."""
+
+_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+
+
+def _strip_code_fence(text: str) -> str:
+    stripped = (text or "").strip()
+    match = _CODE_FENCE_RE.match(stripped)
+    if match:
+        return (match.group(1) or "").strip()
+    return stripped
 
 
 def _json_object(text: str) -> Dict[str, Any]:
+    cleaned = _strip_code_fence(text)
     try:
-        value = json.loads(text)
+        value = json.loads(cleaned)
     except json.JSONDecodeError as exc:
         raise ValueError(f"worker returned invalid JSON: {exc.msg}") from exc
     if not isinstance(value, dict):
@@ -120,11 +141,6 @@ def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         + "\nTASK_ID: " + str(packet.get("task_id", ""))
         + "\nSUBTASK_ID: " + str(packet.get("subtask_id", ""))
         + "\nTASK_PACKET_JSON:\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
-        + "\nRESULT_CONTRACT: status, model, findings, evidence, confidence, conclusion, "
-          "unresolved_items, files_or_artifacts, architecture_changes_required, "
-          "knowledge_writeback_proposal, side_effects_attempted, requested_operations. "
-          "status MUST use the exact allowed enum defined above; operation fields MUST "
-          "use the canonical JSON-array shapes defined above."
     )
     response = OPENROUTER_CLIENT.chat.completions.create(
         model=GEMINI_MODEL,
@@ -142,7 +158,7 @@ def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
     if not response.choices:
         raise RuntimeError("Gemini returned no choices")
     result = _json_object(response.choices[0].message.content or "")
-    result["model"] = getattr(response, "model", None) or result.get("model") or GEMINI_MODEL
+    result.setdefault("model", GEMINI_MODEL)
     return result
 
 
