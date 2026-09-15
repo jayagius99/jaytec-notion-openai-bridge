@@ -2,12 +2,10 @@ import os
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from orchestration import PacketValidationError
-
 
 class TestPostgresRegistryPresence(unittest.TestCase):
     def test_module_importable(self):
-        # psycopg2 is an optional dependency for staging-only durability.
+        # psycopg2 is installed in CI for staging.
         import idempotency_postgres  # noqa: F401
 
 
@@ -27,17 +25,25 @@ class TestPostgresRegistrySemantics(unittest.TestCase):
         out = self.reg.lookup("k1", "h1", now=now)
         self.assertEqual({"ok": True}, out)
 
-    def test_conflicting_duplicate(self):
+    def test_conflicting_duplicate_atomic_reject(self):
         now = datetime.now(timezone.utc)
         self.reg.store("k2", "h2", {"ok": True}, now=now)
         with self.assertRaises(ValueError):
-            self.reg.lookup("k2", "DIFFERENT", now=now)
+            self.reg.store("k2", "DIFFERENT", {"ok": False}, now=now)
+        # original still present
+        out = self.reg.lookup("k2", "h2", now=now)
+        self.assertEqual({"ok": True}, out)
 
-    def test_ttl_expiry(self):
+    def test_ttl_expiry_allows_replacement(self):
         now = datetime.now(timezone.utc)
         self.reg.store("k3", "h3", {"ok": True}, now=now)
-        out = self.reg.lookup("k3", "h3", now=now + timedelta(seconds=11))
-        self.assertIsNone(out)
+        later = now + timedelta(seconds=11)
+        # expired row: lookup returns None and deletes
+        self.assertIsNone(self.reg.lookup("k3", "h3", now=later))
+        # replacement after expiry is allowed
+        self.reg.store("k3", "NEW", {"ok": "new"}, now=later)
+        out = self.reg.lookup("k3", "NEW", now=later)
+        self.assertEqual({"ok": "new"}, out)
 
 
 if __name__ == "__main__":

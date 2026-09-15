@@ -18,16 +18,16 @@ class PostgresExecutionRegistry:
     """Durable idempotency store with ExecutionRegistry semantics.
 
     - Same idempotency_key + same packet_hash => return cached result
-    - Same idempotency_key + different packet_hash => raise PacketValidationError("CONFLICTING_DUPLICATE")
+    - Same idempotency_key + different packet_hash (unexpired) => conflicting duplicate (atomic reject)
+    - Expired row may be replaced
 
-    NOTE: Caller is responsible for mapping PacketValidationError.
+    NOTE: Caller maps conflicting duplicates to PacketValidationError("CONFLICTING_DUPLICATE").
     """
 
     database_url: str
     ttl_seconds: int
 
     def _connect(self):
-        # Use server-side timezone in UTC for consistency.
         return psycopg2.connect(self.database_url)
 
     def ensure_schema(self) -> None:
@@ -76,14 +76,11 @@ class PostgresExecutionRegistry:
                     return None
                 created_at = row["created_at"]
                 if created_at is None:
-                    # fail closed
                     raise PostgresIdempotencyError("missing_created_at")
                 if created_at.timestamp() < cutoff:
-                    # expired: delete and miss
                     cur.execute("DELETE FROM execution_registry WHERE idempotency_key = %s", (key,))
                     return None
                 if row["packet_hash"] != packet_hash:
-                    # Let caller raise PacketValidationError in orchestration layer.
                     raise ValueError("CONFLICTING_DUPLICATE")
                 import json
 
@@ -97,24 +94,51 @@ class PostgresExecutionRegistry:
         *,
         now: Optional[datetime] = None,
     ) -> None:
+        """Atomically store unless an unexpired conflicting duplicate exists."""
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        cutoff = current.timestamp() - float(self.ttl_seconds)
         import json
 
         payload = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)
+
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # Lock existing row (if any) to avoid concurrent overwrites.
+                cur.execute(
+                    """
+                    SELECT packet_hash, created_at
+                    FROM execution_registry
+                    WHERE idempotency_key = %s
+                    FOR UPDATE
+                    """,
+                    (key,),
+                )
+                row = cur.fetchone()
+                if row is not None:
+                    existing_hash = row.get("packet_hash")
+                    created_at = row.get("created_at")
+                    if created_at is None:
+                        raise PostgresIdempotencyError("missing_created_at")
+                    expired = created_at.timestamp() < cutoff
+                    if not expired and existing_hash != packet_hash:
+                        raise ValueError("CONFLICTING_DUPLICATE")
+                    # same-hash OR expired: replace
+                    cur.execute(
+                        """
+                        UPDATE execution_registry
+                        SET packet_hash = %s,
+                            result_json = %s,
+                            created_at = %s
+                        WHERE idempotency_key = %s
+                        """,
+                        (packet_hash, payload, current, key),
+                    )
+                    return
+
                 cur.execute(
                     """
                     INSERT INTO execution_registry (idempotency_key, packet_hash, result_json, created_at)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (idempotency_key) DO UPDATE
-                    SET packet_hash = EXCLUDED.packet_hash,
-                        result_json = EXCLUDED.result_json,
-                        created_at = EXCLUDED.created_at
-                    RETURNING packet_hash
                     """,
                     (key, packet_hash, payload, current),
                 )
-                row = cur.fetchone()
-                if row and row.get("packet_hash") != packet_hash:
-                    raise ValueError("CONFLICTING_DUPLICATE")
