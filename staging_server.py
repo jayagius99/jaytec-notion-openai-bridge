@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from typing import Any, Dict, Mapping
 
 from fastmcp import FastMCP
@@ -18,6 +17,7 @@ from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
 from orchestration import ExecutionRegistry, execute_task_packet_core, parse_packet_json
+from worker_json import json_object
 
 PORT = int(os.environ.get("PORT", "8000"))
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
@@ -94,27 +94,6 @@ REQUIRED SHAPE (types are strict):
 
 Never expose credentials. Do not perform engineering writes."""
 
-_CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
-
-
-def _strip_code_fence(text: str) -> str:
-    stripped = (text or "").strip()
-    match = _CODE_FENCE_RE.match(stripped)
-    if match:
-        return (match.group(1) or "").strip()
-    return stripped
-
-
-def _json_object(text: str) -> Dict[str, Any]:
-    cleaned = _strip_code_fence(text)
-    try:
-        value = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"worker returned invalid JSON: {exc.msg}") from exc
-    if not isinstance(value, dict):
-        raise ValueError("worker JSON root must be an object")
-    return value
-
 
 def _codex_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
     if OPENAI_CLIENT is None:
@@ -128,7 +107,7 @@ def _codex_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         input=prompt,
         reasoning={"effort": "high"},
     )
-    result = _json_object(response.output_text or "")
+    result = json_object(response.output_text or "")
     result.setdefault("model", CODEX_MODEL)
     return result
 
@@ -157,7 +136,7 @@ def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
     )
     if not response.choices:
         raise RuntimeError("Gemini returned no choices")
-    result = _json_object(response.choices[0].message.content or "")
+    result = json_object(response.choices[0].message.content or "")
     result.setdefault("model", GEMINI_MODEL)
     return result
 

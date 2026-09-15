@@ -8,9 +8,11 @@ on:
     paths:
       - 'orchestration.py'
       - 'circuit_breaker.py'
+      - 'worker_json.py'
       - 'test_orchestration.py'
       - 'test_circuit_breaker.py'
       - 'test_worker_policy_hardening.py'
+      - 'test_worker_output_parsing.py'
       - 'staging_server.py'
       - 'staging_runtime_probe.py'
       - 'staging_adversarial_probe.py'
@@ -34,4 +36,4 @@ jobs:
       - name: Run staging unit tests
         run: python -m unittest discover -v
       - name: Compile staging modules
-        run: python -m py_compile orchestration.py circuit_breaker.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py
+        run: python -m py_compile orchestration.py circuit_breaker.py worker_json.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py test_worker_output_parsing.py
