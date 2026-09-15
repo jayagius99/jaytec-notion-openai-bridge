@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Mapping, Optional
@@ -13,13 +14,28 @@ class PostgresIdempotencyError(RuntimeError):
     pass
 
 
+def _advisory_lock_id(key: str) -> int:
+    """Stable 32-bit lock id for a string key.
+
+    Uses CRC32 for deterministic hashing. This is not cryptographic; it is only a
+    per-key concurrency guard to preserve idempotency semantics.
+    """
+    return int(zlib.crc32(key.encode("utf-8")) & 0x7FFFFFFF)
+
+
 @dataclass
 class PostgresExecutionRegistry:
     """Durable idempotency store with ExecutionRegistry semantics.
 
-    - Same idempotency_key + same packet_hash => return cached result
-    - Same idempotency_key + different packet_hash (unexpired) => conflicting duplicate (atomic reject)
-    - Expired row may be replaced
+    Guarantees:
+    - Same idempotency_key + same packet_hash => safe replay; concurrent writes do not crash.
+    - Same idempotency_key + different packet_hash (unexpired) => conflicting duplicate (atomic reject).
+    - Expired row may be replaced.
+
+    Implementation notes:
+    - Uses a transaction-scoped advisory lock per idempotency_key to make the
+      "absent row" case race-safe (two concurrent transactions can't both see
+      no row then attempt INSERT and crash with a unique violation).
 
     NOTE: Caller maps conflicting duplicates to PacketValidationError("CONFLICTING_DUPLICATE").
     """
@@ -94,22 +110,29 @@ class PostgresExecutionRegistry:
         *,
         now: Optional[datetime] = None,
     ) -> None:
-        """Atomically store unless an unexpired conflicting duplicate exists."""
+        """Atomically store unless an unexpired conflicting duplicate exists.
+
+        This method must never overwrite an active row with a different
+        packet_hash. It must also be safe under concurrent calls where the row
+        does not yet exist.
+        """
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         cutoff = current.timestamp() - float(self.ttl_seconds)
         import json
 
         payload = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)
+        lock_id = _advisory_lock_id(key)
 
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                # Lock existing row (if any) to avoid concurrent overwrites.
+                # Transaction-scoped lock: makes the absent-row case race-safe.
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (lock_id,))
+
                 cur.execute(
                     """
                     SELECT packet_hash, created_at
                     FROM execution_registry
                     WHERE idempotency_key = %s
-                    FOR UPDATE
                     """,
                     (key,),
                 )
@@ -122,7 +145,6 @@ class PostgresExecutionRegistry:
                     expired = created_at.timestamp() < cutoff
                     if not expired and existing_hash != packet_hash:
                         raise ValueError("CONFLICTING_DUPLICATE")
-                    # same-hash OR expired: replace
                     cur.execute(
                         """
                         UPDATE execution_registry

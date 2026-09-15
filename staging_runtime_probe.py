@@ -1,25 +1,36 @@
 """STAGING ONLY: bounded live-provider probe for JAYTEC orchestration.
 
 Runs harmless Gemini-only, Codex-only, and combined task packets from inside the
-Render staging runtime. It never prints prompts, findings, evidence, credentials,
-or raw provider responses. Only redacted contract metadata is emitted.
+Render staging runtime.
+
+Safety:
+- Never prints prompts, findings, evidence, credentials, or raw provider responses.
+- Emits only redacted contract metadata.
+- Adds idempotency-store observability and a restart sentinel for durable stores.
+
+IMPORTANT: The durability sentinel/probe does NOT call providers. It only
+exercises the idempotency registry layer.
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable
 
-from orchestration import SAFE_OPERATIONS, ExecutionRegistry, execute_task_packet_core, redact
+from orchestration import SAFE_OPERATIONS, ExecutionRegistry, execute_task_packet_core, packet_hash, redact
 from staging_server import (
     CODEX_DISPATCH,
     CODEX_MODEL,
     GEMINI_DISPATCH,
     GEMINI_MODEL,
+    IDEMPOTENCY_STORE,
     MCP_AUTH_TOKEN,
     OPENAI_CLIENT,
     OPENROUTER_CLIENT,
+    REGISTRY,
 )
 
 TASK_ID = "JAYTEC-2026-0001"
@@ -113,6 +124,7 @@ def _summarize(label: str, packet: Dict[str, Any], result: Dict[str, Any]) -> Di
         "approval_required": result.get("approval_required"),
         "retry_count": result.get("usage_summary", {}).get("retry_count", 0),
         "return_schema_version": result.get("return_schema_version"),
+        "idempotent_replay": result.get("usage_summary", {}).get("idempotent_replay"),
     }
     return redact(summary)
 
@@ -152,6 +164,64 @@ def _phase_ok(summary: Dict[str, Any], expected_specialists: Iterable[str]) -> b
     return True
 
 
+def _durability_sentinel() -> Dict[str, Any]:
+    """Startup-safe sentinel that proves whether durable state is visible.
+
+    - For memory: reports SKIP.
+    - For postgres: attempts lookup of prior sentinel payload and sets restart_proof.
+
+    Does not call providers.
+    """
+    if IDEMPOTENCY_STORE != "postgres":
+        return {"status": "SKIP", "idempotency_store": IDEMPOTENCY_STORE}
+
+    boot_id = str(uuid.uuid4())
+    key = "durability-sentinel"
+    # Registry stores by (idempotency_key, packet_hash). We use a fixed digest.
+    digest = "sentinel-v1"
+    now = datetime.now(timezone.utc)
+
+    prior = None
+    try:
+        prior = REGISTRY.lookup(key, digest, now=now)
+    except Exception as exc:
+        return {
+            "status": "FAIL",
+            "idempotency_store": IDEMPOTENCY_STORE,
+            "error": type(exc).__name__,
+        }
+
+    restart_proof = False
+    prior_boot_id = None
+    if isinstance(prior, dict):
+        prior_boot_id = prior.get("boot_id")
+        if prior_boot_id and prior_boot_id != boot_id:
+            restart_proof = True
+
+    payload = {
+        "boot_id": boot_id,
+        "observed_prior": bool(prior_boot_id),
+        "prior_boot_id": prior_boot_id,
+        "ts": now.isoformat(),
+    }
+
+    try:
+        REGISTRY.store(key, digest, payload, now=now)
+    except Exception as exc:
+        return {
+            "status": "FAIL",
+            "idempotency_store": IDEMPOTENCY_STORE,
+            "error": type(exc).__name__,
+        }
+
+    return {
+        "status": "PASS",
+        "idempotency_store": IDEMPOTENCY_STORE,
+        "restart_proof": restart_proof,
+        "observed_prior": bool(prior_boot_id),
+    }
+
+
 def main() -> int:
     config = {
         "phase": "configuration",
@@ -161,7 +231,9 @@ def main() -> int:
         "codex_adapter_configured": OPENAI_CLIENT is not None,
         "gemini_model": GEMINI_MODEL,
         "gemini_adapter_configured": OPENROUTER_CLIENT is not None,
+        "idempotency_store": IDEMPOTENCY_STORE,
         "production_ready": False,
+        "durability_sentinel": _durability_sentinel(),
     }
     print("JAYTEC_STAGING_RUNTIME_PROBE " + json.dumps(redact(config), sort_keys=True), flush=True)
 
@@ -181,7 +253,10 @@ def main() -> int:
         )
         return 2
 
-    registry = ExecutionRegistry()
+    # IMPORTANT: Use the staging server's configured registry, so we actually
+    # exercise Postgres durability when enabled.
+    registry = REGISTRY if isinstance(REGISTRY, ExecutionRegistry) else ExecutionRegistry()
+
     phases = [
         (
             "gemini_only",
