@@ -18,18 +18,41 @@ EXPECTED_MODELS = {
     "gemini": "google/gemini-3.1-pro-preview",
 }
 ALLOWED_STATUSES = {
-    "SUCCESS", "PARTIAL_SUCCESS", "NEEDS_VALIDATION", "POLICY_BLOCKED",
-    "FAILED_CLOSED", "INVALID_PACKET", "TIMEOUT", "RATE_LIMITED",
+    "SUCCESS",
+    "PARTIAL_SUCCESS",
+    "NEEDS_VALIDATION",
+    "POLICY_BLOCKED",
+    "FAILED_CLOSED",
+    "INVALID_PACKET",
+    "TIMEOUT",
+    "RATE_LIMITED",
 }
 SAFE_OPERATIONS = {"read", "research", "analyze", "validate", "test", "draft", "code_staging"}
 REQUIRED_PACKET_FIELDS = {
-    "packet_version", "task_id", "subtask_id", "request", "intent", "workflow_id",
-    "risk_level", "specialist_plan", "allowed_operations", "expected_output",
-    "validation_requirements", "side_effect_policy", "idempotency_key", "deadline",
-    "max_fanout", "max_retries", "return_schema_version",
+    "packet_version",
+    "task_id",
+    "subtask_id",
+    "request",
+    "intent",
+    "workflow_id",
+    "risk_level",
+    "specialist_plan",
+    "allowed_operations",
+    "expected_output",
+    "validation_requirements",
+    "side_effect_policy",
+    "idempotency_key",
+    "deadline",
+    "max_fanout",
+    "max_retries",
+    "return_schema_version",
 }
 OPTIONAL_PACKET_FIELDS = {
-    "parent_task_id", "required_context", "context_digests", "known_facts", "constraints",
+    "parent_task_id",
+    "required_context",
+    "context_digests",
+    "known_facts",
+    "constraints",
 }
 ALLOWED_PACKET_FIELDS = REQUIRED_PACKET_FIELDS | OPTIONAL_PACKET_FIELDS
 SECRET_KEY_PATTERN = re.compile(r"(api[_-]?key|authorization|bearer|token|password|secret|credential)", re.I)
@@ -79,7 +102,9 @@ class ExecutionRegistry:
     _records: MutableMapping[str, IdempotencyRecord] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def lookup(self, key: str, packet_hash: str, *, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    def lookup(
+        self, key: str, packet_hash: str, *, now: Optional[datetime] = None
+    ) -> Optional[Dict[str, Any]]:
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         with self._lock:
             existing = self._records.get(key)
@@ -92,7 +117,14 @@ class ExecutionRegistry:
                 raise PacketValidationError("CONFLICTING_DUPLICATE")
             return copy.deepcopy(existing.result)
 
-    def store(self, key: str, packet_hash: str, result: Mapping[str, Any], *, now: Optional[datetime] = None) -> None:
+    def store(
+        self,
+        key: str,
+        packet_hash: str,
+        result: Mapping[str, Any],
+        *,
+        now: Optional[datetime] = None,
+    ) -> None:
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         with self._lock:
             existing = self._records.get(key)
@@ -202,7 +234,12 @@ def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None
             errors.append("duplicate_specialist")
 
     max_fanout = packet.get("max_fanout")
-    if not isinstance(max_fanout, int) or isinstance(max_fanout, bool) or max_fanout < 1 or max_fanout > len(ALLOWED_SPECIALISTS):
+    if (
+        not isinstance(max_fanout, int)
+        or isinstance(max_fanout, bool)
+        or max_fanout < 1
+        or max_fanout > len(ALLOWED_SPECIALISTS)
+    ):
         errors.append("invalid:max_fanout")
     elif len(plan) > max_fanout:
         errors.append("fanout_exceeds_limit")
@@ -223,7 +260,9 @@ def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None
 
     if packet.get("side_effect_policy") not in ("none", "staging_only"):
         errors.append("invalid:side_effect_policy")
-    if not isinstance(packet.get("validation_requirements"), list) or not packet.get("validation_requirements"):
+    if not isinstance(packet.get("validation_requirements"), list) or not packet.get(
+        "validation_requirements"
+    ):
         errors.append("invalid:validation_requirements")
 
     try:
@@ -288,6 +327,64 @@ def retry_after_seconds(value: Any) -> Optional[int]:
     return None
 
 
+def _fail_closed_worker(unresolved: Iterable[str]) -> Dict[str, Any]:
+    return {
+        "status": "FAILED_CLOSED",
+        "findings": [],
+        "evidence": [],
+        "unresolved_items": list(unresolved),
+    }
+
+
+def _validate_worker_contract_fields(result: MutableMapping[str, Any]) -> list[str]:
+    unresolved: list[str] = []
+
+    if "status" not in result:
+        unresolved.append("missing_required_field:status")
+    if "findings" not in result:
+        unresolved.append("missing_required_field:findings")
+    if "evidence" not in result:
+        unresolved.append("missing_required_field:evidence")
+
+    status = result.get("status")
+    if not isinstance(status, str):
+        unresolved.append("invalid_type:status")
+    elif status not in ALLOWED_STATUSES:
+        unresolved.append("invalid_worker_status")
+
+    findings = result.get("findings")
+    if not isinstance(findings, list):
+        unresolved.append("invalid_type:findings")
+    elif not all(isinstance(x, str) for x in findings):
+        unresolved.append("invalid_type:findings_items")
+
+    evidence = result.get("evidence")
+    if not isinstance(evidence, list):
+        unresolved.append("invalid_type:evidence")
+    elif not all(isinstance(x, str) for x in evidence):
+        unresolved.append("invalid_type:evidence_items")
+
+    if "unresolved_items" in result:
+        unresolved_items = result.get("unresolved_items")
+        if not isinstance(unresolved_items, list) or not all(isinstance(x, str) for x in unresolved_items):
+            unresolved.append("invalid_type:unresolved_items")
+
+    if "requested_operations" in result:
+        requested_ops = result.get("requested_operations")
+        if not _valid_operation_list(requested_ops, require_nonempty=False):
+            unresolved.append("invalid_requested_operations_type")
+
+    if "side_effects_attempted" in result:
+        side_effects = result.get("side_effects_attempted")
+        if not _valid_operation_list(side_effects, require_nonempty=False):
+            unresolved.append("invalid_side_effects_attempted_type")
+
+    if "model" in result and not (isinstance(result.get("model"), str) or result.get("model") is None):
+        unresolved.append("invalid_type:model")
+
+    return unresolved
+
+
 def _normalize_worker_result(
     specialist: str,
     raw: Mapping[str, Any],
@@ -296,31 +393,23 @@ def _normalize_worker_result(
     try:
         encoded = _canonical_json(raw).encode("utf-8")
     except (TypeError, ValueError) as exc:
-        return {"status": "FAILED_CLOSED", "findings": [], "evidence": [], "unresolved_items": [f"invalid_worker_output:{type(exc).__name__}"]}
+        return _fail_closed_worker([f"invalid_worker_output:{type(exc).__name__}"])
     if len(encoded) > MAX_WORKER_OUTPUT_BYTES:
-        return {"status": "FAILED_CLOSED", "findings": [], "evidence": [], "unresolved_items": ["oversized_worker_output"]}
+        return _fail_closed_worker(["oversized_worker_output"])
 
-    result = dict(raw)
-    if str(result.get("status", "FAILED_CLOSED")) not in ALLOWED_STATUSES:
-        result["status"] = "FAILED_CLOSED"
-        result.setdefault("unresolved_items", []).append("invalid_worker_status")
+    result: Dict[str, Any] = dict(raw)
+
+    unresolved = _validate_worker_contract_fields(result)
+    if unresolved:
+        return redact(_fail_closed_worker(unresolved))
 
     expected_model = EXPECTED_MODELS[specialist]
     returned_model = result.get("model")
     if returned_model != expected_model:
-        result["status"] = "FAILED_CLOSED"
-        result.setdefault("unresolved_items", []).append(f"model_mismatch:expected={expected_model}:returned={returned_model}")
+        return redact(_fail_closed_worker([f"model_mismatch:expected={expected_model}:returned={returned_model}"]))
 
     requested_ops = result.get("requested_operations", [])
     side_effects = result.get("side_effects_attempted", [])
-    if not _valid_operation_list(requested_ops, require_nonempty=False):
-        result["status"] = "FAILED_CLOSED"
-        result.setdefault("unresolved_items", []).append("invalid_requested_operations_type")
-        return redact(result)
-    if not _valid_operation_list(side_effects, require_nonempty=False):
-        result["status"] = "FAILED_CLOSED"
-        result.setdefault("unresolved_items", []).append("invalid_side_effects_attempted_type")
-        return redact(result)
 
     globally_unsafe = [op for op in requested_ops if op not in SAFE_OPERATIONS]
     packet_allowed = set(allowed_operations)
@@ -334,9 +423,14 @@ def _normalize_worker_result(
         policy_violations.append("worker_side_effect_attempted:" + ",".join(side_effects))
 
     if policy_violations:
-        if result.get("status") != "FAILED_CLOSED":
-            result["status"] = "POLICY_BLOCKED"
-        result.setdefault("unresolved_items", []).extend(policy_violations)
+        return redact(
+            {
+                **result,
+                "status": "POLICY_BLOCKED" if result.get("status") != "FAILED_CLOSED" else "FAILED_CLOSED",
+                "unresolved_items": list(result.get("unresolved_items", [])) + policy_violations,
+            }
+        )
+
     return redact(result)
 
 
@@ -355,30 +449,84 @@ def _invoke_with_retries(
     for attempt in range(max_retries + 1):
         current = now_fn().astimezone(timezone.utc)
         if current >= deadline:
-            return {"status": "TIMEOUT", "model": EXPECTED_MODELS[specialist], "findings": [], "evidence": [], "unresolved_items": ["deadline_exceeded_before_dispatch"]}, retry_trace
+            return (
+                {
+                    "status": "TIMEOUT",
+                    "model": EXPECTED_MODELS[specialist],
+                    "findings": [],
+                    "evidence": [],
+                    "unresolved_items": ["deadline_exceeded_before_dispatch"],
+                },
+                retry_trace,
+            )
         try:
             raw = dispatcher(copy.deepcopy(packet))
             if not isinstance(raw, Mapping):
                 raise TypeError("dispatcher result must be mapping")
             return _normalize_worker_result(specialist, raw, packet["allowed_operations"]), retry_trace
         except TimeoutError:
-            return {"status": "TIMEOUT", "model": EXPECTED_MODELS[specialist], "findings": [], "evidence": [], "unresolved_items": ["worker_timeout"]}, retry_trace
+            return (
+                {
+                    "status": "TIMEOUT",
+                    "model": EXPECTED_MODELS[specialist],
+                    "findings": [],
+                    "evidence": [],
+                    "unresolved_items": ["worker_timeout"],
+                },
+                retry_trace,
+            )
         except (RateLimitError, ProviderUnavailableError) as exc:
             status = "RATE_LIMITED" if isinstance(exc, RateLimitError) else "FAILED_CLOSED"
             retry_after = retry_after_seconds(getattr(exc, "retry_after", None))
-            retry_trace.append({"specialist": specialist, "attempt": attempt + 1, "error": type(exc).__name__, "retry_after_seconds": retry_after})
+            retry_trace.append(
+                {
+                    "specialist": specialist,
+                    "attempt": attempt + 1,
+                    "error": type(exc).__name__,
+                    "retry_after_seconds": retry_after,
+                }
+            )
             if attempt >= max_retries:
-                return {"status": status, "model": EXPECTED_MODELS[specialist], "findings": [], "evidence": [], "unresolved_items": ["retry_budget_exhausted"]}, retry_trace
-            delay = float(retry_after if retry_after is not None else min(2 ** attempt, 8))
+                return (
+                    {
+                        "status": status,
+                        "model": EXPECTED_MODELS[specialist],
+                        "findings": [],
+                        "evidence": [],
+                        "unresolved_items": ["retry_budget_exhausted"],
+                    },
+                    retry_trace,
+                )
+            delay = float(retry_after if retry_after is not None else min(2**attempt, 8))
             if delay >= (deadline - current).total_seconds():
-                return {"status": "TIMEOUT", "model": EXPECTED_MODELS[specialist], "findings": [], "evidence": [], "unresolved_items": ["retry_after_exceeds_deadline"]}, retry_trace
+                return (
+                    {
+                        "status": "TIMEOUT",
+                        "model": EXPECTED_MODELS[specialist],
+                        "findings": [],
+                        "evidence": [],
+                        "unresolved_items": ["retry_after_exceeds_deadline"],
+                    },
+                    retry_trace,
+                )
             sleep_fn(delay)
         except Exception as exc:
-            return {"status": "FAILED_CLOSED", "model": EXPECTED_MODELS[specialist], "findings": [], "evidence": [], "unresolved_items": [f"worker_error:{type(exc).__name__}"]}, retry_trace
+            return (
+                {
+                    "status": "FAILED_CLOSED",
+                    "model": EXPECTED_MODELS[specialist],
+                    "findings": [],
+                    "evidence": [],
+                    "unresolved_items": [f"worker_error:{type(exc).__name__}"],
+                },
+                retry_trace,
+            )
     raise AssertionError("unreachable")
 
 
-def deterministic_fan_in(packet: Mapping[str, Any], results: Mapping[str, Mapping[str, Any]], *, execution_id: str) -> Dict[str, Any]:
+def deterministic_fan_in(
+    packet: Mapping[str, Any], results: Mapping[str, Mapping[str, Any]], *, execution_id: str
+) -> Dict[str, Any]:
     ordered = [s for s in ALLOWED_SPECIALISTS if s in results]
     statuses = [str(results[s].get("status", "FAILED_CLOSED")) for s in ordered]
     success_count = sum(1 for s in statuses if s == "SUCCESS")
@@ -399,11 +547,23 @@ def deterministic_fan_in(packet: Mapping[str, Any], results: Mapping[str, Mappin
     for specialist in ordered:
         safe = redact(dict(results[specialist]))
         env[f"{specialist}_result"] = safe
-        env["worker_trace"].append({"specialist": specialist, "status": safe.get("status", "FAILED_CLOSED"), "model": safe.get("model")})
+        env["worker_trace"].append(
+            {
+                "specialist": specialist,
+                "status": safe.get("status", "FAILED_CLOSED"),
+                "model": safe.get("model"),
+            }
+        )
         env["findings"].extend(safe.get("findings", []) if isinstance(safe.get("findings"), list) else [])
         env["evidence"].extend(safe.get("evidence", []) if isinstance(safe.get("evidence"), list) else [])
-        env["unresolved_items"].extend(safe.get("unresolved_items", []) if isinstance(safe.get("unresolved_items"), list) else [])
-        env["side_effects_attempted"].extend(safe.get("side_effects_attempted", []) if isinstance(safe.get("side_effects_attempted"), list) else [])
+        env["unresolved_items"].extend(
+            safe.get("unresolved_items", []) if isinstance(safe.get("unresolved_items"), list) else []
+        )
+        env["side_effects_attempted"].extend(
+            safe.get("side_effects_attempted", [])
+            if isinstance(safe.get("side_effects_attempted"), list)
+            else []
+        )
 
     claims = {s: results[s].get("conclusion") for s in ordered if results[s].get("conclusion") is not None}
     if len(set(map(_canonical_json, claims.values()))) > 1:
@@ -446,7 +606,13 @@ def execute_task_packet_core(
     for specialist in packet["specialist_plan"]:
         dispatcher = dispatchers.get(specialist)
         if dispatcher is None:
-            results[specialist] = {"status": "FAILED_CLOSED", "model": EXPECTED_MODELS[specialist], "findings": [], "evidence": [], "unresolved_items": [f"dispatcher_unavailable:{specialist}"]}
+            results[specialist] = {
+                "status": "FAILED_CLOSED",
+                "model": EXPECTED_MODELS[specialist],
+                "findings": [],
+                "evidence": [],
+                "unresolved_items": [f"dispatcher_unavailable:{specialist}"],
+            }
             continue
         result, trace = _invoke_with_retries(specialist, dispatcher, packet, now_fn=clock, sleep_fn=sleep_fn)
         results[specialist] = result
