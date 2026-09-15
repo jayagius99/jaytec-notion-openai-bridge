@@ -58,13 +58,29 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet(); del p["task_id"]
         self.assertIn("missing:task_id", validate_packet(p).errors)
 
+    def test_missing_subtask_id(self):
+        p = base_packet(); del p["subtask_id"]
+        self.assertIn("missing:subtask_id", validate_packet(p).errors)
+
     def test_missing_deadline(self):
         p = base_packet(); del p["deadline"]
         self.assertIn("missing:deadline", validate_packet(p).errors)
 
+    def test_invalid_deadline(self):
+        p = base_packet(); p["deadline"] = "not-a-date"
+        self.assertTrue(any(e.startswith("invalid:deadline") for e in validate_packet(p).errors))
+
+    def test_deadline_requires_timezone(self):
+        p = base_packet(); p["deadline"] = "2030-01-01T10:00:00"
+        self.assertTrue(any("deadline must include timezone" in e for e in validate_packet(p).errors))
+
     def test_unknown_specialist(self):
         p = base_packet(); p["specialist_plan"] = ["manus"]
         self.assertTrue(any(e.startswith("unknown_specialist") for e in validate_packet(p).errors))
+
+    def test_duplicate_specialist(self):
+        p = base_packet(); p["specialist_plan"] = ["codex", "codex"]
+        self.assertIn("duplicate_specialist", validate_packet(p).errors)
 
     def test_oversized_context(self):
         p = base_packet(); p["required_context"] = {"x": "a" * 300000}
@@ -78,6 +94,22 @@ class TestOrchestration(unittest.TestCase):
         now = datetime.now(timezone.utc)
         p = base_packet(now); p["deadline"] = (now - timedelta(seconds=1)).isoformat()
         self.assertIn("deadline_expired", validate_packet(p, now=now).errors)
+
+    def test_invalid_max_fanout(self):
+        p = base_packet(); p["max_fanout"] = 999
+        self.assertIn("invalid:max_fanout", validate_packet(p).errors)
+
+    def test_fanout_exceeds_allowed(self):
+        p = base_packet(); p["max_fanout"] = 1
+        self.assertIn("fanout_exceeds_limit", validate_packet(p).errors)
+
+    def test_packet_version_mismatch(self):
+        p = base_packet(); p["packet_version"] = "0.9"
+        self.assertIn("unsupported:packet_version", validate_packet(p).errors)
+
+    def test_return_schema_version_mismatch(self):
+        p = base_packet(); p["return_schema_version"] = "0.9"
+        self.assertIn("unsupported:return_schema_version", validate_packet(p).errors)
 
     def test_successful_fan_in_and_deterministic_order(self):
         p = base_packet()
@@ -194,6 +226,11 @@ class TestOrchestration(unittest.TestCase):
         out = execute_task_packet_core(p, {"codex": worker}, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("FAILED_CLOSED", out["overall_status"])
         self.assertEqual(2, len(out["retry_trace"]))
+
+    def test_dispatcher_must_return_mapping(self):
+        p = base_packet(); p["specialist_plan"] = ["codex"]; p["max_fanout"] = 1
+        out = execute_task_packet_core(p, {"codex": lambda _: []}, ExecutionRegistry(), sleep_fn=lambda _: None)
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
 
     def test_redaction(self):
         safe = redact({"OPENROUTER_API_KEY": "supersecret", "text": "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"})
