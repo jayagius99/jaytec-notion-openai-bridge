@@ -1,0 +1,31 @@
+name: Orchestration Staging Tests
+
+on:
+  push:
+    branches:
+      - 'staging/**'
+  pull_request:
+    paths:
+      - 'orchestration.py'
+      - 'test_orchestration.py'
+      - 'staging_server.py'
+      - 'BRIDGE_CONTRACT_V1.md'
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run orchestration unit tests
+        run: python -m unittest -v test_orchestration.py
+      - name: Compile staging modules
+        run: python -m py_compile orchestration.py staging_server.py test_orchestration.py
