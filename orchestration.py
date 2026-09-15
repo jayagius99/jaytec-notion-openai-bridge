@@ -36,9 +36,11 @@ SECRET_KEY_PATTERN = re.compile(r"(api[_-]?key|authorization|bearer|token|passwo
 SECRET_VALUE_PATTERN = re.compile(
     r"(?i)(sk-[A-Za-z0-9_-]{8,}|bearer\s+[A-Za-z0-9._~+/=-]{8,}|(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+)"
 )
+OPERATION_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 MAX_CONTEXT_BYTES = 256_000
 MAX_WORKER_OUTPUT_BYTES = 256_000
 MAX_TEXT_FIELD = 100_000
+MAX_OPERATIONS = 32
 DEFAULT_IDEMPOTENCY_TTL_SECONDS = 86_400
 
 
@@ -150,6 +152,16 @@ def parse_packet_json(packet_json: str) -> tuple[Optional[Dict[str, Any]], tuple
     return parsed, ()
 
 
+def _valid_operation_list(value: Any, *, require_nonempty: bool) -> bool:
+    if not isinstance(value, list):
+        return False
+    if require_nonempty and not value:
+        return False
+    if len(value) > MAX_OPERATIONS:
+        return False
+    return all(isinstance(op, str) and OPERATION_PATTERN.fullmatch(op) for op in value)
+
+
 def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None) -> ValidationResult:
     errors: list[str] = []
     for key in sorted(REQUIRED_PACKET_FIELDS):
@@ -179,6 +191,9 @@ def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None
     if not isinstance(plan, list) or not plan:
         errors.append("invalid:specialist_plan")
         plan = []
+    elif not all(isinstance(s, str) for s in plan):
+        errors.append("invalid:specialist_plan_items")
+        plan = []
     else:
         unknown = [s for s in plan if s not in ALLOWED_SPECIALISTS]
         if unknown:
@@ -197,12 +212,14 @@ def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None
         errors.append("invalid:max_retries")
 
     ops = packet.get("allowed_operations")
-    if not isinstance(ops, list) or not ops:
+    if not _valid_operation_list(ops, require_nonempty=True):
         errors.append("invalid:allowed_operations")
     else:
         forbidden = [op for op in ops if op not in SAFE_OPERATIONS]
         if forbidden:
-            errors.append("unauthorized_operation:" + ",".join(map(str, forbidden)))
+            errors.append("unauthorized_operation:" + ",".join(forbidden))
+        if len(set(ops)) != len(ops):
+            errors.append("duplicate_allowed_operation")
 
     if packet.get("side_effect_policy") not in ("none", "staging_only"):
         errors.append("invalid:side_effect_policy")
@@ -271,7 +288,11 @@ def retry_after_seconds(value: Any) -> Optional[int]:
     return None
 
 
-def _normalize_worker_result(specialist: str, raw: Mapping[str, Any]) -> Dict[str, Any]:
+def _normalize_worker_result(
+    specialist: str,
+    raw: Mapping[str, Any],
+    allowed_operations: Iterable[str],
+) -> Dict[str, Any]:
     try:
         encoded = _canonical_json(raw).encode("utf-8")
     except (TypeError, ValueError) as exc:
@@ -286,16 +307,36 @@ def _normalize_worker_result(specialist: str, raw: Mapping[str, Any]) -> Dict[st
 
     expected_model = EXPECTED_MODELS[specialist]
     returned_model = result.get("model")
-    if returned_model is not None and returned_model != expected_model:
+    if returned_model != expected_model:
         result["status"] = "FAILED_CLOSED"
         result.setdefault("unresolved_items", []).append(f"model_mismatch:expected={expected_model}:returned={returned_model}")
 
     requested_ops = result.get("requested_operations", [])
-    if isinstance(requested_ops, list):
-        unsafe = [op for op in requested_ops if op not in SAFE_OPERATIONS]
-        if unsafe:
+    side_effects = result.get("side_effects_attempted", [])
+    if not _valid_operation_list(requested_ops, require_nonempty=False):
+        result["status"] = "FAILED_CLOSED"
+        result.setdefault("unresolved_items", []).append("invalid_requested_operations_type")
+        return redact(result)
+    if not _valid_operation_list(side_effects, require_nonempty=False):
+        result["status"] = "FAILED_CLOSED"
+        result.setdefault("unresolved_items", []).append("invalid_side_effects_attempted_type")
+        return redact(result)
+
+    globally_unsafe = [op for op in requested_ops if op not in SAFE_OPERATIONS]
+    packet_allowed = set(allowed_operations)
+    task_unauthorized = [op for op in requested_ops if op not in packet_allowed]
+    policy_violations: list[str] = []
+    if globally_unsafe:
+        policy_violations.append("malicious_or_unauthorized_worker_operation:" + ",".join(globally_unsafe))
+    if task_unauthorized:
+        policy_violations.append("worker_operation_not_allowed_by_packet:" + ",".join(task_unauthorized))
+    if side_effects:
+        policy_violations.append("worker_side_effect_attempted:" + ",".join(side_effects))
+
+    if policy_violations:
+        if result.get("status") != "FAILED_CLOSED":
             result["status"] = "POLICY_BLOCKED"
-            result.setdefault("unresolved_items", []).append("malicious_or_unauthorized_worker_operation:" + ",".join(map(str, unsafe)))
+        result.setdefault("unresolved_items", []).extend(policy_violations)
     return redact(result)
 
 
@@ -319,7 +360,7 @@ def _invoke_with_retries(
             raw = dispatcher(copy.deepcopy(packet))
             if not isinstance(raw, Mapping):
                 raise TypeError("dispatcher result must be mapping")
-            return _normalize_worker_result(specialist, raw), retry_trace
+            return _normalize_worker_result(specialist, raw, packet["allowed_operations"]), retry_trace
         except TimeoutError:
             return {"status": "TIMEOUT", "model": EXPECTED_MODELS[specialist], "findings": [], "evidence": [], "unresolved_items": ["worker_timeout"]}, retry_trace
         except (RateLimitError, ProviderUnavailableError) as exc:
