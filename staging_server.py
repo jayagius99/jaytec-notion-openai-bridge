@@ -22,15 +22,20 @@ from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
-from worker_json import json_object
+from specialist_adapters import (
+    EXPECTED_CODEX_MODEL,
+    EXPECTED_GEMINI_MODEL,
+    build_codex_dispatch,
+    build_gemini_dispatch,
+)
 
 PORT = int(os.environ.get("PORT", "8000"))
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-CODEX_MODEL = os.environ.get("CODEX_MODEL", "gpt-5.3-codex").strip()
+CODEX_MODEL = os.environ.get("CODEX_MODEL", EXPECTED_CODEX_MODEL).strip()
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "google/gemini-3.1-pro-preview").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
 CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
@@ -54,7 +59,6 @@ if DATABASE_URL:
     from idempotency_postgres import PostgresExecutionRegistry
 
     REGISTRY = PostgresExecutionRegistry(database_url=DATABASE_URL, ttl_seconds=ExecutionRegistry().ttl_seconds)
-    # Fail closed if schema can't be ensured.
     REGISTRY.ensure_schema()
     IDEMPOTENCY_STORE = "postgres"
 else:
@@ -73,90 +77,22 @@ GEMINI_CIRCUIT = CircuitBreaker(
 OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
 
-CODEX_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
-
-REQUIRED SHAPE (types are strict):
-- status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
-- model: string exactly gpt-5.3-codex
-- findings: JSON array of strings (NOT an object)
-- evidence: JSON array of strings (NOT an object)
-- confidence: string|null
-- conclusion: any JSON (object/string/etc) or null
-- unresolved_items: JSON array of strings
-- files_or_artifacts: JSON array
-- architecture_changes_required: JSON array
-- knowledge_writeback_proposal: JSON array
-- side_effects_attempted: JSON array (MUST be [])
-- requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
-
-Never include markdown fences or surrounding prose. Never include credentials or secrets."""
-
-GEMINI_RESEARCH_MODE_V1_1 = """JAYTEC_GEMINI_RESEARCH_MODE v1.1.0
-ROLE: RESEARCH SPECIALIST. Treat each request as stateless.
-
-Return ONLY one JSON object (no markdown fences). Preserve TASK_ID and SUBTASK_ID.
-
-REQUIRED SHAPE (types are strict):
-- status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
-- model: string exactly google/gemini-3.1-pro-preview
-- findings: JSON array of strings
-- evidence: JSON array of strings
-- confidence: string|null
-- conclusion: any JSON or null
-- unresolved_items: JSON array of strings
-- files_or_artifacts: JSON array
-- architecture_changes_required: JSON array
-- knowledge_writeback_proposal: JSON array
-- side_effects_attempted: JSON array (MUST be [])
-- requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
-
-Never expose credentials. Do not perform engineering writes."""
-
 
 def _codex_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
     if OPENAI_CLIENT is None:
         raise RuntimeError("OPENAI_API_KEY is not configured on the staging bridge")
-    prompt = (
-        "ROLE: GPT-5.3 CODEX ENGINEERING\n" + CODEX_CONTRACT
-        + "\nTASK_PACKET_JSON:\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
-    )
-    response = OPENAI_CLIENT.responses.create(
-        model=CODEX_MODEL,
-        input=prompt,
-        reasoning={"effort": "high"},
-    )
-    result = json_object(response.output_text or "")
-    result.setdefault("model", CODEX_MODEL)
-    return result
+    return build_codex_dispatch(openai_client=OPENAI_CLIENT, codex_model=CODEX_MODEL, circuit=CODEX_CIRCUIT)(packet)
 
 
 def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
     if OPENROUTER_CLIENT is None:
         raise RuntimeError("OPENROUTER_API_KEY is not configured on the staging bridge")
-    prompt = (
-        GEMINI_RESEARCH_MODE_V1_1
-        + "\nTASK_ID: " + str(packet.get("task_id", ""))
-        + "\nSUBTASK_ID: " + str(packet.get("subtask_id", ""))
-        + "\nTASK_PACKET_JSON:\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
-    )
-    response = OPENROUTER_CLIENT.chat.completions.create(
-        model=GEMINI_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        timeout=GEMINI_TIMEOUT_S,
-        stream=False,
-        extra_body={
-            "provider": {
-                "sort": "price",
-                "allow_fallbacks": True,
-            }
-        },
-    )
-    if not response.choices:
-        raise RuntimeError("Gemini returned no choices")
-    result = json_object(response.choices[0].message.content or "")
-    result.setdefault("model", GEMINI_MODEL)
-    return result
+    return build_gemini_dispatch(
+        openrouter_client=OPENROUTER_CLIENT,
+        gemini_model=GEMINI_MODEL,
+        gemini_timeout_s=GEMINI_TIMEOUT_S,
+        circuit=GEMINI_CIRCUIT,
+    )(packet)
 
 
 CODEX_DISPATCH = CODEX_CIRCUIT.guard(_codex_dispatch)
@@ -185,14 +121,8 @@ def orchestration_status() -> str:
 
 @mcp.tool
 def idempotency_persistence_probe() -> str:
-    """Best-effort probe: verifies idempotency registry is usable.
-
-    - If using Postgres, returns PASS if schema is present and prune/lookup calls succeed.
-    - If using memory, reports SKIP.
-    """
     if IDEMPOTENCY_STORE != "postgres":
         return json.dumps({"status": "SKIP", "idempotency_store": IDEMPOTENCY_STORE}, sort_keys=True)
-    # Postgres registry: schema already ensured at import time.
     try:
         pruned = REGISTRY.prune()
         return json.dumps({"status": "PASS", "idempotency_store": IDEMPOTENCY_STORE, "pruned": pruned}, sort_keys=True)
@@ -216,7 +146,6 @@ def execute_task_packet(packet_json: str) -> str:
             sort_keys=True,
         )
 
-    # Map Postgres conflicting duplicate to PacketValidationError semantics.
     def _lookup(key: str, digest: str, now=None):
         try:
             return REGISTRY.lookup(key, digest, now=now)
@@ -234,7 +163,6 @@ def execute_task_packet(packet_json: str) -> str:
             raise
 
     if IDEMPOTENCY_STORE == "postgres":
-        # Wrap registry with the same interface expected by execute_task_packet_core.
         class _Wrapper(ExecutionRegistry):
             def lookup(self, key, packet_hash, *, now=None):
                 return _lookup(key, packet_hash, now=now)

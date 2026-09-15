@@ -9,10 +9,15 @@ on:
       - 'orchestration.py'
       - 'circuit_breaker.py'
       - 'worker_json.py'
+      - 'specialist_adapters.py'
+      - 'server.py'
+      - 'Dockerfile'
+      - 'test_dockerfile_packaging.py'
       - 'test_orchestration.py'
       - 'test_circuit_breaker.py'
       - 'test_worker_policy_hardening.py'
       - 'test_worker_output_parsing.py'
+      - 'test_server_candidate_probe.py'
       - 'staging_server.py'
       - 'staging_runtime_probe.py'
       - 'staging_adversarial_probe.py'
@@ -28,7 +33,7 @@ permissions:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 7
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,7 +43,16 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
-      - name: Run staging unit tests
+      - name: Compile modules (including production entrypoint)
+        run: |
+          python -m py_compile \
+            orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py \
+            server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
+            idempotency_postgres.py \
+            test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
+            test_worker_output_parsing.py test_idempotency_postgres.py test_dockerfile_packaging.py \
+            test_server_candidate_probe.py
+      - name: Import guard (server.py must be importable without secrets)
+        run: python -c "import server; print('server_import_ok')"
+      - name: Run unit tests
         run: python -m unittest discover -v
-      - name: Compile staging modules
-        run: python -m py_compile orchestration.py circuit_breaker.py worker_json.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py test_worker_output_parsing.py idempotency_postgres.py test_idempotency_postgres.py
