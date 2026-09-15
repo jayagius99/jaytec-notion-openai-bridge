@@ -12,7 +12,7 @@ import os
 from typing import Any, Dict, Mapping
 
 from fastmcp import FastMCP
-from fastmcp.server.auth.providers.debug import TokenVerifier
+from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
 from orchestration import ExecutionRegistry, execute_task_packet_core, parse_packet_json
@@ -29,7 +29,14 @@ GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 if not MCP_AUTH_TOKEN:
     raise RuntimeError("MCP_AUTH_TOKEN is required")
 
-auth = TokenVerifier(tokens={MCP_AUTH_TOKEN: {"client_id": "jaytec-staging", "scopes": ["bridge:use"]}})
+auth = StaticTokenVerifier(
+    tokens={
+        MCP_AUTH_TOKEN: {
+            "sub": "jaytec-staging-client",
+            "client_id": "jaytec-orchestration-staging",
+        }
+    }
+)
 mcp = FastMCP("JAYTEC Orchestration Staging", auth=auth)
 REGISTRY = ExecutionRegistry()
 
