@@ -17,6 +17,116 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             sleep_fn=lambda _: None,
         )
 
+    def test_missing_worker_status_fails_closed(self):
+        p = base_packet()
+        out = self._run_codex(
+            p,
+            lambda _: {
+                "model": "gpt-5.3-codex",
+                "findings": [],
+                "evidence": [],
+            },
+        )
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
+        self.assertIn("missing_required_field:status", out["unresolved_items"])
+
+    def test_missing_worker_findings_fails_closed(self):
+        p = base_packet()
+        out = self._run_codex(
+            p,
+            lambda _: {
+                "status": "SUCCESS",
+                "model": "gpt-5.3-codex",
+                "evidence": [],
+            },
+        )
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
+        self.assertIn("missing_required_field:findings", out["unresolved_items"])
+
+    def test_missing_worker_evidence_fails_closed(self):
+        p = base_packet()
+        out = self._run_codex(
+            p,
+            lambda _: {
+                "status": "SUCCESS",
+                "model": "gpt-5.3-codex",
+                "findings": [],
+            },
+        )
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
+        self.assertIn("missing_required_field:evidence", out["unresolved_items"])
+
+    def test_worker_status_wrong_type_fails_closed(self):
+        p = base_packet()
+        out = self._run_codex(
+            p,
+            lambda _: {
+                "status": 123,
+                "model": "gpt-5.3-codex",
+                "findings": [],
+                "evidence": [],
+            },
+        )
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
+        self.assertIn("invalid_type:status", out["unresolved_items"])
+
+    def test_worker_status_unsupported_value_fails_closed(self):
+        p = base_packet()
+        out = self._run_codex(
+            p,
+            lambda _: {
+                "status": "WAT",
+                "model": "gpt-5.3-codex",
+                "findings": [],
+                "evidence": [],
+            },
+        )
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
+        self.assertIn("invalid_worker_status", out["unresolved_items"])
+
+    def test_worker_findings_wrong_type_fails_closed(self):
+        p = base_packet()
+        out = self._run_codex(
+            p,
+            lambda _: {
+                "status": "SUCCESS",
+                "model": "gpt-5.3-codex",
+                "findings": "nope",
+                "evidence": [],
+            },
+        )
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
+        self.assertIn("invalid_type:findings", out["unresolved_items"])
+
+    def test_worker_evidence_wrong_type_fails_closed(self):
+        p = base_packet()
+        out = self._run_codex(
+            p,
+            lambda _: {
+                "status": "SUCCESS",
+                "model": "gpt-5.3-codex",
+                "findings": [],
+                "evidence": "nope",
+            },
+        )
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
+        self.assertIn("invalid_type:evidence", out["unresolved_items"])
+
+    def test_worker_unresolved_items_wrong_type_fails_closed(self):
+        p = base_packet()
+        out = self._run_codex(
+            p,
+            lambda _: {
+                "status": "FAILED_CLOSED",
+                "model": "gpt-5.3-codex",
+                "findings": [],
+                "evidence": [],
+                "unresolved_items": "oops",
+            },
+        )
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
+        self.assertIn("invalid_type:unresolved_items", out["unresolved_items"])
+
     def test_malformed_requested_operations_fails_closed(self):
         p = base_packet()
         out = self._run_codex(
@@ -81,6 +191,22 @@ class TestWorkerPolicyHardening(unittest.TestCase):
         )
         self.assertEqual("FAILED_CLOSED", out["overall_status"])
         self.assertIn("invalid_side_effects_attempted_type", out["unresolved_items"])
+
+    def test_worker_oversized_output_fails_closed(self):
+        p = base_packet()
+        huge = "x" * 300000
+        out = self._run_codex(
+            p,
+            lambda _: {
+                "status": "SUCCESS",
+                "model": "gpt-5.3-codex",
+                "findings": [],
+                "evidence": [],
+                "extra": huge,
+            },
+        )
+        self.assertEqual("FAILED_CLOSED", out["overall_status"])
+        self.assertIn("oversized_worker_output", out["unresolved_items"])
 
     def test_missing_model_fails_closed(self):
         p = base_packet()
