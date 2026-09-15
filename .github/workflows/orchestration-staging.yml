@@ -7,7 +7,9 @@ on:
   pull_request:
     paths:
       - 'orchestration.py'
+      - 'circuit_breaker.py'
       - 'test_orchestration.py'
+      - 'test_circuit_breaker.py'
       - 'staging_server.py'
       - 'BRIDGE_CONTRACT_V1.md'
 
@@ -25,7 +27,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run orchestration unit tests
-        run: python -m unittest -v test_orchestration.py
+      - name: Run staging unit tests
+        run: python -m unittest discover -v
       - name: Compile staging modules
-        run: python -m py_compile orchestration.py staging_server.py test_orchestration.py
+        run: python -m py_compile orchestration.py circuit_breaker.py staging_server.py test_orchestration.py test_circuit_breaker.py
