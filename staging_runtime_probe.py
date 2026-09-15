@@ -169,7 +169,8 @@ def _durability_sentinel() -> Dict[str, Any]:
     - For memory: reports SKIP.
     - For postgres: attempts lookup of prior sentinel payload and sets restart_proof.
 
-    Does not call providers.
+    Does not call providers. The key and digest intentionally remain stable across
+    boots; unlike provider smoke-test keys, this record is the restart proof.
     """
     if IDEMPOTENCY_STORE != "postgres":
         return {"status": "SKIP", "idempotency_store": IDEMPOTENCY_STORE}
@@ -254,20 +255,24 @@ def main() -> int:
     # Use staging_server's configured registry (memory or Postgres).
     registry = REGISTRY
 
+    # Provider smoke tests are new executions on every boot. Their packet deadline
+    # is intentionally fresh, so their idempotency keys must also be boot-unique.
+    # The fixed durability sentinel above is the cross-restart persistence proof.
+    probe_run_id = uuid.uuid4().hex
     phases = [
         (
             "gemini_only",
-            _packet("JAYTEC-2026-0001-V2", ["gemini"], "runtime-probe-v2-gemini"),
+            _packet("JAYTEC-2026-0001-V2", ["gemini"], f"runtime-probe-v2-gemini-{probe_run_id}"),
             {"gemini": GEMINI_DISPATCH},
         ),
         (
             "codex_only",
-            _packet("JAYTEC-2026-0001-V3", ["codex"], "runtime-probe-v3-codex"),
+            _packet("JAYTEC-2026-0001-V3", ["codex"], f"runtime-probe-v3-codex-{probe_run_id}"),
             {"codex": CODEX_DISPATCH},
         ),
         (
             "combined",
-            _packet("JAYTEC-2026-0001-V4", ["gemini", "codex"], "runtime-probe-v4-combined"),
+            _packet("JAYTEC-2026-0001-V4", ["gemini", "codex"], f"runtime-probe-v4-combined-{probe_run_id}"),
             {"codex": CODEX_DISPATCH, "gemini": GEMINI_DISPATCH},
         ),
     ]
