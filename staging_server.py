@@ -1,7 +1,9 @@
 """STAGING ONLY: unified JAYTEC execute_task_packet MCP surface.
 
-Do not use as production entrypoint until the activation gates in
-BRIDGE_CONTRACT_V1.md have passed.
+This entrypoint is intentionally independent from production server.py so the
+staging service can boot and validate packets without production provider keys.
+Specialist dispatch fails closed until the corresponding server-side credential
+is configured. Do not promote until BRIDGE_CONTRACT_V1.md activation gates pass.
 """
 from __future__ import annotations
 
@@ -9,23 +11,30 @@ import json
 import os
 from typing import Any, Dict, Mapping
 
+from fastmcp import FastMCP
+from fastmcp.server.auth.providers.debug import TokenVerifier
 from openai import OpenAI
 
 from orchestration import ExecutionRegistry, execute_task_packet_core, parse_packet_json
-from server import CODEX_MODEL, PORT, _call_openai, mcp
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "google/gemini-3.1-pro-preview").strip()
+PORT = int(os.environ.get("PORT", "8000"))
+MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+CODEX_MODEL = os.environ.get("CODEX_MODEL", "gpt-5.3-codex").strip()
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "google/gemini-3.1-pro-preview").strip()
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 
-# Staging process-local registry. Production requires a durable shared store.
+if not MCP_AUTH_TOKEN:
+    raise RuntimeError("MCP_AUTH_TOKEN is required")
+
+auth = TokenVerifier(tokens={MCP_AUTH_TOKEN: {"client_id": "jaytec-staging", "scopes": ["bridge:use"]}})
+mcp = FastMCP("JAYTEC Orchestration Staging", auth=auth)
 REGISTRY = ExecutionRegistry()
-OPENROUTER_CLIENT = (
-    OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
-    if OPENROUTER_API_KEY
-    else None
-)
+
+OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
 
 CODEX_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
 Required keys: status, model, findings, evidence, confidence, conclusion,
@@ -55,15 +64,18 @@ def _json_object(text: str) -> Dict[str, Any]:
 
 
 def _codex_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
-    if not CODEX_MODEL:
-        raise RuntimeError("CODEX_MODEL is not configured")
+    if OPENAI_CLIENT is None:
+        raise RuntimeError("OPENAI_API_KEY is not configured on the staging bridge")
     prompt = (
-        "ROLE: GPT-5.3 CODEX ENGINEERING\n"
-        + CODEX_CONTRACT
-        + "\nTASK_PACKET_JSON:\n"
-        + json.dumps(packet, ensure_ascii=False, sort_keys=True)
+        "ROLE: GPT-5.3 CODEX ENGINEERING\n" + CODEX_CONTRACT
+        + "\nTASK_PACKET_JSON:\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
     )
-    result = _json_object(_call_openai(CODEX_MODEL, prompt))
+    response = OPENAI_CLIENT.responses.create(
+        model=CODEX_MODEL,
+        input=prompt,
+        reasoning={"effort": "high"},
+    )
+    result = _json_object(response.output_text or "")
     result.setdefault("model", CODEX_MODEL)
     return result
 
@@ -75,8 +87,7 @@ def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         GEMINI_RESEARCH_MODE_V1_1
         + "\nTASK_ID: " + str(packet.get("task_id", ""))
         + "\nSUBTASK_ID: " + str(packet.get("subtask_id", ""))
-        + "\nTASK_PACKET_JSON:\n"
-        + json.dumps(packet, ensure_ascii=False, sort_keys=True)
+        + "\nTASK_PACKET_JSON:\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         + "\nRESULT_CONTRACT: status, model, findings, evidence, confidence, conclusion, "
           "unresolved_items, files_or_artifacts, architecture_changes_required, "
           "knowledge_writeback_proposal, side_effects_attempted, requested_operations."
@@ -86,13 +97,12 @@ def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         messages=[{"role": "user", "content": prompt}],
         temperature=0,
         timeout=GEMINI_TIMEOUT_S,
+        stream=False,
     )
     if not response.choices:
         raise RuntimeError("Gemini returned no choices")
-    content = response.choices[0].message.content or ""
-    result = _json_object(content)
-    returned_model = getattr(response, "model", None)
-    result["model"] = returned_model or result.get("model") or GEMINI_MODEL
+    result = _json_object(response.choices[0].message.content or "")
+    result["model"] = getattr(response, "model", None) or result.get("model") or GEMINI_MODEL
     return result
 
 
@@ -102,7 +112,8 @@ def orchestration_status() -> str:
         {
             "status": "STAGING",
             "operation": "execute_task_packet",
-            "codex_model": CODEX_MODEL or None,
+            "codex_model": CODEX_MODEL,
+            "codex_adapter_configured": bool(OPENAI_API_KEY),
             "gemini_model": GEMINI_MODEL,
             "gemini_adapter_configured": bool(OPENROUTER_API_KEY),
             "idempotency_store": "process_memory_staging_only",
