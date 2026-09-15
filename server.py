@@ -72,6 +72,49 @@ def _require_startup_prereqs() -> None:
             )
 
 
+
+def compute_production_ready(
+    *,
+    runtime_mode: str,
+    idempotency_store: str,
+    codex_model: str,
+    gemini_model: str,
+    mcp_auth_token_present: bool,
+    openai_api_key_present: bool,
+    openrouter_api_key_present: bool,
+) -> bool:
+    """Compute whether this bridge instance is truly production-ready.
+
+    This is intentionally fail-closed: any missing prerequisite should return False.
+
+    Required conditions:
+    - RUNTIME_MODE == 'production'
+    - durable idempotency store is 'postgres'
+    - exact specialist model identities match the required locks
+    - MCP auth + provider startup prerequisites are satisfied
+    - Gemini production adapter is actually configured (OPENROUTER_API_KEY present)
+
+    NOTE: Startup may still be allowed in some partially-configured states; this flag
+    is strictly about readiness, not liveness.
+    """
+    if runtime_mode != "production":
+        return False
+    if idempotency_store != "postgres":
+        return False
+    if codex_model != EXPECTED_CODEX_MODEL:
+        return False
+    if gemini_model != EXPECTED_GEMINI_MODEL:
+        return False
+    if not mcp_auth_token_present:
+        return False
+    if not openai_api_key_present:
+        return False
+    if not openrouter_api_key_present:
+        return False
+    return True
+
+
+
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -106,6 +149,7 @@ class BridgeError:
             f"RAW_REFERENCE: {self.raw_reference}",
         ]
         return "\n".join(lines)
+
 
 
 def _classify_error(exc: Exception) -> Dict[str, str]:
@@ -158,6 +202,7 @@ Rules:
 """
 
 
+
 def _call_openai(client: OpenAI, model: str, task: str) -> str:
     last_exc: Optional[Exception] = None
     for attempt in range(0, max(1, OPENAI_MAX_RETRIES + 1)):
@@ -175,6 +220,7 @@ def _call_openai(client: OpenAI, model: str, task: str) -> str:
                 break
             time.sleep(0.75 * (attempt + 1))
     raise last_exc or RuntimeError("Unknown OpenAI error")
+
 
 
 def create_mcp_app() -> FastMCP:
@@ -214,6 +260,16 @@ def create_mcp_app() -> FastMCP:
     else:
         registry = ExecutionRegistry()
         idempotency_store = "process_memory"
+
+    production_ready = compute_production_ready(
+        runtime_mode=RUNTIME_MODE,
+        idempotency_store=idempotency_store,
+        codex_model=CODEX_MODEL,
+        gemini_model=GEMINI_MODEL,
+        mcp_auth_token_present=bool(MCP_AUTH_TOKEN),
+        openai_api_key_present=bool(OPENAI_API_KEY),
+        openrouter_api_key_present=bool(OPENROUTER_API_KEY),
+    )
 
     codex_circuit = CircuitBreaker(
         failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
@@ -277,7 +333,7 @@ def create_mcp_app() -> FastMCP:
                 "gemini_circuit": gemini_circuit.snapshot(),
                 "idempotency_store": idempotency_store,
                 "runtime_mode": RUNTIME_MODE,
-                "production_ready": False,
+                "production_ready": production_ready,
             },
             sort_keys=True,
         )
@@ -334,6 +390,7 @@ def create_mcp_app() -> FastMCP:
         return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
     return mcp
+
 
 
 def main() -> None:
