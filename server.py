@@ -609,7 +609,7 @@ CAN_ENGINEERING_CONTINUE_IN_PARALLEL:
             subtask_id=subtask_id,
             error_class=cls["error_class"],
             http_or_provider_status="",
-            retryable=cls[n"retryable"],
+            retryable=cls["retryable"],
             message="Upstream call failed during codex_send_task.",
             safe_technical_detail=str(exc)[:300],
             suggested_action=cls["suggested_action"],
