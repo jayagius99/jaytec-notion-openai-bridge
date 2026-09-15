@@ -1,15 +1,17 @@
 services:
   - type: web
-    name: jaytec-notion-openai-bridge
-    runtime: docker
-    plan: starter
+    name: jaytec-orchestration-staging
+    runtime: python
+    plan: free
+    region: oregon
+    branch: staging/execute-task-packet-v1
+    buildCommand: pip install -r requirements.txt
+    startCommand: python staging_server.py
     autoDeploy: true
     envVars:
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_MODEL
-        value: gpt-5.6-sol
+      - key: MCP_AUTH_TOKEN
+        generateValue: true
       - key: CODEX_MODEL
         value: gpt-5.3-codex
-      - key: MCP_AUTH_TOKEN
-        sync: false
+      - key: GEMINI_MODEL
+        value: google/gemini-3.1-pro-preview
