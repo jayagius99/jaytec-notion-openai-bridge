@@ -446,4 +446,8 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=PORT,
         stateless_http=True,
+        # Public hosted MCP endpoint behind Render/Notion: keep bearer auth on,
+        # but do not allow an environment-level FastMCP origin guard to reject
+        # Notion's browser/service Origin before token verification runs.
+        host_origin_protection=False,
     )
