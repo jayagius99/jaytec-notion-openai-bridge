@@ -1,13 +1,17 @@
-def test_dockerfile_copies_full_runtime():
-    dockerfile = open("Dockerfile", "r", encoding="utf-8").read()
-
-    assert "COPY . ./" in dockerfile
-    assert "CMD [\"python\", \"server.py\"]" in dockerfile
+import unittest
 
 
-def test_dockerignore_blocks_sensitive_and_dev_files():
-    dockerignore = open(".dockerignore", "r", encoding="utf-8").read()
+class TestDockerPackaging(unittest.TestCase):
+    def test_dockerfile_copies_full_runtime(self):
+        dockerfile = open("Dockerfile", "r", encoding="utf-8").read()
+        self.assertIn("COPY . ./", dockerfile)
+        self.assertIn('CMD ["python", "server.py"]', dockerfile)
 
-    # Must not ship git history or env files into container image.
-    for required in [".git", ".env", ".env.*", ".github", "__pycache__"]:
-        assert required in dockerignore
+    def test_dockerignore_blocks_sensitive_and_dev_files(self):
+        dockerignore = open(".dockerignore", "r", encoding="utf-8").read()
+        for required in [".git", ".env", ".env.*", ".github", "__pycache__"]:
+            self.assertIn(required, dockerignore)
+
+
+if __name__ == "__main__":
+    unittest.main()
