@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Mapping
+from typing import Any, Mapping
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
@@ -77,26 +77,23 @@ GEMINI_CIRCUIT = CircuitBreaker(
 OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
 
+# Build dispatchers ONCE to avoid runtime drift and repeated guards.
+CODEX_DISPATCH = (
+    build_codex_dispatch(openai_client=OPENAI_CLIENT, codex_model=CODEX_MODEL, circuit=CODEX_CIRCUIT)
+    if OPENAI_CLIENT
+    else CODEX_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENAI_API_KEY is not configured on the staging bridge")))
+)
 
-def _codex_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
-    if OPENAI_CLIENT is None:
-        raise RuntimeError("OPENAI_API_KEY is not configured on the staging bridge")
-    return build_codex_dispatch(openai_client=OPENAI_CLIENT, codex_model=CODEX_MODEL, circuit=CODEX_CIRCUIT)(packet)
-
-
-def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
-    if OPENROUTER_CLIENT is None:
-        raise RuntimeError("OPENROUTER_API_KEY is not configured on the staging bridge")
-    return build_gemini_dispatch(
+GEMINI_DISPATCH = (
+    build_gemini_dispatch(
         openrouter_client=OPENROUTER_CLIENT,
         gemini_model=GEMINI_MODEL,
         gemini_timeout_s=GEMINI_TIMEOUT_S,
         circuit=GEMINI_CIRCUIT,
-    )(packet)
-
-
-CODEX_DISPATCH = CODEX_CIRCUIT.guard(_codex_dispatch)
-GEMINI_DISPATCH = GEMINI_CIRCUIT.guard(_gemini_dispatch)
+    )
+    if OPENROUTER_CLIENT
+    else GEMINI_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on the staging bridge")))
+)
 
 
 @mcp.tool

@@ -63,7 +63,6 @@ def _require_startup_prereqs() -> None:
         raise RuntimeError("OPENAI_API_KEY is not set.")
 
     if RUNTIME_MODE == "production":
-        # Hard safety gate: production cannot run without durable idempotency.
         if not DATABASE_URL:
             raise RuntimeError(
                 "RUNTIME_MODE=production requires DATABASE_URL for durable idempotency; refusing to start with process memory."
@@ -89,7 +88,6 @@ class BridgeError:
     raw_reference: str
 
     def to_text_block(self) -> str:
-        # Plain-text contract (Notion-friendly)
         lines = [
             "BRIDGE_ERROR:",
             f"BRIDGE_ID: {self.bridge_id}",
@@ -108,7 +106,6 @@ class BridgeError:
 
 
 def _classify_error(exc: Exception) -> Dict[str, str]:
-    # Keep conservative and safe.
     msg = str(exc)
     lower = msg.lower()
     if "401" in lower or "unauthorized" in lower or "api key" in lower:
@@ -136,7 +133,6 @@ def _classify_error(exc: Exception) -> Dict[str, str]:
     }
 
 
-# Read-only project context
 project_context_path = Path(__file__).with_name("PROJECT_CONTEXT.md")
 PROJECT_CONTEXT = (
     project_context_path.read_text(encoding="utf-8")
@@ -181,8 +177,7 @@ def _call_openai(client: OpenAI, model: str, task: str) -> str:
 def create_mcp_app() -> FastMCP:
     """Create the authenticated MCP server.
 
-    This is separated from module import so CI can import/compile server.py
-    without requiring secrets.
+    Separated from module import so CI can compile/import server.py without secrets.
     """
     _require_startup_prereqs()
 
@@ -196,7 +191,6 @@ def create_mcp_app() -> FastMCP:
     )
     mcp = FastMCP("JAYTEC OpenAI Engineering Bridge", auth=auth)
 
-    # Upstream clients
     openai_client = OpenAI(api_key=OPENAI_API_KEY)
     openrouter_client = (
         OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
@@ -227,29 +221,25 @@ def create_mcp_app() -> FastMCP:
         reset_after_seconds=CIRCUIT_RESET_SECONDS,
     )
 
-    # Dispatchers (fail closed if model identity is not exact)
     codex_dispatch = build_codex_dispatch(
         openai_client=openai_client,
         codex_model=CODEX_MODEL,
         circuit=codex_circuit,
     )
 
-    def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
-        if openrouter_client is None:
-            raise RuntimeError("OPENROUTER_API_KEY is not configured on this bridge")
-        return build_gemini_dispatch(
+    if openrouter_client is not None:
+        gemini_dispatch = build_gemini_dispatch(
             openrouter_client=openrouter_client,
             gemini_model=GEMINI_MODEL,
             gemini_timeout_s=GEMINI_TIMEOUT_S,
             circuit=gemini_circuit,
-        )(packet)
+        )
+    else:
+        gemini_dispatch = gemini_circuit.guard(
+            lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
+        )
 
-    # Cache the guarded gemini dispatcher only after we know openrouter is configured.
-    gemini_dispatch = gemini_circuit.guard(
-        lambda packet: _gemini_dispatch(packet)  # noqa: E731
-    )
-
-    # ---------------- Existing legacy tools (kept) ----------------
+    # ---------------- Legacy tools (preserved) ----------------
 
     @mcp.tool
     def ask_openai(question: str, context: str = "") -> str:
@@ -270,7 +260,7 @@ def create_mcp_app() -> FastMCP:
     def bridge_status() -> str:
         return f"JAYTEC Notion/OpenAI bridge is online. OpenAI model: {OPENAI_MODEL}"
 
-    # ---------------- Unified orchestration surface (production-candidate) ----------------
+    # ---------------- Unified orchestration surface ----------------
 
     @mcp.tool
     def orchestration_status() -> str:
@@ -305,7 +295,6 @@ def create_mcp_app() -> FastMCP:
                 sort_keys=True,
             )
 
-        # Map Postgres conflicting duplicate to PacketValidationError semantics.
         def _lookup(key: str, digest: str, now=None):
             try:
                 return registry.lookup(key, digest, now=now)
