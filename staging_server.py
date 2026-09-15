@@ -60,7 +60,12 @@ unresolved_items, files_or_artifacts, architecture_changes_required,
 knowledge_writeback_proposal, side_effects_attempted, requested_operations.
 status must be one of SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION,
 POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED.
-model must be exactly gpt-5.3-codex. Never include credentials or secrets."""
+model must be exactly gpt-5.3-codex. Never include credentials or secrets.
+requested_operations MUST be a JSON array of strings and MUST be a subset of the
+task packet allowed_operations; use [] when none are requested. Do not return an
+object such as {performed: [...], unauthorized: [...]} for requested_operations.
+side_effects_attempted MUST be a JSON array; for this harmless staging validation
+it MUST be []."""
 
 GEMINI_RESEARCH_MODE_V1_1 = """JAYTEC_GEMINI_RESEARCH_MODE v1.1.0
 ROLE: RESEARCH SPECIALIST. Treat each request as stateless.
@@ -73,7 +78,11 @@ The status field is mandatory and MUST be exactly one of: SUCCESS,
 PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED,
 INVALID_PACKET, TIMEOUT, RATE_LIMITED. Do not invent synonyms such as completed,
 ok, error, failed, or done. For a harmless request that completed normally with
-no unresolved blocker, use status SUCCESS."""
+no unresolved blocker, use status SUCCESS.
+requested_operations MUST be a JSON array of strings and MUST be a subset of the
+task packet allowed_operations; use [] when none are requested.
+side_effects_attempted MUST be a JSON array; for this harmless staging validation
+it MUST be []."""
 
 
 def _json_object(text: str) -> Dict[str, Any]:
@@ -114,7 +123,8 @@ def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         + "\nRESULT_CONTRACT: status, model, findings, evidence, confidence, conclusion, "
           "unresolved_items, files_or_artifacts, architecture_changes_required, "
           "knowledge_writeback_proposal, side_effects_attempted, requested_operations. "
-          "status MUST use the exact allowed enum defined above."
+          "status MUST use the exact allowed enum defined above; operation fields MUST "
+          "use the canonical JSON-array shapes defined above."
     )
     response = OPENROUTER_CLIENT.chat.completions.create(
         model=GEMINI_MODEL,
