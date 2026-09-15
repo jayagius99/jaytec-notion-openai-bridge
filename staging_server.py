@@ -15,6 +15,7 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
+from circuit_breaker import CircuitBreaker
 from orchestration import ExecutionRegistry, execute_task_packet_core, parse_packet_json
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -25,6 +26,8 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "google/gemini-3.1-pro-preview").strip()
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
+CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
+CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
 
 if not MCP_AUTH_TOKEN:
     raise RuntimeError("MCP_AUTH_TOKEN is required")
@@ -39,6 +42,14 @@ auth = StaticTokenVerifier(
 )
 mcp = FastMCP("JAYTEC Orchestration Staging", auth=auth)
 REGISTRY = ExecutionRegistry()
+CODEX_CIRCUIT = CircuitBreaker(
+    failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+    reset_after_seconds=CIRCUIT_RESET_SECONDS,
+)
+GEMINI_CIRCUIT = CircuitBreaker(
+    failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+    reset_after_seconds=CIRCUIT_RESET_SECONDS,
+)
 
 OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
@@ -105,12 +116,22 @@ def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         temperature=0,
         timeout=GEMINI_TIMEOUT_S,
         stream=False,
+        extra_body={
+            "provider": {
+                "sort": "price",
+                "allow_fallbacks": True,
+            }
+        },
     )
     if not response.choices:
         raise RuntimeError("Gemini returned no choices")
     result = _json_object(response.choices[0].message.content or "")
     result["model"] = getattr(response, "model", None) or result.get("model") or GEMINI_MODEL
     return result
+
+
+CODEX_DISPATCH = CODEX_CIRCUIT.guard(_codex_dispatch)
+GEMINI_DISPATCH = GEMINI_CIRCUIT.guard(_gemini_dispatch)
 
 
 @mcp.tool
@@ -121,8 +142,11 @@ def orchestration_status() -> str:
             "operation": "execute_task_packet",
             "codex_model": CODEX_MODEL,
             "codex_adapter_configured": bool(OPENAI_API_KEY),
+            "codex_circuit": CODEX_CIRCUIT.snapshot(),
             "gemini_model": GEMINI_MODEL,
             "gemini_adapter_configured": bool(OPENROUTER_API_KEY),
+            "gemini_provider_routing": "price",
+            "gemini_circuit": GEMINI_CIRCUIT.snapshot(),
             "idempotency_store": "process_memory_staging_only",
             "production_ready": False,
         },
@@ -147,7 +171,7 @@ def execute_task_packet(packet_json: str) -> str:
         )
     result = execute_task_packet_core(
         packet,
-        {"codex": _codex_dispatch, "gemini": _gemini_dispatch},
+        {"codex": CODEX_DISPATCH, "gemini": GEMINI_DISPATCH},
         REGISTRY,
     )
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
