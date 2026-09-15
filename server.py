@@ -47,8 +47,10 @@ OPENAI_MAX_RETRIES = int(os.environ.get("OPENAI_MAX_RETRIES", "2"))
 CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
 CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
 
-# Runtime mode: production MUST be durable.
-RUNTIME_MODE = os.environ.get("RUNTIME_MODE", "staging_candidate").strip().lower()
+# Runtime mode:
+# - production is the SAFE DEFAULT and must be durable
+# - staging_candidate exists only as an explicit escape hatch for CI / candidate validation
+RUNTIME_MODE = os.environ.get("RUNTIME_MODE", "production").strip().lower()
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 BRIDGE_ID_CODEX = "BRIDGE_CODEX_ENGINEERING"
@@ -62,6 +64,7 @@ def _require_startup_prereqs() -> None:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set.")
 
+    # Fail closed: production requires durable idempotency.
     if RUNTIME_MODE == "production":
         if not DATABASE_URL:
             raise RuntimeError(

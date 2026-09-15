@@ -35,7 +35,7 @@ permissions:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -58,3 +58,15 @@ jobs:
         run: python -c "import server; print('server_import_ok')"
       - name: Run unit tests
         run: python -m unittest discover -v
+      - name: Docker build smoke (production Dockerfile path)
+        run: docker build -t jaytec-bridge-ci:smoke .
+      - name: Docker container startup smoke (staging_candidate only; no provider calls)
+        run: |
+          docker run --rm \
+            -e RUNTIME_MODE=staging_candidate \
+            -e MCP_AUTH_TOKEN=test \
+            -e OPENAI_API_KEY=test \
+            -e CODEX_MODEL=gpt-5.3-codex \
+            -e GEMINI_MODEL=google/gemini-3.1-pro-preview \
+            jaytec-bridge-ci:smoke \
+            python -c "import os, importlib; os.environ['RUNTIME_MODE']='staging_candidate'; os.environ['MCP_AUTH_TOKEN']='test'; os.environ['OPENAI_API_KEY']='test'; os.environ['CODEX_MODEL']='gpt-5.3-codex'; os.environ['GEMINI_MODEL']='google/gemini-3.1-pro-preview'; import server; importlib.reload(server); server.create_mcp_app(); print('container_startup_ok')"
