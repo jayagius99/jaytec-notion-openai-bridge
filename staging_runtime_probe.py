@@ -14,13 +14,12 @@ exercises the idempotency registry layer.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable
 
-from orchestration import SAFE_OPERATIONS, ExecutionRegistry, execute_task_packet_core, packet_hash, redact
+from orchestration import SAFE_OPERATIONS, execute_task_packet_core, redact
 from staging_server import (
     CODEX_DISPATCH,
     CODEX_MODEL,
@@ -177,7 +176,6 @@ def _durability_sentinel() -> Dict[str, Any]:
 
     boot_id = str(uuid.uuid4())
     key = "durability-sentinel"
-    # Registry stores by (idempotency_key, packet_hash). We use a fixed digest.
     digest = "sentinel-v1"
     now = datetime.now(timezone.utc)
 
@@ -253,9 +251,8 @@ def main() -> int:
         )
         return 2
 
-    # IMPORTANT: Use the staging server's configured registry, so we actually
-    # exercise Postgres durability when enabled.
-    registry = REGISTRY if isinstance(REGISTRY, ExecutionRegistry) else ExecutionRegistry()
+    # Use staging_server's configured registry (memory or Postgres).
+    registry = REGISTRY
 
     phases = [
         (
