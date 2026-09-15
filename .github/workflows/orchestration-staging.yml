@@ -10,7 +10,11 @@ on:
       - 'circuit_breaker.py'
       - 'test_orchestration.py'
       - 'test_circuit_breaker.py'
+      - 'test_worker_policy_hardening.py'
       - 'staging_server.py'
+      - 'staging_runtime_probe.py'
+      - 'staging_adversarial_probe.py'
+      - 'render.yaml'
       - 'BRIDGE_CONTRACT_V1.md'
 
 permissions:
@@ -30,4 +34,4 @@ jobs:
       - name: Run staging unit tests
         run: python -m unittest discover -v
       - name: Compile staging modules
-        run: python -m py_compile orchestration.py circuit_breaker.py staging_server.py test_orchestration.py test_circuit_breaker.py
+        run: python -m py_compile orchestration.py circuit_breaker.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py
