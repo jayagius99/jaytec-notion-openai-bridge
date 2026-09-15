@@ -1,0 +1,16 @@
+# Prevent copying local/dev/CI-only artifacts into container image
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.sqlite
+.env
+.env.*
+*.log
+*.zip
+*.tar
+*.tar.gz
+node_modules
+.DS_Store

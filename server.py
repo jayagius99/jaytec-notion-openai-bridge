@@ -3,19 +3,38 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
+from circuit_breaker import CircuitBreaker
+from orchestration import (
+    ExecutionRegistry,
+    PacketValidationError,
+    execute_task_packet_core,
+    parse_packet_json,
+)
+from specialist_adapters import (
+    EXPECTED_CODEX_MODEL,
+    EXPECTED_GEMINI_MODEL,
+    build_codex_dispatch,
+    build_gemini_dispatch,
+)
+
 # --- Runtime configuration (NO secrets in code) ---
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol").strip()
 
-# Dedicated Codex engineering route (must be explicitly configured).
-# IMPORTANT: We do NOT assume a model ID. You must set this in hosting env.
-CODEX_MODEL = os.environ.get("CODEX_MODEL", "").strip()
+# Exact model locks (must match orchestration.EXPECTED_MODELS)
+CODEX_MODEL = os.environ.get("CODEX_MODEL", EXPECTED_CODEX_MODEL).strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
+
+# OpenRouter route for Gemini research (optional; disabled unless configured).
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 PORT = int(os.environ.get("PORT", "8000"))
@@ -24,48 +43,80 @@ PORT = int(os.environ.get("PORT", "8000"))
 OPENAI_TIMEOUT_S = float(os.environ.get("OPENAI_TIMEOUT_S", "45"))
 OPENAI_MAX_RETRIES = int(os.environ.get("OPENAI_MAX_RETRIES", "2"))
 
+# Circuit breaker
+CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
+CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
+
+# Runtime mode:
+# - production is the SAFE DEFAULT and must be durable
+# - staging_candidate exists only as an explicit escape hatch for CI / candidate validation
+RUNTIME_MODE = os.environ.get("RUNTIME_MODE", "production").strip().lower()
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
 BRIDGE_ID_CODEX = "BRIDGE_CODEX_ENGINEERING"
 
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is not set.")
-if not MCP_AUTH_TOKEN:
-    raise RuntimeError(
-        "MCP_AUTH_TOKEN is not set. Refusing to start an unauthenticated remote MCP server."
-    )
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+def _require_startup_prereqs() -> None:
+    if not MCP_AUTH_TOKEN:
+        raise RuntimeError(
+            "MCP_AUTH_TOKEN is not set. Refusing to start an unauthenticated remote MCP server."
+        )
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set.")
 
-project_context_path = Path(__file__).with_name("PROJECT_CONTEXT.md")
-PROJECT_CONTEXT = (
-    project_context_path.read_text(encoding="utf-8")
-    if project_context_path.exists()
-    else ""
-)
+    # Fail closed: production requires durable idempotency.
+    if RUNTIME_MODE == "production":
+        if not DATABASE_URL:
+            raise RuntimeError(
+                "RUNTIME_MODE=production requires DATABASE_URL for durable idempotency; refusing to start with process memory."
+            )
 
-auth = StaticTokenVerifier(
-    tokens={
-        MCP_AUTH_TOKEN: {
-            "sub": "notion-agent",
-            "client_id": "jaytec-notion-openai-bridge",
-        }
-    }
-)
 
-mcp = FastMCP("JAYTEC OpenAI Engineering Bridge", auth=auth)
 
-BASE_INSTRUCTIONS = """You are the OpenAI engineering peer connected to a Notion AI agent through a private MCP bridge.
+def compute_production_ready(
+    *,
+    runtime_mode: str,
+    idempotency_store: str,
+    codex_model: str,
+    gemini_model: str,
+    mcp_auth_token_present: bool,
+    openai_api_key_present: bool,
+    openrouter_api_key_present: bool,
+) -> bool:
+    """Compute whether this bridge instance is truly production-ready.
 
-Your job is to improve accuracy and usefulness, not merely agree with the other AI.
+    This is intentionally fail-closed: any missing prerequisite should return False.
 
-Rules:
-- Treat supplied project context and evidence as primary inputs.
-- Distinguish verified facts, strong inferences, and hypotheses.
-- Identify contradictions and missing evidence.
-- When reviewing another AI's answer, preserve correct parts and explicitly correct unsupported or incorrect parts.
-- Give actionable technical answers.
-- Never claim to have accessed the user's ChatGPT conversation, account memory, local machine, Notion workspace, or files unless that content is explicitly supplied in the current tool call.
-- This bridge reaches an OpenAI API model, not a live ChatGPT chat session.
-"""
+    Required conditions:
+    - RUNTIME_MODE == 'production'
+    - durable idempotency store is 'postgres'
+    - exact specialist model identities match the required locks
+    - MCP auth + provider startup prerequisites are satisfied
+    - Gemini production adapter is actually configured (OPENROUTER_API_KEY present)
+
+    NOTE: Startup may still be allowed in some partially-configured states; this flag
+    is strictly about readiness, not liveness.
+    """
+    if runtime_mode != "production":
+        return False
+    if idempotency_store != "postgres":
+        return False
+    if codex_model != EXPECTED_CODEX_MODEL:
+        return False
+    if gemini_model != EXPECTED_GEMINI_MODEL:
+        return False
+    if not mcp_auth_token_present:
+        return False
+    if not openai_api_key_present:
+        return False
+    if not openrouter_api_key_present:
+        return False
+    return True
+
+
+
+def _now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 @dataclass
@@ -83,7 +134,6 @@ class BridgeError:
     raw_reference: str
 
     def to_text_block(self) -> str:
-        # Plain-text contract (Notion-friendly)
         lines = [
             "BRIDGE_ERROR:",
             f"BRIDGE_ID: {self.bridge_id}",
@@ -101,12 +151,8 @@ class BridgeError:
         return "\n".join(lines)
 
 
-def _now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
 
 def _classify_error(exc: Exception) -> Dict[str, str]:
-    # Keep conservative and safe.
     msg = str(exc)
     lower = msg.lower()
     if "401" in lower or "unauthorized" in lower or "api key" in lower:
@@ -115,7 +161,7 @@ def _classify_error(exc: Exception) -> Dict[str, str]:
             "retryable": "NO",
             "suggested_action": "Check OPENAI_API_KEY and provider account access.",
         }
-    if "429" in lower or "rate" in lower and "limit" in lower:
+    if "429" in lower or ("rate" in lower and "limit" in lower):
         return {
             "error_class": "RATE_LIMIT",
             "retryable": "YES",
@@ -134,7 +180,30 @@ def _classify_error(exc: Exception) -> Dict[str, str]:
     }
 
 
-def _call_openai(model: str, task: str) -> str:
+project_context_path = Path(__file__).with_name("PROJECT_CONTEXT.md")
+PROJECT_CONTEXT = (
+    project_context_path.read_text(encoding="utf-8")
+    if project_context_path.exists()
+    else ""
+)
+
+BASE_INSTRUCTIONS = """You are the OpenAI engineering peer connected to a Notion AI agent through a private MCP bridge.
+
+Your job is to improve accuracy and usefulness, not merely agree with the other AI.
+
+Rules:
+- Treat supplied project context and evidence as primary inputs.
+- Distinguish verified facts, strong inferences, and hypotheses.
+- Identify contradictions and missing evidence.
+- When reviewing another AI's answer, preserve correct parts and explicitly correct unsupported or incorrect parts.
+- Give actionable technical answers.
+- Never claim to have accessed the user's ChatGPT conversation, account memory, local machine, Notion workspace, or files unless that content is explicitly supplied in the current tool call.
+- This bridge reaches an OpenAI API model, not a live ChatGPT chat session.
+"""
+
+
+
+def _call_openai(client: OpenAI, model: str, task: str) -> str:
     last_exc: Optional[Exception] = None
     for attempt in range(0, max(1, OPENAI_MAX_RETRIES + 1)):
         try:
@@ -147,307 +216,193 @@ def _call_openai(model: str, task: str) -> str:
             return response.output_text
         except Exception as exc:
             last_exc = exc
-            # bounded retry with small backoff
             if attempt >= OPENAI_MAX_RETRIES:
                 break
             time.sleep(0.75 * (attempt + 1))
     raise last_exc or RuntimeError("Unknown OpenAI error")
 
 
-# ---------------- Existing generic tools (kept) ----------------
 
-@mcp.tool
-def ask_openai(question: str, context: str = "") -> str:
-    prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nQUESTION:\n{question}\n\nProduce a self-contained answer. Clearly mark uncertainty where appropriate."""
-    return _call_openai(OPENAI_MODEL, prompt)
+def create_mcp_app() -> FastMCP:
+    """Create the authenticated MCP server.
 
-
-@mcp.tool
-def review_notion_answer(question: str, notion_answer: str, context: str = "") -> str:
-    prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nORIGINAL USER QUESTION:\n{question}\n\nNOTION AI DRAFT:\n{notion_answer}\n\nAct as an independent senior reviewer.\n1. Check factual and technical correctness.\n2. Find unsupported assumptions, omissions, contradictions, and unsafe shortcuts.\n3. Preserve correct content.\n4. Produce a corrected final answer Notion AI can use.\n"""
-    return _call_openai(OPENAI_MODEL, prompt)
-
-
-@mcp.tool
-def collaborate(task: str, notion_analysis: str = "", context: str = "") -> str:
-    prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nTASK:\n{task}\n\nNOTION AI CURRENT ANALYSIS:\n{notion_analysis}\n\nWork as the second engineering agent.\nChallenge mistakes instead of automatically agreeing.\nReturn:\n- what appears correct,\n- what needs correction or verification,\n- the strongest improved solution,\n- any concrete next checks or tests.\n"""
-    return _call_openai(OPENAI_MODEL, prompt)
-
-
-@mcp.tool
-def bridge_status() -> str:
-    return f"JAYTEC Notion/OpenAI bridge is online. OpenAI model: {OPENAI_MODEL}"
-
-
-# ---------------- Codex engineering bridge surface ----------------
-
-@mcp.tool
-def codex_health_check() -> str:
-    """Basic reachability + configuration sanity check for the Codex bridge surface."""
-    # We don't call upstream here (cheap, no spend). Just validate config presence.
-    configured = "YES" if CODEX_MODEL else "NO"
-    return "\n".join(
-        [
-            f"BRIDGE_ID: {BRIDGE_ID_CODEX}",
-            "HEALTH: OK",
-            f"CODEX_MODEL_CONFIGURED: {configured}",
-        ]
-    )
-
-
-@mcp.tool
-def codex_get_status() -> str:
-    """Return bridge status including current configured model IDs (no secrets)."""
-    return "\n".join(
-        [
-            f"BRIDGE_ID: {BRIDGE_ID_CODEX}",
-            f"DEFAULT_MODEL: {OPENAI_MODEL}",
-            f"CODEX_MODEL: {CODEX_MODEL or ''}",
-            f"TIMEOUT_S: {OPENAI_TIMEOUT_S}",
-            f"MAX_RETRIES: {OPENAI_MAX_RETRIES}",
-            f"TIMESTAMP: {_now_iso()}",
-        ]
-    )
-
-
-@mcp.tool
-def codex_capability_check() -> str:
-    """Minimal upstream check that CODEX_MODEL is callable.
-
-    This is an actual upstream call and may consume tokens.
+    Separated from module import so CI can compile/import server.py without secrets.
     """
-    if not CODEX_MODEL:
-        return BridgeError(
-            bridge_id=BRIDGE_ID_CODEX,
-            task_id=None,
-            subtask_id=None,
-            error_class="INVALID_REQUEST",
-            http_or_provider_status="",
-            retryable="NO",
-            message="CODEX_MODEL is not set.",
-            safe_technical_detail="Set CODEX_MODEL in the hosting environment.",
-            suggested_action="Configure CODEX_MODEL to the exact GPT-5.3 Codex model identifier you intend to use.",
-            timestamp=_now_iso(),
-            raw_reference="CONFIG_MISSING",
-        ).to_text_block()
+    _require_startup_prereqs()
 
-    prompt = "Respond with: CAPABILITY_OK"  # harmless
-    try:
-        out = _call_openai(CODEX_MODEL, prompt)
-        # Fail-closed: require the marker.
-        if "CAPABILITY_OK" not in out:
-            return BridgeError(
-                bridge_id=BRIDGE_ID_CODEX,
-                task_id=None,
-                subtask_id=None,
-                error_class="CONTRACT_VIOLATION",
-                http_or_provider_status="",
-                retryable="UNKNOWN",
-                message="Capability check response did not include expected marker.",
-                safe_technical_detail="Upstream responded but did not follow the expected format.",
-                suggested_action="Retry; if persistent, adjust model/instructions or use a stricter system prompt.",
-                timestamp=_now_iso(),
-                raw_reference="CAPABILITY_MARKER_MISSING",
-            ).to_text_block()
-        return "\n".join(
-            [
-                f"BRIDGE_ID: {BRIDGE_ID_CODEX}",
-                "CAPABILITY: PASS",
-                f"MODEL: {CODEX_MODEL}",
-                f"TIMESTAMP: {_now_iso()}",
-            ]
+    auth = StaticTokenVerifier(
+        tokens={
+            MCP_AUTH_TOKEN: {
+                "sub": "notion-agent",
+                "client_id": "jaytec-notion-openai-bridge",
+            }
+        }
+    )
+    mcp = FastMCP("JAYTEC OpenAI Engineering Bridge", auth=auth)
+
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    openrouter_client = (
+        OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+        if OPENROUTER_API_KEY
+        else None
+    )
+
+    # Idempotency registry selection
+    if DATABASE_URL:
+        from idempotency_postgres import PostgresExecutionRegistry
+
+        registry: ExecutionRegistry = PostgresExecutionRegistry(
+            database_url=DATABASE_URL,
+            ttl_seconds=ExecutionRegistry().ttl_seconds,
         )
-    except Exception as exc:
-        cls = _classify_error(exc)
-        return BridgeError(
-            bridge_id=BRIDGE_ID_CODEX,
-            task_id=None,
-            subtask_id=None,
-            error_class=cls["error_class"],
-            http_or_provider_status="",
-            retryable=cls["retryable"],
-            message="Upstream call failed during capability check.",
-            safe_technical_detail=str(exc)[:300],
-            suggested_action=cls["suggested_action"],
-            timestamp=_now_iso(),
-            raw_reference="CAPABILITY_UPSTREAM_ERROR",
-        ).to_text_block()
+        registry.ensure_schema()
+        idempotency_store = "postgres"
+    else:
+        registry = ExecutionRegistry()
+        idempotency_store = "process_memory"
+
+    production_ready = compute_production_ready(
+        runtime_mode=RUNTIME_MODE,
+        idempotency_store=idempotency_store,
+        codex_model=CODEX_MODEL,
+        gemini_model=GEMINI_MODEL,
+        mcp_auth_token_present=bool(MCP_AUTH_TOKEN),
+        openai_api_key_present=bool(OPENAI_API_KEY),
+        openrouter_api_key_present=bool(OPENROUTER_API_KEY),
+    )
+
+    codex_circuit = CircuitBreaker(
+        failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+        reset_after_seconds=CIRCUIT_RESET_SECONDS,
+    )
+    gemini_circuit = CircuitBreaker(
+        failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+        reset_after_seconds=CIRCUIT_RESET_SECONDS,
+    )
+
+    codex_dispatch = build_codex_dispatch(
+        openai_client=openai_client,
+        codex_model=CODEX_MODEL,
+        circuit=codex_circuit,
+    )
+
+    if openrouter_client is not None:
+        gemini_dispatch = build_gemini_dispatch(
+            openrouter_client=openrouter_client,
+            gemini_model=GEMINI_MODEL,
+            gemini_timeout_s=GEMINI_TIMEOUT_S,
+            circuit=gemini_circuit,
+        )
+    else:
+        gemini_dispatch = gemini_circuit.guard(
+            lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
+        )
+
+    # ---------------- Legacy tools (preserved) ----------------
+
+    @mcp.tool
+    def ask_openai(question: str, context: str = "") -> str:
+        prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nQUESTION:\n{question}\n\nProduce a self-contained answer. Clearly mark uncertainty where appropriate."""
+        return _call_openai(openai_client, OPENAI_MODEL, prompt)
+
+    @mcp.tool
+    def review_notion_answer(question: str, notion_answer: str, context: str = "") -> str:
+        prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nORIGINAL USER QUESTION:\n{question}\n\nNOTION AI DRAFT:\n{notion_answer}\n\nAct as an independent senior reviewer.\n1. Check factual and technical correctness.\n2. Find unsupported assumptions, omissions, contradictions, and unsafe shortcuts.\n3. Preserve correct content.\n4. Produce a corrected final answer Notion AI can use.\n"""
+        return _call_openai(openai_client, OPENAI_MODEL, prompt)
+
+    @mcp.tool
+    def collaborate(task: str, notion_analysis: str = "", context: str = "") -> str:
+        prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nTASK:\n{task}\n\nNOTION AI CURRENT ANALYSIS:\n{notion_analysis}\n\nWork as the second engineering agent.\nChallenge mistakes instead of automatically agreeing.\nReturn:\n- what appears correct,\n- what needs correction or verification,\n- the strongest improved solution,\n- any concrete next checks or tests.\n"""
+        return _call_openai(openai_client, OPENAI_MODEL, prompt)
+
+    @mcp.tool
+    def bridge_status() -> str:
+        return f"JAYTEC Notion/OpenAI bridge is online. OpenAI model: {OPENAI_MODEL}"
+
+    # ---------------- Unified orchestration surface ----------------
+
+    @mcp.tool
+    def orchestration_status() -> str:
+        return json.dumps(
+            {
+                "status": "PRODUCTION" if RUNTIME_MODE == "production" else "CANDIDATE",
+                "operation": "execute_task_packet",
+                "codex_model": CODEX_MODEL,
+                "gemini_model": GEMINI_MODEL,
+                "codex_circuit": codex_circuit.snapshot(),
+                "gemini_circuit": gemini_circuit.snapshot(),
+                "idempotency_store": idempotency_store,
+                "runtime_mode": RUNTIME_MODE,
+                "production_ready": production_ready,
+            },
+            sort_keys=True,
+        )
+
+    @mcp.tool
+    def execute_task_packet(packet_json: str) -> str:
+        packet, parse_errors = parse_packet_json(packet_json)
+        if packet is None:
+            return json.dumps(
+                {
+                    "execution_id": "invalid",
+                    "task_id": "",
+                    "subtask_id": "",
+                    "overall_status": "INVALID_PACKET",
+                    "unresolved_items": list(parse_errors),
+                    "return_schema_version": "1.0",
+                },
+                sort_keys=True,
+            )
+
+        def _lookup(key: str, digest: str, now=None):
+            try:
+                return registry.lookup(key, digest, now=now)
+            except ValueError as exc:
+                if str(exc) == "CONFLICTING_DUPLICATE":
+                    raise PacketValidationError("CONFLICTING_DUPLICATE")
+                raise
+
+        def _store(key: str, digest: str, result, now=None):
+            try:
+                return registry.store(key, digest, result, now=now)
+            except ValueError as exc:
+                if str(exc) == "CONFLICTING_DUPLICATE":
+                    raise PacketValidationError("CONFLICTING_DUPLICATE")
+                raise
+
+        if idempotency_store == "postgres":
+            class _Wrapper(ExecutionRegistry):
+                def lookup(self, key, packet_hash, *, now=None):
+                    return _lookup(key, packet_hash, now=now)
+
+                def store(self, key, packet_hash, result, *, now=None):
+                    return _store(key, packet_hash, result, now=now)
+
+            registry_adapter = _Wrapper()
+        else:
+            registry_adapter = registry
+
+        result = execute_task_packet_core(
+            packet,
+            {"codex": codex_dispatch, "gemini": gemini_dispatch},
+            registry_adapter,
+        )
+        return json.dumps(result, ensure_ascii=False, sort_keys=True)
+
+    return mcp
 
 
-def _extract_required(task_package: str, key: str) -> str:
-    # Simple line-based parser: KEY: value
-    # We preserve the original package and fail closed if TASK_ID/SUBTASK_ID missing.
-    for line in task_package.splitlines():
-        if line.strip().startswith(f"{key}:"):
-            return line.split(":", 1)[1].strip()
-    return ""
 
-
-@mcp.tool
-def codex_send_task(task_package: str) -> str:
-    """Send a structured engineering task package to the configured Codex model.
-
-    Expects TASK_ID and SUBTASK_ID in the task_package.
-    Returns a normalized response contract block.
-    """
-    task_id = _extract_required(task_package, "TASK_ID")
-    subtask_id = _extract_required(task_package, "SUBTASK_ID")
-
-    if not task_id or not subtask_id:
-        return BridgeError(
-            bridge_id=BRIDGE_ID_CODEX,
-            task_id=task_id or None,
-            subtask_id=subtask_id or None,
-            error_class="INVALID_REQUEST",
-            http_or_provider_status="",
-            retryable="NO",
-            message="TASK_ID and SUBTASK_ID are required.",
-            safe_technical_detail="Missing TASK_ID or SUBTASK_ID fields in task_package.",
-            suggested_action="Include TASK_ID: and SUBTASK_ID: lines in the request.",
-            timestamp=_now_iso(),
-            raw_reference="MISSING_IDS",
-        ).to_text_block()
-
-    if not CODEX_MODEL:
-        return BridgeError(
-            bridge_id=BRIDGE_ID_CODEX,
-            task_id=task_id,
-            subtask_id=subtask_id,
-            error_class="MODEL_UNAVAILABLE",
-            http_or_provider_status="",
-            retryable="NO",
-            message="CODEX_MODEL is not set; cannot route to Codex.",
-            safe_technical_detail="Set CODEX_MODEL env var on the bridge host.",
-            suggested_action="Configure CODEX_MODEL to the intended GPT-5.3 Codex model ID and redeploy.",
-            timestamp=_now_iso(),
-            raw_reference="CODEX_MODEL_UNSET",
-        ).to_text_block()
-
-    # Prompt: preserve structured fields and force explicit contract output.
-    prompt = f"""You are ROLE: GPT-5.3 CODEX ENGINEERING.
-
-You MUST:
-- Preserve TASK_ID and SUBTASK_ID exactly.
-- If you need external research, return one or more RESEARCH_REQUEST blocks (as specified below).
-- Return a single RESPONSE_CONTRACT block.
-
-TASK_PACKAGE:
-{task_package}
-
-RESPONSE_CONTRACT FORMAT (plain text, include all keys; leave blank if not applicable):
-TASK_ID:
-SUBTASK_ID:
-ROLE: GPT-5.3 CODEX ENGINEERING
-STATUS:
-IMPLEMENTATION_OBJECTIVE:
-PROJECT_STATE_BEFORE:
-REPOSITORY_OR_TARGET:
-FILES_INSPECTED:
-FILES_CHANGED:
-FILES_CREATED:
-FILES_REMOVED:
-DEPENDENCIES_CHANGED:
-IMPLEMENTATION_SUMMARY:
-ARCHITECTURAL_CHANGES:
-KEY_CODE_CHANGES:
-GEMINI_RESEARCH_USED:
-RESEARCH_ASSUMPTIONS:
-TESTS_PERFORMED:
-TEST_RESULTS:
-VALIDATION_RESULTS:
-REGRESSIONS_CHECKED:
-KNOWN_ISSUES:
-OPEN_QUESTIONS:
-BLOCKERS:
-RESEARCH_REQUESTS:
-FURTHER_WORK_REQUIRED:
-PROJECT_STATE_AFTER:
-RECOMMENDED_NEXT_ACTION:
-HANDOFF_TO: NOTION
-RAW_REFERENCE:
-
-RESEARCH_REQUEST FORMAT (if needed, include after the RESPONSE_CONTRACT):
-RESEARCH_REQUEST:
-TASK_ID:
-SUBTASK_ID:
-QUESTION:
-WHY_REQUIRED:
-CURRENT_IMPLEMENTATION_BLOCKER:
-WHAT_HAS_ALREADY_BEEN_CHECKED:
-RELEVANT_FILES_OR_MODULES:
-REQUIRED_EVIDENCE:
-EXPECTED_OUTPUT:
-URGENCY:
-CAN_ENGINEERING_CONTINUE_IN_PARALLEL:
-"""
-
-    try:
-        out = _call_openai(CODEX_MODEL, prompt)
-
-        # Fail-closed: require the IDs to be present in output.
-        if task_id not in out or subtask_id not in out:
-            return BridgeError(
-                bridge_id=BRIDGE_ID_CODEX,
-                task_id=task_id,
-                subtask_id=subtask_id,
-                error_class="CONTRACT_VIOLATION",
-                http_or_provider_status="",
-                retryable="UNKNOWN",
-                message="Upstream response did not preserve TASK_ID/SUBTASK_ID.",
-                safe_technical_detail="Model output missing required identifiers.",
-                suggested_action="Retry; if persistent, tighten prompt/instructions or use a more deterministic model route.",
-                timestamp=_now_iso(),
-                raw_reference="ID_NOT_PRESERVED",
-            ).to_text_block()
-
-        return out
-
-    except Exception as exc:
-        cls = _classify_error(exc)
-        return BridgeError(
-            bridge_id=BRIDGE_ID_CODEX,
-            task_id=task_id,
-            subtask_id=subtask_id,
-            error_class=cls["error_class"],
-            http_or_provider_status="",
-            retryable=cls["retryable"],
-            message="Upstream call failed during codex_send_task.",
-            safe_technical_detail=str(exc)[:300],
-            suggested_action=cls["suggested_action"],
-            timestamp=_now_iso(),
-            raw_reference="CODEX_UPSTREAM_ERROR",
-        ).to_text_block()
-
-
-@mcp.tool
-def codex_error_test(task_id: str = "", subtask_id: str = "") -> str:
-    """Intentionally trigger a controlled INVALID_REQUEST error contract.
-
-    This does NOT call upstream.
-    """
-    return BridgeError(
-        bridge_id=BRIDGE_ID_CODEX,
-        task_id=task_id or None,
-        subtask_id=subtask_id or None,
-        error_class="INVALID_REQUEST",
-        http_or_provider_status="",
-        retryable="NO",
-        message="Controlled error test (no upstream call).",
-        safe_technical_detail="This is a synthetic error used to verify Notion-side parsing.",
-        suggested_action="None (expected during test).",
-        timestamp=_now_iso(),
-        raw_reference="SYNTHETIC_ERROR_TEST",
-    ).to_text_block()
-
-
-if __name__ == "__main__":
+def main() -> None:
+    mcp = create_mcp_app()
     mcp.run(
         transport="http",
         host="0.0.0.0",
         port=PORT,
         stateless_http=True,
-        # Public hosted MCP endpoint behind Render/Notion: keep bearer auth on,
-        # but do not allow an environment-level FastMCP origin guard to reject
-        # Notion's browser/service Origin before token verification runs.
         host_origin_protection=False,
     )
+
+
+if __name__ == "__main__":
+    main()
