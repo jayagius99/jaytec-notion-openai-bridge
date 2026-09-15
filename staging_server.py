@@ -68,7 +68,12 @@ Preserve TASK_ID and SUBTASK_ID exactly. Investigate the supplied objective,
 separate verified facts/evidence from inference, report confidence and unresolved
 questions, and hand findings back to Notion. Do not perform engineering writes.
 Never expose credentials. Return ONLY one JSON object using the requested result
-contract. model must be exactly google/gemini-3.1-pro-preview."""
+contract. model must be exactly google/gemini-3.1-pro-preview.
+The status field is mandatory and MUST be exactly one of: SUCCESS,
+PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED,
+INVALID_PACKET, TIMEOUT, RATE_LIMITED. Do not invent synonyms such as completed,
+ok, error, failed, or done. For a harmless request that completed normally with
+no unresolved blocker, use status SUCCESS."""
 
 
 def _json_object(text: str) -> Dict[str, Any]:
@@ -108,7 +113,8 @@ def _gemini_dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         + "\nTASK_PACKET_JSON:\n" + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         + "\nRESULT_CONTRACT: status, model, findings, evidence, confidence, conclusion, "
           "unresolved_items, files_or_artifacts, architecture_changes_required, "
-          "knowledge_writeback_proposal, side_effects_attempted, requested_operations."
+          "knowledge_writeback_proposal, side_effects_attempted, requested_operations. "
+          "status MUST use the exact allowed enum defined above."
     )
     response = OPENROUTER_CLIENT.chat.completions.create(
         model=GEMINI_MODEL,
