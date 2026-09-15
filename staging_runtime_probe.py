@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable
 
-from orchestration import ExecutionRegistry, execute_task_packet_core, redact
+from orchestration import SAFE_OPERATIONS, ExecutionRegistry, execute_task_packet_core, redact
 from staging_server import (
     CODEX_DISPATCH,
     CODEX_MODEL,
@@ -117,6 +117,13 @@ def _summarize(label: str, packet: Dict[str, Any], result: Dict[str, Any]) -> Di
     return redact(summary)
 
 
+def _operations_safe(meta: Dict[str, Any]) -> bool:
+    requested = meta.get("requested_operations", [])
+    if not isinstance(requested, list):
+        return False
+    return all(op in SAFE_OPERATIONS for op in requested)
+
+
 def _phase_ok(summary: Dict[str, Any], expected_specialists: Iterable[str]) -> bool:
     if summary.get("overall_status") in BAD_TERMINAL_STATUSES:
         return False
@@ -134,13 +141,13 @@ def _phase_ok(summary: Dict[str, Any], expected_specialists: Iterable[str]) -> b
         meta = summary.get("codex_result") or {}
         if meta.get("model") != CODEX_MODEL or meta.get("status") in BAD_TERMINAL_STATUSES:
             return False
-        if meta.get("requested_operations") or meta.get("side_effects_attempted"):
+        if meta.get("status") is None or not _operations_safe(meta) or meta.get("side_effects_attempted"):
             return False
     if "gemini" in expected:
         meta = summary.get("gemini_result") or {}
         if meta.get("model") != GEMINI_MODEL or meta.get("status") in BAD_TERMINAL_STATUSES:
             return False
-        if meta.get("requested_operations") or meta.get("side_effects_attempted"):
+        if meta.get("status") is None or not _operations_safe(meta) or meta.get("side_effects_attempted"):
             return False
     return True
 
