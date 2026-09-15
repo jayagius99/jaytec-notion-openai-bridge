@@ -11,7 +11,11 @@ services:
     envVars:
       - key: MCP_AUTH_TOKEN
         generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
       - key: CODEX_MODEL
         value: gpt-5.3-codex
+      - key: OPENROUTER_API_KEY
+        sync: false
       - key: GEMINI_MODEL
         value: google/gemini-3.1-pro-preview
