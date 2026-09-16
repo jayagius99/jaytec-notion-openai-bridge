@@ -54,6 +54,8 @@ RUNTIME_MODE = os.environ.get("RUNTIME_MODE", "production").strip().lower()
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 BRIDGE_ID_CODEX = "BRIDGE_CODEX_ENGINEERING"
+LEGACY_ORCHESTRATION_STATUS_TASK = "JAYTEC_ORCHESTRATION_STATUS"
+LEGACY_EXECUTE_TASK_PACKET_PREFIX = "JAYTEC_EXECUTE_TASK_PACKET_JSON:"
 
 
 def _require_startup_prereqs() -> None:
@@ -180,6 +182,115 @@ def _classify_error(exc: Exception) -> Dict[str, str]:
     }
 
 
+
+def _orchestration_status_json(
+    *,
+    runtime_mode: str,
+    codex_model: str,
+    gemini_model: str,
+    codex_circuit: Any,
+    gemini_circuit: Any,
+    idempotency_store: str,
+    production_ready: bool,
+) -> str:
+    return json.dumps(
+        {
+            "status": "PRODUCTION" if runtime_mode == "production" else "CANDIDATE",
+            "operation": "execute_task_packet",
+            "codex_model": codex_model,
+            "gemini_model": gemini_model,
+            "codex_circuit": codex_circuit,
+            "gemini_circuit": gemini_circuit,
+            "idempotency_store": idempotency_store,
+            "runtime_mode": runtime_mode,
+            "production_ready": production_ready,
+        },
+        sort_keys=True,
+    )
+
+
+
+def _execute_task_packet_json(
+    packet_json: str,
+    *,
+    registry: ExecutionRegistry,
+    idempotency_store: str,
+    codex_dispatch: Any,
+    gemini_dispatch: Any,
+) -> str:
+    packet, parse_errors = parse_packet_json(packet_json)
+    if packet is None:
+        return json.dumps(
+            {
+                "execution_id": "invalid",
+                "task_id": "",
+                "subtask_id": "",
+                "overall_status": "INVALID_PACKET",
+                "unresolved_items": list(parse_errors),
+                "return_schema_version": "1.0",
+            },
+            sort_keys=True,
+        )
+
+    def _lookup(key: str, digest: str, now=None):
+        try:
+            return registry.lookup(key, digest, now=now)
+        except ValueError as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise PacketValidationError("CONFLICTING_DUPLICATE")
+            raise
+
+    def _store(key: str, digest: str, result, now=None):
+        try:
+            return registry.store(key, digest, result, now=now)
+        except ValueError as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise PacketValidationError("CONFLICTING_DUPLICATE")
+            raise
+
+    if idempotency_store == "postgres":
+        class _Wrapper(ExecutionRegistry):
+            def lookup(self, key, packet_hash, *, now=None):
+                return _lookup(key, packet_hash, now=now)
+
+            def store(self, key, packet_hash, result, *, now=None):
+                return _store(key, packet_hash, result, now=now)
+
+        registry_adapter = _Wrapper()
+    else:
+        registry_adapter = registry
+
+    result = execute_task_packet_core(
+        packet,
+        {"codex": codex_dispatch, "gemini": gemini_dispatch},
+        registry_adapter,
+    )
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
+
+
+
+def _legacy_collaborate_command(
+    task: str,
+    status_fn: Any,
+    packet_fn: Any,
+) -> Optional[str]:
+    if task == LEGACY_ORCHESTRATION_STATUS_TASK:
+        return status_fn()
+    if task.startswith(LEGACY_EXECUTE_TASK_PACKET_PREFIX):
+        return packet_fn(task[len(LEGACY_EXECUTE_TASK_PACKET_PREFIX) :])
+    return None
+
+
+
+def _build_collaborate_prompt(
+    project_context: str,
+    context: str,
+    task: str,
+    notion_analysis: str,
+) -> str:
+    return f"""PROJECT CONTEXT:\n{project_context}\n\nCONTEXT FROM NOTION:\n{context}\n\nTASK:\n{task}\n\nNOTION AI CURRENT ANALYSIS:\n{notion_analysis}\n\nWork as the second engineering agent.\nChallenge mistakes instead of automatically agreeing.\nReturn:\n- what appears correct,\n- what needs correction or verification,\n- the strongest improved solution,\n- any concrete next checks or tests.\n"""
+
+
 project_context_path = Path(__file__).with_name("PROJECT_CONTEXT.md")
 PROJECT_CONTEXT = (
     project_context_path.read_text(encoding="utf-8")
@@ -298,6 +409,26 @@ def create_mcp_app() -> FastMCP:
             lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
         )
 
+    def _status_json() -> str:
+        return _orchestration_status_json(
+            runtime_mode=RUNTIME_MODE,
+            codex_model=CODEX_MODEL,
+            gemini_model=GEMINI_MODEL,
+            codex_circuit=codex_circuit.snapshot(),
+            gemini_circuit=gemini_circuit.snapshot(),
+            idempotency_store=idempotency_store,
+            production_ready=production_ready,
+        )
+
+    def _packet_json(packet_json: str) -> str:
+        return _execute_task_packet_json(
+            packet_json,
+            registry=registry,
+            idempotency_store=idempotency_store,
+            codex_dispatch=codex_dispatch,
+            gemini_dispatch=gemini_dispatch,
+        )
+
     # ---------------- Legacy tools (preserved) ----------------
 
     @mcp.tool
@@ -312,7 +443,10 @@ def create_mcp_app() -> FastMCP:
 
     @mcp.tool
     def collaborate(task: str, notion_analysis: str = "", context: str = "") -> str:
-        prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nTASK:\n{task}\n\nNOTION AI CURRENT ANALYSIS:\n{notion_analysis}\n\nWork as the second engineering agent.\nChallenge mistakes instead of automatically agreeing.\nReturn:\n- what appears correct,\n- what needs correction or verification,\n- the strongest improved solution,\n- any concrete next checks or tests.\n"""
+        legacy_result = _legacy_collaborate_command(task, _status_json, _packet_json)
+        if legacy_result is not None:
+            return legacy_result
+        prompt = _build_collaborate_prompt(PROJECT_CONTEXT, context, task, notion_analysis)
         return _call_openai(openai_client, OPENAI_MODEL, prompt)
 
     @mcp.tool
@@ -323,71 +457,11 @@ def create_mcp_app() -> FastMCP:
 
     @mcp.tool
     def orchestration_status() -> str:
-        return json.dumps(
-            {
-                "status": "PRODUCTION" if RUNTIME_MODE == "production" else "CANDIDATE",
-                "operation": "execute_task_packet",
-                "codex_model": CODEX_MODEL,
-                "gemini_model": GEMINI_MODEL,
-                "codex_circuit": codex_circuit.snapshot(),
-                "gemini_circuit": gemini_circuit.snapshot(),
-                "idempotency_store": idempotency_store,
-                "runtime_mode": RUNTIME_MODE,
-                "production_ready": production_ready,
-            },
-            sort_keys=True,
-        )
+        return _status_json()
 
     @mcp.tool
     def execute_task_packet(packet_json: str) -> str:
-        packet, parse_errors = parse_packet_json(packet_json)
-        if packet is None:
-            return json.dumps(
-                {
-                    "execution_id": "invalid",
-                    "task_id": "",
-                    "subtask_id": "",
-                    "overall_status": "INVALID_PACKET",
-                    "unresolved_items": list(parse_errors),
-                    "return_schema_version": "1.0",
-                },
-                sort_keys=True,
-            )
-
-        def _lookup(key: str, digest: str, now=None):
-            try:
-                return registry.lookup(key, digest, now=now)
-            except ValueError as exc:
-                if str(exc) == "CONFLICTING_DUPLICATE":
-                    raise PacketValidationError("CONFLICTING_DUPLICATE")
-                raise
-
-        def _store(key: str, digest: str, result, now=None):
-            try:
-                return registry.store(key, digest, result, now=now)
-            except ValueError as exc:
-                if str(exc) == "CONFLICTING_DUPLICATE":
-                    raise PacketValidationError("CONFLICTING_DUPLICATE")
-                raise
-
-        if idempotency_store == "postgres":
-            class _Wrapper(ExecutionRegistry):
-                def lookup(self, key, packet_hash, *, now=None):
-                    return _lookup(key, packet_hash, now=now)
-
-                def store(self, key, packet_hash, result, *, now=None):
-                    return _store(key, packet_hash, result, now=now)
-
-            registry_adapter = _Wrapper()
-        else:
-            registry_adapter = registry
-
-        result = execute_task_packet_core(
-            packet,
-            {"codex": codex_dispatch, "gemini": gemini_dispatch},
-            registry_adapter,
-        )
-        return json.dumps(result, ensure_ascii=False, sort_keys=True)
+        return _packet_json(packet_json)
 
     return mcp
 
