@@ -55,6 +55,7 @@ class TestDurableJobRuntimeInvariants(unittest.TestCase):
             "jaytec_operations",
             "jaytec_job_events",
             "jaytec_guardian_findings",
+            "jaytec_task_packets",
         ):
             self.assertIn(f"CREATE TABLE IF NOT EXISTS {table}", schema)
         self.assertNotIn("DROP TABLE", schema.upper())
@@ -69,6 +70,18 @@ class TestDurableJobRuntimeInvariants(unittest.TestCase):
         self.assertIn("ownership_epoch BIGINT NOT NULL DEFAULT 1", schema)
         self.assertIn("fence_token BIGINT NOT NULL DEFAULT 1", schema)
         self.assertIn("version BIGINT NOT NULL DEFAULT 0", schema)
+
+    def test_schema_separates_retry_readiness_from_lease(self):
+        schema = Path(__file__).with_name("job_runtime_schema.sql").read_text(encoding="utf-8")
+        self.assertIn("ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ", schema)
+        self.assertIn("jaytec_jobs_ready_idx", schema)
+
+    def test_task_packet_queue_is_pollable_and_idempotent(self):
+        schema = Path(__file__).with_name("job_runtime_schema.sql").read_text(encoding="utf-8")
+        self.assertIn("packet_hash TEXT NOT NULL", schema)
+        self.assertIn("idempotency_key TEXT NOT NULL UNIQUE", schema)
+        self.assertIn("result JSONB", schema)
+        self.assertIn("completed_at TIMESTAMPTZ", schema)
 
 
 if __name__ == "__main__":
