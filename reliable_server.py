@@ -10,13 +10,23 @@ from typing import Any, Mapping, Optional
 from openai import OpenAI
 
 import server as legacy_server
-from circuit_breaker import CircuitBreaker
+from circuit_breaker import CircuitBreaker, CircuitOpenError
 from durable_tasks_runtime import ReliableDurableTaskQueue, ReliableDurableTaskWorker
 from guardian_runtime import ReliabilityGuardian
 from idempotency_postgres import PostgresExecutionRegistry
-from orchestration import ExecutionRegistry, PacketValidationError
+from orchestration import (
+    ExecutionRegistry,
+    PacketValidationError,
+    ProviderUnavailableError,
+    RateLimitError,
+)
 from reliability_registry import TransientAwareRegistry
-from specialist_adapters import build_codex_dispatch, build_gemini_dispatch
+from specialist_adapters import (
+    EXPECTED_CODEX_MODEL,
+    EXPECTED_GEMINI_MODEL,
+    build_codex_dispatch,
+    build_gemini_dispatch,
+)
 
 
 RUNTIME_ID = "JAYTEC_RELIABILITY_RUNTIME_V1"
@@ -42,6 +52,58 @@ _ORIGINAL_BUILD_CODEX = legacy_server.build_codex_dispatch
 _ORIGINAL_BUILD_GEMINI = legacy_server.build_gemini_dispatch
 
 
+def _retryable_single_attempt_dispatch(underlying, *, model: str):
+    """Convert one provider attempt into a JAYTEC result instead of inner retries.
+
+    The orchestration core retries only exceptions. Returning a valid transient
+    worker result here makes both legacy compatibility calls and durable jobs
+    single-attempt at this layer. Durable retry/backoff is then owned only by
+    the persistent queue, preventing multiplicative retry budgets.
+    """
+
+    def single_attempt(packet):
+        try:
+            return underlying(packet)
+        except TimeoutError:
+            return {
+                "status": "TIMEOUT",
+                "model": model,
+                "findings": [],
+                "evidence": [],
+                "unresolved_items": ["worker_timeout"],
+            }
+        except RateLimitError as exc:
+            retry_after = getattr(exc, "retry_after", None)
+            suffix = f":retry_after={retry_after}" if retry_after is not None else ""
+            return {
+                "status": "RATE_LIMITED",
+                "model": model,
+                "findings": [],
+                "evidence": [],
+                "unresolved_items": [f"retryable_rate_limit{suffix}"],
+            }
+        except ProviderUnavailableError as exc:
+            retry_after = getattr(exc, "retry_after", None)
+            suffix = f":retry_after={retry_after}" if retry_after is not None else ""
+            return {
+                "status": "RATE_LIMITED",
+                "model": model,
+                "findings": [],
+                "evidence": [],
+                "unresolved_items": [f"retryable_provider_unavailable{suffix}"],
+            }
+        except CircuitOpenError:
+            return {
+                "status": "RATE_LIMITED",
+                "model": model,
+                "findings": [],
+                "evidence": [],
+                "unresolved_items": ["retryable_provider_circuit_open"],
+            }
+
+    return single_attempt
+
+
 def _transient_safe_execute_task_packet_json(
     packet_json: str,
     *,
@@ -60,12 +122,13 @@ def _transient_safe_execute_task_packet_json(
 
 
 def _bounded_legacy_codex_dispatch(*, openai_client, codex_model, circuit):
-    return _ORIGINAL_BUILD_CODEX(
+    underlying = _ORIGINAL_BUILD_CODEX(
         openai_client=openai_client,
         codex_model=codex_model,
         circuit=circuit,
         codex_timeout_s=max(1.0, LEGACY_SYNC_PROVIDER_TIMEOUT_S),
     )
+    return _retryable_single_attempt_dispatch(underlying, model=EXPECTED_CODEX_MODEL)
 
 
 def _bounded_legacy_gemini_dispatch(*, openrouter_client, gemini_model, gemini_timeout_s, circuit):
@@ -76,14 +139,14 @@ def _bounded_legacy_gemini_dispatch(*, openrouter_client, gemini_model, gemini_t
         circuit=circuit,
     )
 
-    def single_attempt(packet):
+    def no_format_retry(packet):
         # Compatibility calls must stay below the MCP dependency timeout. Long
         # or format-retry work belongs on the durable submit/poll path.
         bounded = copy.deepcopy(dict(packet))
         bounded["max_retries"] = 0
         return underlying(bounded)
 
-    return single_attempt
+    return _retryable_single_attempt_dispatch(no_format_retry, model=EXPECTED_GEMINI_MODEL)
 
 
 # Compatibility path remains available, but it is tightly bounded and transient
@@ -91,6 +154,61 @@ def _bounded_legacy_gemini_dispatch(*, openrouter_client, gemini_model, gemini_t
 legacy_server._execute_task_packet_json = _transient_safe_execute_task_packet_json
 legacy_server.build_codex_dispatch = _bounded_legacy_codex_dispatch
 legacy_server.build_gemini_dispatch = _bounded_legacy_gemini_dispatch
+
+
+class ReliableDurableWorkerPool:
+    """Run several independently fenced durable workers on one service instance."""
+
+    def __init__(
+        self,
+        queue: ReliableDurableTaskQueue,
+        execute_packet,
+        *,
+        instance_id: str,
+        worker_count: int,
+        poll_seconds: float,
+        lease_seconds: int,
+    ):
+        count = max(1, int(worker_count))
+        self.workers = [
+            ReliableDurableTaskWorker(
+                queue,
+                execute_packet,
+                owner=f"render:{instance_id}:worker:{index}",
+                execution_room_id=f"durable-worker:{instance_id}:{index}",
+                poll_seconds=poll_seconds,
+                lease_seconds=lease_seconds,
+            )
+            for index in range(count)
+        ]
+
+    def start(self) -> None:
+        for worker in self.workers:
+            worker.start()
+
+    def stop(self) -> None:
+        for worker in self.workers:
+            worker.stop()
+
+    def run_once(self) -> bool:
+        # Diagnostic kick only. Normal production execution uses all pool
+        # threads. Try each worker until one safely claims work.
+        for worker in self.workers:
+            if worker.run_once():
+                return True
+        return False
+
+    @property
+    def alive(self) -> bool:
+        return bool(self.workers) and all(worker.alive for worker in self.workers)
+
+    @property
+    def alive_count(self) -> int:
+        return sum(1 for worker in self.workers if worker.alive)
+
+    @property
+    def worker_count(self) -> int:
+        return len(self.workers)
 
 
 class GuardianBackgroundLoop:
@@ -153,7 +271,7 @@ def create_mcp_app():
     mcp = legacy_server.create_mcp_app()
 
     queue: Optional[ReliableDurableTaskQueue] = None
-    worker: Optional[ReliableDurableTaskWorker] = None
+    worker: Optional[ReliableDurableWorkerPool] = None
     guardian: Optional[ReliabilityGuardian] = None
     guardian_loop: Optional[GuardianBackgroundLoop] = None
     durable_codex_circuit: Optional[CircuitBreaker] = None
@@ -164,9 +282,9 @@ def create_mcp_app():
             legacy_server.DATABASE_URL,
             max_parallel=MAX_PARALLEL_DURABLE_JOBS,
         )
-        # Additive/idempotent only. Production rollout is independently
-        # migration-gated before this entrypoint is promoted.
-        queue.ensure_schema()
+        # Read-only gate: the tracked Neon migration must already have been
+        # explicitly approved/applied. Runtime startup never mutates PR #8 DDL.
+        queue.verify_schema_ready()
         guardian = ReliabilityGuardian(legacy_server.DATABASE_URL)
 
         durable_registry = PostgresExecutionRegistry(
@@ -192,18 +310,24 @@ def create_mcp_app():
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
         )
-        durable_codex_dispatch = build_codex_dispatch(
-            openai_client=durable_openai,
-            codex_model=legacy_server.CODEX_MODEL,
-            circuit=durable_codex_circuit,
-            codex_timeout_s=DURABLE_CODEX_TIMEOUT_S,
+        durable_codex_dispatch = _retryable_single_attempt_dispatch(
+            build_codex_dispatch(
+                openai_client=durable_openai,
+                codex_model=legacy_server.CODEX_MODEL,
+                circuit=durable_codex_circuit,
+                codex_timeout_s=DURABLE_CODEX_TIMEOUT_S,
+            ),
+            model=EXPECTED_CODEX_MODEL,
         )
         if durable_openrouter is not None:
-            durable_gemini_dispatch = build_gemini_dispatch(
-                openrouter_client=durable_openrouter,
-                gemini_model=legacy_server.GEMINI_MODEL,
-                gemini_timeout_s=DURABLE_GEMINI_TIMEOUT_S,
-                circuit=durable_gemini_circuit,
+            durable_gemini_dispatch = _retryable_single_attempt_dispatch(
+                build_gemini_dispatch(
+                    openrouter_client=durable_openrouter,
+                    gemini_model=legacy_server.GEMINI_MODEL,
+                    gemini_timeout_s=DURABLE_GEMINI_TIMEOUT_S,
+                    circuit=durable_gemini_circuit,
+                ),
+                model=EXPECTED_GEMINI_MODEL,
             )
         else:
             durable_gemini_dispatch = durable_gemini_circuit.guard(
@@ -226,11 +350,11 @@ def create_mcp_app():
             return value
 
         instance_id = os.environ.get("RENDER_INSTANCE_ID", "").strip() or socket.gethostname()
-        worker = ReliableDurableTaskWorker(
+        worker = ReliableDurableWorkerPool(
             queue,
             _execute_durable,
-            owner=f"render:{instance_id}",
-            execution_room_id=f"durable-worker:{instance_id}",
+            instance_id=instance_id,
+            worker_count=MAX_PARALLEL_DURABLE_JOBS,
             poll_seconds=DURABLE_WORKER_POLL_S,
             lease_seconds=DURABLE_WORKER_LEASE_S,
         )
@@ -313,7 +437,9 @@ def create_mcp_app():
             "legacy_sync_provider_timeout_seconds": LEGACY_SYNC_PROVIDER_TIMEOUT_S,
             "durable_worker_enabled": DURABLE_WORKER_ENABLED,
             "durable_worker_alive": bool(worker and worker.alive),
-            "durable_worker_has_lease_heartbeat": isinstance(worker, ReliableDurableTaskWorker),
+            "durable_worker_count": worker.worker_count if worker else 0,
+            "durable_worker_alive_count": worker.alive_count if worker else 0,
+            "durable_worker_has_lease_heartbeat": bool(worker),
             "guardian_loop_enabled": GUARDIAN_LOOP_ENABLED,
             "guardian_loop_alive": bool(guardian_loop and guardian_loop.alive),
             "guardian_runtime": "ReliabilityGuardian",
