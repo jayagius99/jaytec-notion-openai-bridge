@@ -289,7 +289,7 @@ class LegacyCatalogCompatMiddleware:
             if not delivered:
                 delivered = True
                 return {"type": "http.request", "body": rewritten, "more_body": False}
-            return {"type": "http.disconnect"}
+            return await receive()
 
         return await self.app(new_scope, rewritten_receive, send)
 
@@ -316,7 +316,7 @@ class LegacyCatalogCompatMiddleware:
                 message = messages[index]
                 index += 1
                 return message
-            return {"type": "http.disconnect"}
+            return await receive()
 
         return await self.app(scope, replay_receive, send)
 
