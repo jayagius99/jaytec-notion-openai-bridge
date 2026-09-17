@@ -20,8 +20,11 @@ on:
       - 'reliability_registry.py'
       - 'server.py'
       - 'reliable_server.py'
+      - 'compat_server.py'
       - 'Dockerfile'
       - '.dockerignore'
+      - 'test_compat_server.py'
+      - 'test_compat_native_validation.py'
       - 'test_dockerfile_packaging.py'
       - 'test_contract_equivalence.py'
       - 'test_orchestration.py'
@@ -67,12 +70,13 @@ jobs:
             orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py \
             job_runtime.py concurrency.py guardian.py guardian_runtime.py \
             durable_tasks.py durable_tasks_runtime.py reliability_registry.py \
-            server.py reliable_server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
+            server.py reliable_server.py compat_server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
             test_worker_output_parsing.py test_gemini_transport_hardening.py test_specialist_timeout_hardening.py \
             test_job_runtime.py test_concurrency.py test_guardian.py test_durable_tasks.py \
-            test_reliable_runtime_hardening.py test_idempotency_postgres.py test_dockerfile_packaging.py \
+            test_reliable_runtime_hardening.py test_compat_server.py test_compat_native_validation.py \
+            test_idempotency_postgres.py test_dockerfile_packaging.py \
             test_contract_equivalence.py test_server_candidate_probe.py
       - name: Import guard (legacy server remains importable without secrets)
         run: python -c "import server; print('server_import_ok')"
@@ -80,9 +84,11 @@ jobs:
         run: python -m unittest discover -v
       - name: Docker build smoke (production Dockerfile path)
         run: docker build -t jaytec-bridge-ci:smoke .
-      - name: Docker container startup smoke (reliability entrypoint; no provider calls)
+      - name: Docker container startup smoke (actual compatibility entrypoint; no provider calls)
         run: |
-          docker run --rm \
+          set -euo pipefail
+          cid=$(docker run -d \
+            -p 127.0.0.1:18000:8000 \
             -e RUNTIME_MODE=staging_candidate \
             -e MCP_AUTH_TOKEN=test \
             -e OPENAI_API_KEY=test \
@@ -90,5 +96,23 @@ jobs:
             -e GEMINI_MODEL=google/gemini-3.1-pro-preview \
             -e DURABLE_WORKER_ENABLED=0 \
             -e GUARDIAN_LOOP_ENABLED=0 \
-            jaytec-bridge-ci:smoke \
-            python -c "import reliable_server; reliable_server.create_mcp_app(); print('reliable_container_startup_ok')"
+            jaytec-bridge-ci:smoke)
+          cleanup() {
+            docker logs "$cid" || true
+            docker rm -f "$cid" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for _ in $(seq 1 20); do
+            if [ "$(docker inspect -f '{{.State.Running}}' "$cid")" != "true" ]; then
+              echo "compatibility container exited during startup"
+              exit 1
+            fi
+            code=$(curl --connect-timeout 1 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18000/mcp || true)
+            if [ "$code" != "000" ]; then
+              echo "compatibility_container_startup_ok http_status=$code"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "compatibility container did not become reachable"
+          exit 1
