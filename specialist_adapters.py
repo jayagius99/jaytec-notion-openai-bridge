@@ -7,10 +7,9 @@ strings and the dispatch semantics used by both entrypoints.
 Security / safety:
 - Enforces exact model identity BEFORE provider calls.
 - Prompts require strict JSON-only output and no side effects.
-- Provider timeouts are explicitly bounded and normalized to TimeoutError so
-  orchestration can classify them deterministically.
-- Gemini transport failures fail closed; malformed output is never guessed into
-  a successful result.
+- Provider timeouts/rate limits/unavailability are normalized to JAYTEC runtime
+  exception types so bounded retry/backoff is deterministic.
+- Gemini malformed output is never guessed into a successful result.
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ from typing import Any, Callable, Mapping
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from orchestration import ProviderUnavailableError, RateLimitError
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
 EXPECTED_CODEX_MODEL = "gpt-5.3-codex"
@@ -101,20 +101,48 @@ def _safe_transport_diagnostics(*, content: str, finish_reason: str | None, prov
     }
 
 
-def _is_timeout_exception(exc: Exception) -> bool:
+def _status_code(exc: Exception) -> int | None:
+    for name in ("status_code", "status"):
+        value = getattr(exc, name, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    value = getattr(response, "status_code", None)
+    return value if isinstance(value, int) else None
+
+
+def _retry_after(exc: Exception) -> Any:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        try:
+            value = headers.get("retry-after") or headers.get("Retry-After")
+            if value is not None:
+                return value
+        except Exception:
+            pass
+    return getattr(exc, "retry_after", None)
+
+
+def _normalize_provider_exception(exc: Exception, *, context: str) -> None:
     name = type(exc).__name__.lower()
     text = str(exc).lower()
-    return (
+    status = _status_code(exc)
+    if (
         "timeout" in name
         or "timedout" in name
         or "timeout" in text
         or "timed out" in text
-    )
-
-
-def _raise_normalized_timeout(exc: Exception, *, context: str) -> None:
-    if _is_timeout_exception(exc):
+    ):
         raise TimeoutError(f"{context}_timeout") from exc
+    if status == 429 or "ratelimit" in name or "rate limit" in text or "rate_limit" in text:
+        raise RateLimitError(f"{context}_rate_limited", retry_after=_retry_after(exc)) from exc
+    if (
+        status is not None and status >= 500
+    ) or any(token in name or token in text for token in ("serviceunavailable", "service unavailable", "connectionerror", "connection error", "temporarily unavailable")):
+        raise ProviderUnavailableError(
+            f"{context}_provider_unavailable", retry_after=_retry_after(exc)
+        ) from exc
     raise exc
 
 
@@ -125,7 +153,6 @@ def build_codex_dispatch(
     circuit: CircuitBreaker,
     codex_timeout_s: float = 45.0,
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
-    # Fail closed BEFORE any upstream call.
     require_exact_model(codex_model, EXPECTED_CODEX_MODEL, context="codex")
     if codex_timeout_s <= 0:
         raise ValueError("codex_timeout_s must be positive")
@@ -145,7 +172,7 @@ def build_codex_dispatch(
                 timeout=codex_timeout_s,
             )
         except Exception as exc:
-            _raise_normalized_timeout(exc, context="codex_provider")
+            _normalize_provider_exception(exc, context="codex_provider")
         result = json_object(response.output_text or "")
         result.setdefault("model", codex_model)
         return result
@@ -160,7 +187,6 @@ def build_gemini_dispatch(
     gemini_timeout_s: float,
     circuit: CircuitBreaker,
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
-    # Fail closed BEFORE any upstream call.
     require_exact_model(gemini_model, EXPECTED_GEMINI_MODEL, context="gemini")
     if gemini_timeout_s <= 0:
         raise ValueError("gemini_timeout_s must be positive")
@@ -191,14 +217,12 @@ def build_gemini_dispatch(
                 extra_body={
                     "provider": {
                         "sort": "price",
-                        # Provider failover is allowed only within the exact locked
-                        # model. The caller cannot provide a fallback model.
                         "allow_fallbacks": True,
                     }
                 },
             )
         except Exception as exc:
-            _raise_normalized_timeout(exc, context="gemini_provider")
+            _normalize_provider_exception(exc, context="gemini_provider")
         if not response.choices:
             raise RuntimeError("gemini_no_choices")
 
@@ -230,9 +254,6 @@ def build_gemini_dispatch(
         try:
             return _single_call(packet, retry_format=False)
         except WorkerJsonError:
-            # One bounded re-answer is allowed only when the packet itself
-            # authorises retries. We never feed malformed output back to the
-            # model and never synthesize missing JSON fields locally.
             retries = packet.get("max_retries", 0)
             if not isinstance(retries, int) or isinstance(retries, bool) or retries < 1:
                 raise
