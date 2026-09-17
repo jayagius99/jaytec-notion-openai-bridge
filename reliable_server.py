@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import socket
@@ -10,19 +11,16 @@ from openai import OpenAI
 
 import server as legacy_server
 from circuit_breaker import CircuitBreaker
-from durable_tasks import (
-    DurableTaskQueue,
-    DurableTaskWorker,
-    should_cache_orchestration_result,
-)
-from guardian import GuardianLite
+from durable_tasks_runtime import ReliableDurableTaskQueue, ReliableDurableTaskWorker
+from guardian_runtime import ReliabilityGuardian
 from idempotency_postgres import PostgresExecutionRegistry
 from orchestration import ExecutionRegistry, PacketValidationError
+from reliability_registry import TransientAwareRegistry
 from specialist_adapters import build_codex_dispatch, build_gemini_dispatch
 
 
 RUNTIME_ID = "JAYTEC_RELIABILITY_RUNTIME_V1"
-LEGACY_SYNC_PROVIDER_TIMEOUT_S = float(os.environ.get("LEGACY_SYNC_PROVIDER_TIMEOUT_S", "18"))
+LEGACY_SYNC_PROVIDER_TIMEOUT_S = float(os.environ.get("LEGACY_SYNC_PROVIDER_TIMEOUT_S", "8"))
 DURABLE_CODEX_TIMEOUT_S = float(os.environ.get("DURABLE_CODEX_TIMEOUT_S", "90"))
 DURABLE_GEMINI_TIMEOUT_S = float(os.environ.get("DURABLE_GEMINI_TIMEOUT_S", "120"))
 DURABLE_WORKER_ENABLED = os.environ.get(
@@ -37,21 +35,6 @@ DURABLE_WORKER_POLL_S = float(os.environ.get("DURABLE_WORKER_POLL_S", "1"))
 DURABLE_WORKER_LEASE_S = int(os.environ.get("DURABLE_WORKER_LEASE_S", "300"))
 GUARDIAN_INTERVAL_S = float(os.environ.get("GUARDIAN_INTERVAL_S", "60"))
 MAX_PARALLEL_DURABLE_JOBS = int(os.environ.get("MAX_PARALLEL_DURABLE_JOBS", "4"))
-
-
-class _TransientAwareRegistry:
-    """Delegate registry that never caches whole-packet transient failures."""
-
-    def __init__(self, delegate: Any):
-        self.delegate = delegate
-
-    def lookup(self, key, packet_hash, *, now=None):
-        return self.delegate.lookup(key, packet_hash, now=now)
-
-    def store(self, key, packet_hash, result, *, now=None):
-        if should_cache_orchestration_result(result):
-            return self.delegate.store(key, packet_hash, result, now=now)
-        return None
 
 
 _ORIGINAL_EXECUTE = legacy_server._execute_task_packet_json
@@ -69,7 +52,7 @@ def _transient_safe_execute_task_packet_json(
 ) -> str:
     return _ORIGINAL_EXECUTE(
         packet_json,
-        registry=_TransientAwareRegistry(registry),
+        registry=TransientAwareRegistry(registry),
         idempotency_store=idempotency_store,
         codex_dispatch=codex_dispatch,
         gemini_dispatch=gemini_dispatch,
@@ -86,16 +69,25 @@ def _bounded_legacy_codex_dispatch(*, openai_client, codex_model, circuit):
 
 
 def _bounded_legacy_gemini_dispatch(*, openrouter_client, gemini_model, gemini_timeout_s, circuit):
-    return _ORIGINAL_BUILD_GEMINI(
+    underlying = _ORIGINAL_BUILD_GEMINI(
         openrouter_client=openrouter_client,
         gemini_model=gemini_model,
         gemini_timeout_s=max(1.0, min(float(gemini_timeout_s), LEGACY_SYNC_PROVIDER_TIMEOUT_S)),
         circuit=circuit,
     )
 
+    def single_attempt(packet):
+        # Compatibility calls must stay below the MCP dependency timeout. Long
+        # or format-retry work belongs on the durable submit/poll path.
+        bounded = copy.deepcopy(dict(packet))
+        bounded["max_retries"] = 0
+        return underlying(bounded)
 
-# Compatibility path remains available, but it is bounded below typical MCP
-# dependency timeouts and transient failures do not poison idempotent replay.
+    return single_attempt
+
+
+# Compatibility path remains available, but it is tightly bounded and transient
+# failures do not poison idempotent replay. Durable submit/poll is preferred.
 legacy_server._execute_task_packet_json = _transient_safe_execute_task_packet_json
 legacy_server.build_codex_dispatch = _bounded_legacy_codex_dispatch
 legacy_server.build_gemini_dispatch = _bounded_legacy_gemini_dispatch
@@ -104,8 +96,8 @@ legacy_server.build_gemini_dispatch = _bounded_legacy_gemini_dispatch
 class GuardianBackgroundLoop:
     def __init__(
         self,
-        guardian: GuardianLite,
-        queue: DurableTaskQueue,
+        guardian: ReliabilityGuardian,
+        queue: ReliableDurableTaskQueue,
         *,
         interval_seconds: float,
     ):
@@ -160,22 +152,22 @@ def _json(value: Any) -> str:
 def create_mcp_app():
     mcp = legacy_server.create_mcp_app()
 
-    queue: Optional[DurableTaskQueue] = None
-    worker: Optional[DurableTaskWorker] = None
-    guardian: Optional[GuardianLite] = None
+    queue: Optional[ReliableDurableTaskQueue] = None
+    worker: Optional[ReliableDurableTaskWorker] = None
+    guardian: Optional[ReliabilityGuardian] = None
     guardian_loop: Optional[GuardianBackgroundLoop] = None
     durable_codex_circuit: Optional[CircuitBreaker] = None
     durable_gemini_circuit: Optional[CircuitBreaker] = None
 
     if legacy_server.DATABASE_URL:
-        queue = DurableTaskQueue(
+        queue = ReliableDurableTaskQueue(
             legacy_server.DATABASE_URL,
             max_parallel=MAX_PARALLEL_DURABLE_JOBS,
         )
-        # Additive schema only. Production rollout is validated on an isolated
-        # Neon branch before this entrypoint is promoted.
+        # Additive/idempotent only. Production rollout is independently
+        # migration-gated before this entrypoint is promoted.
         queue.ensure_schema()
-        guardian = GuardianLite(legacy_server.DATABASE_URL)
+        guardian = ReliabilityGuardian(legacy_server.DATABASE_URL)
 
         durable_registry = PostgresExecutionRegistry(
             database_url=legacy_server.DATABASE_URL,
@@ -234,7 +226,7 @@ def create_mcp_app():
             return value
 
         instance_id = os.environ.get("RENDER_INSTANCE_ID", "").strip() or socket.gethostname()
-        worker = DurableTaskWorker(
+        worker = ReliableDurableTaskWorker(
             queue,
             _execute_durable,
             owner=f"render:{instance_id}",
@@ -259,7 +251,7 @@ def create_mcp_app():
         priority: int = 100,
         execution_room_id: str = "",
     ) -> str:
-        """Persist a specialist packet and return immediately with a pollable job handle."""
+        """Persist a specialist packet and immediately return a pollable job handle."""
         if queue is None:
             return _json({"available": False, "reason": "DATABASE_URL_NOT_CONFIGURED"})
         try:
@@ -271,6 +263,7 @@ def create_mcp_app():
             )
             return _json({
                 "available": True,
+                "accepted": True,
                 "preferred_poll_tool": "task_packet_status",
                 "snapshot": snapshot,
             })
@@ -316,12 +309,14 @@ def create_mcp_app():
             "runtime_id": RUNTIME_ID,
             "database_available": True,
             "preferred_specialist_execution": "submit_task_packet_durable -> task_packet_status",
-            "legacy_sync_execute_task_packet": "compatibility_only_bounded",
+            "legacy_sync_execute_task_packet": "compatibility_only_bounded_single-attempt",
             "legacy_sync_provider_timeout_seconds": LEGACY_SYNC_PROVIDER_TIMEOUT_S,
             "durable_worker_enabled": DURABLE_WORKER_ENABLED,
             "durable_worker_alive": bool(worker and worker.alive),
+            "durable_worker_has_lease_heartbeat": isinstance(worker, ReliableDurableTaskWorker),
             "guardian_loop_enabled": GUARDIAN_LOOP_ENABLED,
             "guardian_loop_alive": bool(guardian_loop and guardian_loop.alive),
+            "guardian_runtime": "ReliabilityGuardian",
             "durable_codex_circuit": durable_codex_circuit.snapshot() if durable_codex_circuit else None,
             "durable_gemini_circuit": durable_gemini_circuit.snapshot() if durable_gemini_circuit else None,
             "stats": queue.stats(),
@@ -347,7 +342,7 @@ def create_mcp_app():
         detail_json: str = "{}",
         job_id: str = "",
     ) -> str:
-        """Persist a caller-observed timeout/freeze so Guardian/history can diagnose it."""
+        """Persist a caller-observed timeout/freeze for self-diagnosis and recovery."""
         if queue is None:
             return _json({"available": False, "reason": "DATABASE_URL_NOT_CONFIGURED"})
         try:
@@ -381,7 +376,6 @@ def create_mcp_app():
                 "error": str(exc),
             })
 
-    # Keep references alive and introspectable for production diagnostics/tests.
     mcp._jaytec_reliability = {
         "queue": queue,
         "worker": worker,
