@@ -267,12 +267,12 @@ class LegacyCatalogCompatMiddleware:
 
         request_messages = [m for m in received if m.get("type") == "http.request"]
         if not request_messages:
-            return await self._replay(scope, received, send)
+            return await self._replay(scope, received, receive, send)
 
         body = b"".join(m.get("body", b"") for m in request_messages)
         rewritten = rewrite_jsonrpc_body(body)
         if rewritten == body:
-            return await self._replay(scope, received, send)
+            return await self._replay(scope, received, receive, send)
 
         new_scope = dict(scope)
         headers = []
@@ -289,7 +289,7 @@ class LegacyCatalogCompatMiddleware:
             if not delivered:
                 delivered = True
                 return {"type": "http.request", "body": rewritten, "more_body": False}
-            return {"type": "http.disconnect"}
+            return await receive()
 
         return await self.app(new_scope, rewritten_receive, send)
 
@@ -307,7 +307,7 @@ class LegacyCatalogCompatMiddleware:
         )
         await send({"type": "http.response.body", "body": body, "more_body": False})
 
-    async def _replay(self, scope, messages, send):
+    async def _replay(self, scope, messages, receive, send):
         index = 0
 
         async def replay_receive():
@@ -316,7 +316,7 @@ class LegacyCatalogCompatMiddleware:
                 message = messages[index]
                 index += 1
                 return message
-            return {"type": "http.disconnect"}
+            return await receive()
 
         return await self.app(scope, replay_receive, send)
 
