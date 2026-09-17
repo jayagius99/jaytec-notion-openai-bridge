@@ -52,6 +52,24 @@ def _payload(task: str, prefix: str) -> Mapping[str, Any]:
     return value
 
 
+def _strict_bool(value: Any, *, field: str, default: bool = False) -> bool:
+    """Accept only a real JSON boolean for safety-sensitive compatibility flags."""
+    if value is None:
+        return default
+    if type(value) is not bool:
+        raise ValueError(f"{field} must be a JSON boolean")
+    return value
+
+
+def _strict_int(value: Any, *, field: str, default: int) -> int:
+    """Reject bool/string coercion for control-plane numeric fields."""
+    if value is None:
+        return default
+    if type(value) is not int:
+        raise ValueError(f"{field} must be a JSON integer")
+    return value
+
+
 def _runtime_unavailable() -> str:
     return _json(
         {
@@ -96,7 +114,11 @@ def _run_guardian(task: str) -> str:
     if not runtime or runtime.get("guardian") is None:
         return _runtime_unavailable()
     body = _payload(task, RUN_GUARDIAN_PREFIX)
-    auto_repair = bool(body.get("auto_repair", False))
+    auto_repair = _strict_bool(
+        body.get("auto_repair"),
+        field="auto_repair",
+        default=False,
+    )
     result = runtime["guardian"].run(auto_repair=auto_repair)
     return _json(
         {
@@ -116,14 +138,25 @@ def _submit_durable(task: str) -> str:
 
     packet = body.get("packet")
     packet_json = body.get("packet_json")
-    if isinstance(packet, Mapping):
+    if packet is not None:
+        if not isinstance(packet, Mapping):
+            raise ValueError("packet must be a JSON object")
+        if packet_json is not None:
+            raise ValueError("provide packet or packet_json, not both")
         packet_json = _json(dict(packet))
     if not isinstance(packet_json, str) or not packet_json.strip():
         raise ValueError("packet or packet_json is required")
 
-    source_version = int(body.get("source_shared_state_version", 0))
-    priority = int(body.get("priority", 100))
-    room = str(body.get("execution_room_id", "") or "")
+    source_version = _strict_int(
+        body.get("source_shared_state_version"),
+        field="source_shared_state_version",
+        default=0,
+    )
+    priority = _strict_int(body.get("priority"), field="priority", default=100)
+    room_value = body.get("execution_room_id", "")
+    if not isinstance(room_value, str):
+        raise ValueError("execution_room_id must be a string")
+    room = room_value.strip()
     snapshot = runtime["queue"].submit(
         packet_json,
         source_shared_state_version=source_version,
@@ -146,8 +179,12 @@ def _durable_status(task: str) -> str:
     if not runtime or runtime.get("queue") is None:
         return _runtime_unavailable()
     body = _payload(task, DURABLE_STATUS_PREFIX)
-    job_id = str(body.get("job_id", "") or "")
-    idempotency_key = str(body.get("idempotency_key", "") or "")
+    job_id_value = body.get("job_id", "")
+    idempotency_value = body.get("idempotency_key", "")
+    if not isinstance(job_id_value, str) or not isinstance(idempotency_value, str):
+        raise ValueError("job_id and idempotency_key must be strings")
+    job_id = job_id_value.strip()
+    idempotency_key = idempotency_value.strip()
     if not job_id and not idempotency_key:
         raise ValueError("job_id or idempotency_key is required")
     snapshot = runtime["queue"].status(
@@ -168,13 +205,17 @@ def _record_incident(task: str) -> str:
     if not runtime or runtime.get("queue") is None:
         return _runtime_unavailable()
     body = _payload(task, RECORD_INCIDENT_PREFIX)
-    event_type = str(body.get("event_type", "") or "").strip()
+    event_type_value = body.get("event_type", "")
+    job_id_value = body.get("job_id", "")
+    if not isinstance(event_type_value, str) or not isinstance(job_id_value, str):
+        raise ValueError("event_type and job_id must be strings")
+    event_type = event_type_value.strip()
     if not event_type:
         raise ValueError("event_type is required")
     detail = body.get("detail", {})
     if not isinstance(detail, Mapping):
         raise ValueError("detail must be a JSON object")
-    job_id = str(body.get("job_id", "") or "")
+    job_id = job_id_value.strip()
     event = runtime["queue"].record_incident(
         event_type,
         job_id=job_id or None,
@@ -244,7 +285,7 @@ def _compat_legacy_command(task: str, status_fn: Any, packet_fn: Any) -> Optiona
 
 
 def create_mcp_app():
-    """Create the reliability runtime while preserving the cached six-tool MCP contract."""
+    """Create the reliability runtime while preserving cached legacy tool callers."""
     global _APP
     legacy_server._legacy_collaborate_command = _compat_legacy_command
     app = reliable_server.create_mcp_app()
