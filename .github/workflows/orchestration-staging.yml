@@ -20,6 +20,7 @@ on:
       - 'reliability_registry.py'
       - 'server.py'
       - 'reliable_server.py'
+      - 'compat_server.py'
       - 'Dockerfile'
       - '.dockerignore'
       - 'test_dockerfile_packaging.py'
@@ -35,6 +36,7 @@ on:
       - 'test_guardian.py'
       - 'test_durable_tasks.py'
       - 'test_reliable_runtime_hardening.py'
+      - 'test_compat_server.py'
       - 'test_server_candidate_probe.py'
       - 'staging_server.py'
       - 'staging_runtime_probe.py'
@@ -67,12 +69,12 @@ jobs:
             orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py \
             job_runtime.py concurrency.py guardian.py guardian_runtime.py \
             durable_tasks.py durable_tasks_runtime.py reliability_registry.py \
-            server.py reliable_server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
+            server.py reliable_server.py compat_server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
             test_worker_output_parsing.py test_gemini_transport_hardening.py test_specialist_timeout_hardening.py \
             test_job_runtime.py test_concurrency.py test_guardian.py test_durable_tasks.py \
-            test_reliable_runtime_hardening.py test_idempotency_postgres.py test_dockerfile_packaging.py \
+            test_reliable_runtime_hardening.py test_compat_server.py test_idempotency_postgres.py test_dockerfile_packaging.py \
             test_contract_equivalence.py test_server_candidate_probe.py
       - name: Import guard (legacy server remains importable without secrets)
         run: python -c "import server; print('server_import_ok')"
@@ -80,7 +82,7 @@ jobs:
         run: python -m unittest discover -v
       - name: Docker build smoke (production Dockerfile path)
         run: docker build -t jaytec-bridge-ci:smoke .
-      - name: Docker container startup smoke (reliability entrypoint; no provider calls)
+      - name: Docker container startup smoke (compatibility reliability entrypoint; no provider calls)
         run: |
           docker run --rm \
             -e RUNTIME_MODE=staging_candidate \
@@ -91,4 +93,4 @@ jobs:
             -e DURABLE_WORKER_ENABLED=0 \
             -e GUARDIAN_LOOP_ENABLED=0 \
             jaytec-bridge-ci:smoke \
-            python -c "import reliable_server; reliable_server.create_mcp_app(); print('reliable_container_startup_ok')"
+            python -c "import compat_server; compat_server.create_mcp_app(); print('compat_container_startup_ok')"
