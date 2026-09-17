@@ -12,6 +12,8 @@ import server as legacy_server
 
 
 COMPAT_RUNTIME_ID = "JAYTEC_RELIABILITY_LEGACY_CATALOG_COMPAT_V2"
+COMPAT_MAX_BODY_BYTES = 1_048_576
+MCP_COMPAT_PATHS = frozenset({"/mcp", "/mcp/"})
 RELIABILITY_STATUS_COMMAND = "JAYTEC_RELIABILITY_STATUS"
 RUN_GUARDIAN_PREFIX = "JAYTEC_RELIABILITY_RUN_GUARDIAN_JSON:"
 DURABLE_SUBMIT_PREFIX = "JAYTEC_DURABLE_SUBMIT_JSON:"
@@ -202,25 +204,64 @@ def rewrite_jsonrpc_body(body: bytes) -> bytes:
     return _json(rewritten).encode("utf-8")
 
 
+def _header(scope: Mapping[str, Any], name: bytes) -> Optional[bytes]:
+    target = name.lower()
+    for key, value in scope.get("headers", []):
+        if key.lower() == target:
+            return value
+    return None
+
+
+def _is_json_content_type(scope: Mapping[str, Any]) -> bool:
+    value = _header(scope, b"content-type")
+    if value is None:
+        return False
+    return value.split(b";", 1)[0].strip().lower() == b"application/json"
+
+
 class LegacyCatalogCompatMiddleware:
     """Per-process ASGI compatibility shim for stale MCP client catalogs.
 
     The shim rewrites only reserved calls made through the already-cached
-    `collaborate` tool. It never mutates server.py/reliable_server.py functions,
-    process-global dispatchers, provider state, or the FastMCP tool registry.
+    `collaborate` tool at the expected MCP JSON endpoint. It never mutates
+    server.py/reliable_server.py functions, process-global dispatchers,
+    provider state, or the FastMCP tool registry.
     """
 
-    def __init__(self, app):
+    def __init__(self, app, *, max_body_bytes: int = COMPAT_MAX_BODY_BYTES):
         self.app = app
+        if type(max_body_bytes) is not int or max_body_bytes < 1024:
+            raise ValueError("max_body_bytes must be an integer >= 1024")
+        self.max_body_bytes = max_body_bytes
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or scope.get("method") != "POST":
+        if (
+            scope.get("type") != "http"
+            or scope.get("method") != "POST"
+            or scope.get("path") not in MCP_COMPAT_PATHS
+            or not _is_json_content_type(scope)
+        ):
             return await self.app(scope, receive, send)
 
+        declared_length = _header(scope, b"content-length")
+        if declared_length is not None:
+            try:
+                if int(declared_length) > self.max_body_bytes:
+                    return await self._reject_oversized(send)
+            except (TypeError, ValueError):
+                # Let the native HTTP stack handle malformed length syntax;
+                # the incremental cap below still limits memory consumption.
+                pass
+
         received: List[Dict[str, Any]] = []
+        total_bytes = 0
         while True:
             message = await receive()
             received.append(message)
+            if message.get("type") == "http.request":
+                total_bytes += len(message.get("body", b""))
+                if total_bytes > self.max_body_bytes:
+                    return await self._reject_oversized(send)
             if message.get("type") != "http.request" or not message.get("more_body", False):
                 break
 
@@ -252,6 +293,20 @@ class LegacyCatalogCompatMiddleware:
 
         return await self.app(new_scope, rewritten_receive, send)
 
+    async def _reject_oversized(self, send):
+        body = b"request body too large"
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"text/plain; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+
     async def _replay(self, scope, messages, send):
         index = 0
 
@@ -272,9 +327,13 @@ def create_mcp_app():
 
 
 def create_http_app(mcp=None):
-    """Wrap the reliable HTTP app with per-process compatibility rewriting."""
+    """Wrap the reliable HTTP app while preserving production transport settings."""
     server = mcp or create_mcp_app()
-    return server.http_app(middleware=[Middleware(LegacyCatalogCompatMiddleware)])
+    return server.http_app(
+        middleware=[Middleware(LegacyCatalogCompatMiddleware)],
+        stateless_http=True,
+        host_origin_protection=False,
+    )
 
 
 def main() -> None:
