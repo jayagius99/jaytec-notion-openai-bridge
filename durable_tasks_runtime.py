@@ -28,10 +28,48 @@ def _json(value: Any) -> str:
 class ReliableDurableTaskQueue(DurableTaskQueue):
     """Production-hardened queue additions over the tested durable task base.
 
-    Adds an advisory lock around the absent-row idempotency case and requires a
-    real Shared House source version. The underlying job row remains the sole
-    scheduler/lease/fence authority.
+    Adds an advisory lock around the absent-row idempotency case, requires a
+    real Shared House source version, and provides a read-only production
+    schema gate. The job row remains the scheduler/lease/fence authority.
     """
+
+    def verify_schema_ready(self) -> Dict[str, bool]:
+        """Fail closed unless the separately approved reliability schema exists.
+
+        Runtime startup must never apply migration DDL. Production schema is
+        changed only through the tracked Neon migration/approval path.
+        """
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                      EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema=current_schema()
+                          AND table_name='jaytec_jobs'
+                          AND column_name='next_attempt_at'
+                      ) AS next_attempt_at,
+                      to_regclass(current_schema() || '.jaytec_task_packets') IS NOT NULL
+                        AS task_packets,
+                      to_regclass(current_schema() || '.jaytec_jobs_ready_idx') IS NOT NULL
+                        AS jobs_ready_idx,
+                      to_regclass(current_schema() || '.jaytec_task_packets_status_idx') IS NOT NULL
+                        AS task_packets_status_idx
+                    """
+                )
+                row = dict(cur.fetchone() or {})
+        checks = {
+            "next_attempt_at": bool(row.get("next_attempt_at")),
+            "task_packets": bool(row.get("task_packets")),
+            "jobs_ready_idx": bool(row.get("jobs_ready_idx")),
+            "task_packets_status_idx": bool(row.get("task_packets_status_idx")),
+        }
+        missing = sorted(name for name, ready in checks.items() if not ready)
+        if missing:
+            raise RuntimeError("reliability_runtime_schema_not_ready:" + ",".join(missing))
+        return checks
 
     def submit(
         self,
@@ -199,6 +237,21 @@ class ReliableDurableTaskWorker(DurableTaskWorker):
         attempt_count = int(claimed.get("attempt_count") or 1)
         max_attempts = int(claimed.get("max_attempts") or 1)
         packet = claimed.get("packet")
+
+        # A crashed/fenced worker may leave a packet RUNNING while Guardian
+        # safely returns its job to PAUSED. Reclaiming must never execute a
+        # provider call beyond the packet's durable attempt budget.
+        if attempt_count > max_attempts:
+            self.queue.finish(
+                token,
+                result={
+                    "overall_status": "FAILED_CLOSED",
+                    "unresolved_items": ["durable_retry_budget_exhausted_before_dispatch"],
+                },
+                succeeded=False,
+            )
+            return True
+
         try:
             result = self._execute_with_heartbeat(token, packet)
         except DurableTaskFenceError:
