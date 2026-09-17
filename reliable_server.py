@@ -27,6 +27,7 @@ from specialist_adapters import (
     build_codex_dispatch,
     build_gemini_dispatch,
 )
+from workload_read_model import WorkloadReadModel
 
 
 RUNTIME_ID = "JAYTEC_RELIABILITY_RUNTIME_V1"
@@ -274,6 +275,7 @@ def create_mcp_app():
     worker: Optional[ReliableDurableWorkerPool] = None
     guardian: Optional[ReliabilityGuardian] = None
     guardian_loop: Optional[GuardianBackgroundLoop] = None
+    workload_read_model: Optional[WorkloadReadModel] = None
     durable_codex_circuit: Optional[CircuitBreaker] = None
     durable_gemini_circuit: Optional[CircuitBreaker] = None
 
@@ -282,6 +284,7 @@ def create_mcp_app():
             legacy_server.DATABASE_URL,
             max_parallel=MAX_PARALLEL_DURABLE_JOBS,
         )
+        workload_read_model = WorkloadReadModel(legacy_server.DATABASE_URL)
         # Read-only gate: the tracked Neon migration must already have been
         # explicitly approved/applied. Runtime startup never mutates PR #8 DDL.
         queue.verify_schema_ready()
@@ -449,6 +452,16 @@ def create_mcp_app():
         })
 
     @mcp.tool
+    def workload_snapshot(limit: int = 50) -> str:
+        """Return a bounded, read-only workload projection without packet/result bodies."""
+        if workload_read_model is None:
+            return _json({"available": False, "source": "JAYTEC_DURABLE_RUNTIME", "reason": "DATABASE_URL_NOT_CONFIGURED"})
+        try:
+            return _json({"available": True, **workload_read_model.snapshot(limit=limit)})
+        except Exception as exc:
+            return _json({"available": True, "source": "JAYTEC_DURABLE_RUNTIME", "error_class": type(exc).__name__, "error": str(exc)[:500]})
+
+    @mcp.tool
     def run_guardian_lite(auto_repair: bool = True) -> str:
         """Run one bounded Guardian audit/containment pass immediately."""
         if guardian is None:
@@ -507,6 +520,7 @@ def create_mcp_app():
         "worker": worker,
         "guardian": guardian,
         "guardian_loop": guardian_loop,
+        "workload_read_model": workload_read_model,
     }
     return mcp
 
