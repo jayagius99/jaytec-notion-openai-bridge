@@ -79,8 +79,6 @@ def _compat_target(task: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     if task.startswith(RUN_GUARDIAN_PREFIX):
         body = _payload(task, RUN_GUARDIAN_PREFIX)
         return "run_guardian_lite", {
-            # Compatibility calls default read-only even though the native
-            # diagnostic tool supports explicit repair when directly invoked.
             "auto_repair": _strict_bool(
                 body.get("auto_repair"), field="auto_repair", default=False
             )
@@ -226,6 +224,12 @@ class LegacyCatalogCompatMiddleware:
     `collaborate` tool at the expected MCP JSON endpoint. It never mutates
     server.py/reliable_server.py functions, process-global dispatchers,
     provider state, or the FastMCP tool registry.
+
+    Buffered request messages are replayed to the downstream application, but
+    after the buffered body is consumed the live upstream receive channel is
+    preserved. Never synthesize `http.disconnect`: streamable HTTP runtimes may
+    interpret an immediate disconnect as client abandonment and abort a valid
+    response.
     """
 
     def __init__(self, app, *, max_body_bytes: int = COMPAT_MAX_BODY_BYTES):
@@ -249,8 +253,6 @@ class LegacyCatalogCompatMiddleware:
                 if int(declared_length) > self.max_body_bytes:
                     return await self._reject_oversized(send)
             except (TypeError, ValueError):
-                # Let the native HTTP stack handle malformed length syntax;
-                # the incremental cap below still limits memory consumption.
                 pass
 
         received: List[Dict[str, Any]] = []
@@ -267,12 +269,12 @@ class LegacyCatalogCompatMiddleware:
 
         request_messages = [m for m in received if m.get("type") == "http.request"]
         if not request_messages:
-            return await self._replay(scope, received, send)
+            return await self._replay(scope, received, receive, send)
 
         body = b"".join(m.get("body", b"") for m in request_messages)
         rewritten = rewrite_jsonrpc_body(body)
         if rewritten == body:
-            return await self._replay(scope, received, send)
+            return await self._replay(scope, received, receive, send)
 
         new_scope = dict(scope)
         headers = []
@@ -289,7 +291,7 @@ class LegacyCatalogCompatMiddleware:
             if not delivered:
                 delivered = True
                 return {"type": "http.request", "body": rewritten, "more_body": False}
-            return {"type": "http.disconnect"}
+            return await receive()
 
         return await self.app(new_scope, rewritten_receive, send)
 
@@ -307,7 +309,7 @@ class LegacyCatalogCompatMiddleware:
         )
         await send({"type": "http.response.body", "body": body, "more_body": False})
 
-    async def _replay(self, scope, messages, send):
+    async def _replay(self, scope, messages, receive, send):
         index = 0
 
         async def replay_receive():
@@ -316,7 +318,7 @@ class LegacyCatalogCompatMiddleware:
                 message = messages[index]
                 index += 1
                 return message
-            return {"type": "http.disconnect"}
+            return await receive()
 
         return await self.app(scope, replay_receive, send)
 
