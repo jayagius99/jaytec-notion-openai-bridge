@@ -11,7 +11,7 @@ COPY . ./
 ENV PORT=8000
 EXPOSE 8000
 
-# reliable_server preserves the legacy MCP surface while adding durable,
-# pollable specialist execution, Guardian Lite background health checks, and
-# bounded compatibility timeouts.
-CMD ["python", "reliable_server.py"]
+# compat_server wraps the unchanged reliable runtime at the HTTP boundary so
+# stale cached clients can reach native reliability tools through collaborate
+# without mutating the legacy router or tool registry.
+CMD ["python", "compat_server.py"]
