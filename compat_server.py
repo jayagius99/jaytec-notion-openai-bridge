@@ -15,19 +15,6 @@ DURABLE_STATUS_PREFIX = "JAYTEC_DURABLE_STATUS_JSON:"
 DURABLE_WORKER_KICK_COMMAND = "JAYTEC_DURABLE_WORKER_KICK"
 RECORD_INCIDENT_PREFIX = "JAYTEC_RECORD_RELIABILITY_INCIDENT_JSON:"
 
-# Preserve the original legacy command router exactly once so unknown commands
-# still behave exactly as server.py defined them, even if this module is reloaded.
-_ORIGINAL_LEGACY_COMMAND = getattr(
-    legacy_server,
-    "_jaytec_original_legacy_collaborate_command",
-    legacy_server._legacy_collaborate_command,
-)
-setattr(
-    legacy_server,
-    "_jaytec_original_legacy_collaborate_command",
-    _ORIGINAL_LEGACY_COMMAND,
-)
-
 _APP = None
 
 
@@ -244,7 +231,8 @@ def _worker_kick() -> str:
     )
 
 
-def _compat_legacy_command(task: str, status_fn: Any, packet_fn: Any) -> Optional[str]:
+def _compat_legacy_command(task: str) -> Optional[str]:
+    """Return a compatibility response, or None for the native legacy router."""
     try:
         if task == RELIABILITY_STATUS_COMMAND:
             return _reliability_status()
@@ -259,8 +247,8 @@ def _compat_legacy_command(task: str, status_fn: Any, packet_fn: Any) -> Optiona
         if task.startswith(RECORD_INCIDENT_PREFIX):
             return _record_incident(task)
 
-        # Reserved compatibility namespaces fail closed rather than being sent
-        # to the general OpenAI collaborate prompt because of a typo.
+        # Reserved compatibility namespaces fail closed rather than reaching
+        # the general OpenAI collaborate prompt because of a typo.
         if task.startswith(("JAYTEC_RELIABILITY_", "JAYTEC_DURABLE_", "JAYTEC_RECORD_RELIABILITY_")):
             return _json(
                 {
@@ -281,14 +269,13 @@ def _compat_legacy_command(task: str, status_fn: Any, packet_fn: Any) -> Optiona
             }
         )
 
-    return _ORIGINAL_LEGACY_COMMAND(task, status_fn, packet_fn)
+    return None
 
 
 def create_mcp_app():
-    """Create the reliability runtime while preserving cached legacy tool callers."""
+    """Create the reliable runtime with a per-app compatibility extension."""
     global _APP
-    legacy_server._legacy_collaborate_command = _compat_legacy_command
-    app = reliable_server.create_mcp_app()
+    app = reliable_server.create_mcp_app(collaborate_extension=_compat_legacy_command)
     _APP = app
     return app
 
