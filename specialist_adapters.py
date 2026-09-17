@@ -7,6 +7,8 @@ strings and the dispatch semantics used by both entrypoints.
 Security / safety:
 - Enforces exact model identity BEFORE provider calls.
 - Prompts require strict JSON-only output and no side effects.
+- Provider timeouts are explicitly bounded and normalized to TimeoutError so
+  orchestration can classify them deterministically.
 - Gemini transport failures fail closed; malformed output is never guessed into
   a successful result.
 """
@@ -99,14 +101,34 @@ def _safe_transport_diagnostics(*, content: str, finish_reason: str | None, prov
     }
 
 
+def _is_timeout_exception(exc: Exception) -> bool:
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    return (
+        "timeout" in name
+        or "timedout" in name
+        or "timeout" in text
+        or "timed out" in text
+    )
+
+
+def _raise_normalized_timeout(exc: Exception, *, context: str) -> None:
+    if _is_timeout_exception(exc):
+        raise TimeoutError(f"{context}_timeout") from exc
+    raise exc
+
+
 def build_codex_dispatch(
     *,
     openai_client: OpenAI,
     codex_model: str,
     circuit: CircuitBreaker,
+    codex_timeout_s: float = 45.0,
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     # Fail closed BEFORE any upstream call.
     require_exact_model(codex_model, EXPECTED_CODEX_MODEL, context="codex")
+    if codex_timeout_s <= 0:
+        raise ValueError("codex_timeout_s must be positive")
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         prompt = (
@@ -115,11 +137,15 @@ def build_codex_dispatch(
             + "\nTASK_PACKET_JSON:\n"
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         )
-        response = openai_client.responses.create(
-            model=codex_model,
-            input=prompt,
-            reasoning={"effort": "high"},
-        )
+        try:
+            response = openai_client.responses.create(
+                model=codex_model,
+                input=prompt,
+                reasoning={"effort": "high"},
+                timeout=codex_timeout_s,
+            )
+        except Exception as exc:
+            _raise_normalized_timeout(exc, context="codex_provider")
         result = json_object(response.output_text or "")
         result.setdefault("model", codex_model)
         return result
@@ -136,6 +162,8 @@ def build_gemini_dispatch(
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     # Fail closed BEFORE any upstream call.
     require_exact_model(gemini_model, EXPECTED_GEMINI_MODEL, context="gemini")
+    if gemini_timeout_s <= 0:
+        raise ValueError("gemini_timeout_s must be positive")
 
     def _prompt(packet: Mapping[str, Any], *, retry_format: bool = False) -> str:
         prefix = GEMINI_RESEARCH_MODE_V1_1
@@ -152,22 +180,25 @@ def build_gemini_dispatch(
         )
 
     def _single_call(packet: Mapping[str, Any], *, retry_format: bool) -> Mapping[str, Any]:
-        response = openrouter_client.chat.completions.create(
-            model=gemini_model,
-            messages=[{"role": "user", "content": _prompt(packet, retry_format=retry_format)}],
-            temperature=0,
-            timeout=gemini_timeout_s,
-            stream=False,
-            response_format={"type": "json_object"},
-            extra_body={
-                "provider": {
-                    "sort": "price",
-                    # Provider failover is allowed only within the exact locked
-                    # model. The caller cannot provide a fallback model.
-                    "allow_fallbacks": True,
-                }
-            },
-        )
+        try:
+            response = openrouter_client.chat.completions.create(
+                model=gemini_model,
+                messages=[{"role": "user", "content": _prompt(packet, retry_format=retry_format)}],
+                temperature=0,
+                timeout=gemini_timeout_s,
+                stream=False,
+                response_format={"type": "json_object"},
+                extra_body={
+                    "provider": {
+                        "sort": "price",
+                        # Provider failover is allowed only within the exact locked
+                        # model. The caller cannot provide a fallback model.
+                        "allow_fallbacks": True,
+                    }
+                },
+            )
+        except Exception as exc:
+            _raise_normalized_timeout(exc, context="gemini_provider")
         if not response.choices:
             raise RuntimeError("gemini_no_choices")
 
