@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import threading
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Mapping, Optional
 
 import psycopg2.extras
@@ -23,6 +26,50 @@ from reliability_registry import transient_specialist_statuses
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _retry_after_seconds(value: Any, *, now: Optional[datetime] = None) -> Optional[int]:
+    """Parse Retry-After seconds or an HTTP date into a bounded delay."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        seconds = int(math.ceil(float(text)))
+    except (TypeError, ValueError):
+        try:
+            target = parsedate_to_datetime(text)
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=timezone.utc)
+            current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+            seconds = int(math.ceil((target.astimezone(timezone.utc) - current).total_seconds()))
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return max(1, min(seconds, 3600))
+
+
+def retry_delay_for_result(result: Mapping[str, Any], attempt_count: int) -> int:
+    """Use exponential backoff, extended when a provider gives Retry-After."""
+    delay = retry_delay_seconds(attempt_count)
+    nodes = [result]
+    for key in ("codex_result", "gemini_result"):
+        child = result.get(key)
+        if isinstance(child, Mapping):
+            nodes.append(child)
+    for node in nodes:
+        unresolved = node.get("unresolved_items")
+        if not isinstance(unresolved, (list, tuple)):
+            continue
+        for item in unresolved:
+            text = str(item)
+            marker = "retry_after="
+            if marker not in text:
+                continue
+            hinted = _retry_after_seconds(text.partition(marker)[2])
+            if hinted is not None:
+                delay = max(delay, hinted)
+    return max(1, min(int(delay), 3600))
 
 
 class ReliableDurableTaskQueue(DurableTaskQueue):
@@ -285,14 +332,16 @@ class ReliableDurableTaskWorker(DurableTaskWorker):
         overall = str(result.get("overall_status") or "FAILED_CLOSED")
         transient_statuses = transient_specialist_statuses(result)
         if transient_statuses and attempt_count < max_attempts:
+            delay_seconds = retry_delay_for_result(result, attempt_count)
             self.queue.requeue(
                 token,
                 error={
                     "overall_status": overall,
                     "transient_statuses": sorted(transient_statuses),
+                    "retry_delay_seconds": delay_seconds,
                     "result": result,
                 },
-                delay_seconds=retry_delay_seconds(attempt_count),
+                delay_seconds=delay_seconds,
             )
             incident = (
                 "SPECIALIST_TIMEOUT"
@@ -306,6 +355,7 @@ class ReliableDurableTaskWorker(DurableTaskWorker):
                     "overall_status": overall,
                     "transient_statuses": sorted(transient_statuses),
                     "attempt_count": attempt_count,
+                    "retry_delay_seconds": delay_seconds,
                 },
             )
             return True
