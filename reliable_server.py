@@ -1,0 +1,406 @@
+from __future__ import annotations
+
+import json
+import os
+import socket
+import threading
+from typing import Any, Mapping, Optional
+
+from openai import OpenAI
+
+import server as legacy_server
+from circuit_breaker import CircuitBreaker
+from durable_tasks import (
+    DurableTaskQueue,
+    DurableTaskWorker,
+    should_cache_orchestration_result,
+)
+from guardian import GuardianLite
+from idempotency_postgres import PostgresExecutionRegistry
+from orchestration import ExecutionRegistry, PacketValidationError
+from specialist_adapters import build_codex_dispatch, build_gemini_dispatch
+
+
+RUNTIME_ID = "JAYTEC_RELIABILITY_RUNTIME_V1"
+LEGACY_SYNC_PROVIDER_TIMEOUT_S = float(os.environ.get("LEGACY_SYNC_PROVIDER_TIMEOUT_S", "18"))
+DURABLE_CODEX_TIMEOUT_S = float(os.environ.get("DURABLE_CODEX_TIMEOUT_S", "90"))
+DURABLE_GEMINI_TIMEOUT_S = float(os.environ.get("DURABLE_GEMINI_TIMEOUT_S", "120"))
+DURABLE_WORKER_ENABLED = os.environ.get(
+    "DURABLE_WORKER_ENABLED",
+    "1" if legacy_server.RUNTIME_MODE == "production" else "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+GUARDIAN_LOOP_ENABLED = os.environ.get(
+    "GUARDIAN_LOOP_ENABLED",
+    "1" if legacy_server.RUNTIME_MODE == "production" else "0",
+).strip().lower() in {"1", "true", "yes", "on"}
+DURABLE_WORKER_POLL_S = float(os.environ.get("DURABLE_WORKER_POLL_S", "1"))
+DURABLE_WORKER_LEASE_S = int(os.environ.get("DURABLE_WORKER_LEASE_S", "300"))
+GUARDIAN_INTERVAL_S = float(os.environ.get("GUARDIAN_INTERVAL_S", "60"))
+MAX_PARALLEL_DURABLE_JOBS = int(os.environ.get("MAX_PARALLEL_DURABLE_JOBS", "4"))
+
+
+class _TransientAwareRegistry:
+    """Delegate registry that never caches whole-packet transient failures."""
+
+    def __init__(self, delegate: Any):
+        self.delegate = delegate
+
+    def lookup(self, key, packet_hash, *, now=None):
+        return self.delegate.lookup(key, packet_hash, now=now)
+
+    def store(self, key, packet_hash, result, *, now=None):
+        if should_cache_orchestration_result(result):
+            return self.delegate.store(key, packet_hash, result, now=now)
+        return None
+
+
+_ORIGINAL_EXECUTE = legacy_server._execute_task_packet_json
+_ORIGINAL_BUILD_CODEX = legacy_server.build_codex_dispatch
+_ORIGINAL_BUILD_GEMINI = legacy_server.build_gemini_dispatch
+
+
+def _transient_safe_execute_task_packet_json(
+    packet_json: str,
+    *,
+    registry: ExecutionRegistry,
+    idempotency_store: str,
+    codex_dispatch: Any,
+    gemini_dispatch: Any,
+) -> str:
+    return _ORIGINAL_EXECUTE(
+        packet_json,
+        registry=_TransientAwareRegistry(registry),
+        idempotency_store=idempotency_store,
+        codex_dispatch=codex_dispatch,
+        gemini_dispatch=gemini_dispatch,
+    )
+
+
+def _bounded_legacy_codex_dispatch(*, openai_client, codex_model, circuit):
+    return _ORIGINAL_BUILD_CODEX(
+        openai_client=openai_client,
+        codex_model=codex_model,
+        circuit=circuit,
+        codex_timeout_s=max(1.0, LEGACY_SYNC_PROVIDER_TIMEOUT_S),
+    )
+
+
+def _bounded_legacy_gemini_dispatch(*, openrouter_client, gemini_model, gemini_timeout_s, circuit):
+    return _ORIGINAL_BUILD_GEMINI(
+        openrouter_client=openrouter_client,
+        gemini_model=gemini_model,
+        gemini_timeout_s=max(1.0, min(float(gemini_timeout_s), LEGACY_SYNC_PROVIDER_TIMEOUT_S)),
+        circuit=circuit,
+    )
+
+
+# Compatibility path remains available, but it is bounded below typical MCP
+# dependency timeouts and transient failures do not poison idempotent replay.
+legacy_server._execute_task_packet_json = _transient_safe_execute_task_packet_json
+legacy_server.build_codex_dispatch = _bounded_legacy_codex_dispatch
+legacy_server.build_gemini_dispatch = _bounded_legacy_gemini_dispatch
+
+
+class GuardianBackgroundLoop:
+    def __init__(
+        self,
+        guardian: GuardianLite,
+        queue: DurableTaskQueue,
+        *,
+        interval_seconds: float,
+    ):
+        self.guardian = guardian
+        self.queue = queue
+        self.interval_seconds = max(5.0, float(interval_seconds))
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def run_once(self) -> Mapping[str, Any]:
+        return self.guardian.run(auto_repair=True)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.run_once()
+            except Exception as exc:
+                try:
+                    self.queue.record_incident(
+                        "GUARDIAN_LOOP_EXCEPTION",
+                        detail={
+                            "error_class": type(exc).__name__,
+                            "message": str(exc)[:1000],
+                        },
+                    )
+                except Exception:
+                    pass
+            self._stop.wait(self.interval_seconds)
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(
+            target=self._loop,
+            name="jaytec-guardian-lite-loop",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    @property
+    def alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def create_mcp_app():
+    mcp = legacy_server.create_mcp_app()
+
+    queue: Optional[DurableTaskQueue] = None
+    worker: Optional[DurableTaskWorker] = None
+    guardian: Optional[GuardianLite] = None
+    guardian_loop: Optional[GuardianBackgroundLoop] = None
+    durable_codex_circuit: Optional[CircuitBreaker] = None
+    durable_gemini_circuit: Optional[CircuitBreaker] = None
+
+    if legacy_server.DATABASE_URL:
+        queue = DurableTaskQueue(
+            legacy_server.DATABASE_URL,
+            max_parallel=MAX_PARALLEL_DURABLE_JOBS,
+        )
+        # Additive schema only. Production rollout is validated on an isolated
+        # Neon branch before this entrypoint is promoted.
+        queue.ensure_schema()
+        guardian = GuardianLite(legacy_server.DATABASE_URL)
+
+        durable_registry = PostgresExecutionRegistry(
+            database_url=legacy_server.DATABASE_URL,
+            ttl_seconds=ExecutionRegistry().ttl_seconds,
+        )
+        durable_registry.ensure_schema()
+
+        durable_openai = OpenAI(api_key=legacy_server.OPENAI_API_KEY)
+        durable_openrouter = (
+            OpenAI(
+                api_key=legacy_server.OPENROUTER_API_KEY,
+                base_url=legacy_server.OPENROUTER_BASE_URL,
+            )
+            if legacy_server.OPENROUTER_API_KEY
+            else None
+        )
+        durable_codex_circuit = CircuitBreaker(
+            failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
+            reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
+        )
+        durable_gemini_circuit = CircuitBreaker(
+            failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
+            reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
+        )
+        durable_codex_dispatch = build_codex_dispatch(
+            openai_client=durable_openai,
+            codex_model=legacy_server.CODEX_MODEL,
+            circuit=durable_codex_circuit,
+            codex_timeout_s=DURABLE_CODEX_TIMEOUT_S,
+        )
+        if durable_openrouter is not None:
+            durable_gemini_dispatch = build_gemini_dispatch(
+                openrouter_client=durable_openrouter,
+                gemini_model=legacy_server.GEMINI_MODEL,
+                gemini_timeout_s=DURABLE_GEMINI_TIMEOUT_S,
+                circuit=durable_gemini_circuit,
+            )
+        else:
+            durable_gemini_dispatch = durable_gemini_circuit.guard(
+                lambda _packet: (_ for _ in ()).throw(
+                    RuntimeError("OPENROUTER_API_KEY is not configured on this bridge")
+                )
+            )
+
+        def _execute_durable(packet_json: str) -> Mapping[str, Any]:
+            text = _transient_safe_execute_task_packet_json(
+                packet_json,
+                registry=durable_registry,
+                idempotency_store="postgres",
+                codex_dispatch=durable_codex_dispatch,
+                gemini_dispatch=durable_gemini_dispatch,
+            )
+            value = json.loads(text)
+            if not isinstance(value, dict):
+                raise RuntimeError("durable packet result must be object")
+            return value
+
+        instance_id = os.environ.get("RENDER_INSTANCE_ID", "").strip() or socket.gethostname()
+        worker = DurableTaskWorker(
+            queue,
+            _execute_durable,
+            owner=f"render:{instance_id}",
+            execution_room_id=f"durable-worker:{instance_id}",
+            poll_seconds=DURABLE_WORKER_POLL_S,
+            lease_seconds=DURABLE_WORKER_LEASE_S,
+        )
+        guardian_loop = GuardianBackgroundLoop(
+            guardian,
+            queue,
+            interval_seconds=GUARDIAN_INTERVAL_S,
+        )
+        if DURABLE_WORKER_ENABLED:
+            worker.start()
+        if GUARDIAN_LOOP_ENABLED:
+            guardian_loop.start()
+
+    @mcp.tool
+    def submit_task_packet_durable(
+        packet_json: str,
+        source_shared_state_version: int = 0,
+        priority: int = 100,
+        execution_room_id: str = "",
+    ) -> str:
+        """Persist a specialist packet and return immediately with a pollable job handle."""
+        if queue is None:
+            return _json({"available": False, "reason": "DATABASE_URL_NOT_CONFIGURED"})
+        try:
+            snapshot = queue.submit(
+                packet_json,
+                source_shared_state_version=source_shared_state_version,
+                priority=priority,
+                source_execution_room_id=execution_room_id or None,
+            )
+            return _json({
+                "available": True,
+                "preferred_poll_tool": "task_packet_status",
+                "snapshot": snapshot,
+            })
+        except (PacketValidationError, ValueError, RuntimeError) as exc:
+            return _json({
+                "available": True,
+                "accepted": False,
+                "error_class": type(exc).__name__,
+                "error": str(exc),
+            })
+
+    @mcp.tool
+    def task_packet_status(job_id: str = "", idempotency_key: str = "") -> str:
+        """Poll a durable specialist packet without rerunning it."""
+        if queue is None:
+            return _json({"available": False, "reason": "DATABASE_URL_NOT_CONFIGURED"})
+        try:
+            return _json({
+                "available": True,
+                "snapshot": queue.status(
+                    job_id=job_id or None,
+                    idempotency_key=idempotency_key or None,
+                ),
+            })
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc),
+            })
+
+    @mcp.tool
+    def reliability_status() -> str:
+        """Return durable worker/Guardian health and current operational counts."""
+        if queue is None:
+            return _json({
+                "runtime_id": RUNTIME_ID,
+                "database_available": False,
+                "durable_worker_enabled": False,
+                "guardian_loop_enabled": False,
+            })
+        return _json({
+            "runtime_id": RUNTIME_ID,
+            "database_available": True,
+            "preferred_specialist_execution": "submit_task_packet_durable -> task_packet_status",
+            "legacy_sync_execute_task_packet": "compatibility_only_bounded",
+            "legacy_sync_provider_timeout_seconds": LEGACY_SYNC_PROVIDER_TIMEOUT_S,
+            "durable_worker_enabled": DURABLE_WORKER_ENABLED,
+            "durable_worker_alive": bool(worker and worker.alive),
+            "guardian_loop_enabled": GUARDIAN_LOOP_ENABLED,
+            "guardian_loop_alive": bool(guardian_loop and guardian_loop.alive),
+            "durable_codex_circuit": durable_codex_circuit.snapshot() if durable_codex_circuit else None,
+            "durable_gemini_circuit": durable_gemini_circuit.snapshot() if durable_gemini_circuit else None,
+            "stats": queue.stats(),
+        })
+
+    @mcp.tool
+    def run_guardian_lite(auto_repair: bool = True) -> str:
+        """Run one bounded Guardian audit/containment pass immediately."""
+        if guardian is None:
+            return _json({"available": False, "reason": "DATABASE_URL_NOT_CONFIGURED"})
+        try:
+            return _json({"available": True, "result": guardian.run(auto_repair=auto_repair)})
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc),
+            })
+
+    @mcp.tool
+    def record_reliability_incident(
+        event_type: str,
+        detail_json: str = "{}",
+        job_id: str = "",
+    ) -> str:
+        """Persist a caller-observed timeout/freeze so Guardian/history can diagnose it."""
+        if queue is None:
+            return _json({"available": False, "reason": "DATABASE_URL_NOT_CONFIGURED"})
+        try:
+            detail = json.loads(detail_json or "{}")
+            if not isinstance(detail, dict):
+                raise ValueError("detail_json must encode an object")
+            event = queue.record_incident(
+                event_type,
+                job_id=job_id or None,
+                detail=detail,
+            )
+            return _json({"available": True, "event": event})
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc),
+            })
+
+    @mcp.tool
+    def durable_worker_kick() -> str:
+        """Run one worker iteration for diagnostics when background execution is disabled."""
+        if worker is None:
+            return _json({"available": False, "reason": "DATABASE_URL_NOT_CONFIGURED"})
+        try:
+            return _json({"available": True, "worked": worker.run_once()})
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc),
+            })
+
+    # Keep references alive and introspectable for production diagnostics/tests.
+    mcp._jaytec_reliability = {
+        "queue": queue,
+        "worker": worker,
+        "guardian": guardian,
+        "guardian_loop": guardian_loop,
+    }
+    return mcp
+
+
+def main() -> None:
+    mcp = create_mcp_app()
+    mcp.run(
+        transport="http",
+        host="0.0.0.0",
+        port=legacy_server.PORT,
+        stateless_http=True,
+        host_origin_protection=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
