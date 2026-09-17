@@ -27,8 +27,15 @@ class _CaptureApp:
 
     async def __call__(self, scope, receive, send):
         self.scope = scope
-        message = await receive()
-        self.body = message.get("body", b"")
+        chunks = []
+        while True:
+            message = await receive()
+            if message.get("type") != "http.request":
+                break
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        self.body = b"".join(chunks)
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b"", "more_body": False})
 
