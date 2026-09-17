@@ -10,7 +10,6 @@ import psycopg2.extras
 from durable_tasks import (
     ASSIGNMENT_TYPE,
     SUCCESS_OVERALL_STATUSES,
-    TRANSIENT_OVERALL_STATUSES,
     DurableTaskConflict,
     DurableTaskFenceError,
     DurableTaskQueue,
@@ -19,6 +18,7 @@ from durable_tasks import (
 )
 from orchestration import PacketValidationError, packet_hash, parse_packet_json, validate_packet
 from durable_tasks import contains_secret_material
+from reliability_registry import transient_specialist_statuses
 
 
 def _json(value: Any) -> str:
@@ -283,18 +283,40 @@ class ReliableDurableTaskWorker(DurableTaskWorker):
             return True
 
         overall = str(result.get("overall_status") or "FAILED_CLOSED")
-        if overall in TRANSIENT_OVERALL_STATUSES and attempt_count < max_attempts:
+        transient_statuses = transient_specialist_statuses(result)
+        if transient_statuses and attempt_count < max_attempts:
             self.queue.requeue(
                 token,
-                error={"overall_status": overall, "result": result},
+                error={
+                    "overall_status": overall,
+                    "transient_statuses": sorted(transient_statuses),
+                    "result": result,
+                },
                 delay_seconds=retry_delay_seconds(attempt_count),
             )
-            incident = "SPECIALIST_TIMEOUT" if overall == "TIMEOUT" else "SPECIALIST_PROVIDER_FAILURE"
+            incident = (
+                "SPECIALIST_TIMEOUT"
+                if "TIMEOUT" in transient_statuses
+                else "SPECIALIST_PROVIDER_FAILURE"
+            )
             self.queue.record_incident(
                 incident,
                 job_id=token.job_id,
-                detail={"overall_status": overall, "attempt_count": attempt_count},
+                detail={
+                    "overall_status": overall,
+                    "transient_statuses": sorted(transient_statuses),
+                    "attempt_count": attempt_count,
+                },
             )
+            return True
+
+        if transient_statuses:
+            terminal = dict(result)
+            terminal["overall_status"] = "FAILED_CLOSED"
+            unresolved = list(terminal.get("unresolved_items") or [])
+            unresolved.append("transient_specialist_retry_budget_exhausted")
+            terminal["unresolved_items"] = unresolved
+            self.queue.finish(token, result=terminal, succeeded=False)
             return True
 
         self.queue.finish(
