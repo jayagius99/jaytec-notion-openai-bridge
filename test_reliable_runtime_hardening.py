@@ -6,6 +6,7 @@ import unittest
 from types import SimpleNamespace
 
 from durable_tasks_runtime import ReliableDurableTaskQueue, ReliableDurableTaskWorker
+from reliability_registry import should_cache_reliable_result, transient_specialist_statuses
 
 
 class _FakeCursor:
@@ -68,6 +69,43 @@ class _AttemptBudgetQueue:
         return {"job_id": token.job_id}
 
 
+class _PartialTransientQueue:
+    def __init__(self, *, attempt_count=1, max_attempts=3):
+        self.attempt_count = attempt_count
+        self.max_attempts = max_attempts
+        self.requeued = None
+        self.finished = None
+        self.incident = None
+
+    def claim_next(self, **kwargs):
+        return {
+            "job_id": "job-partial",
+            "attempt_count": self.attempt_count,
+            "max_attempts": self.max_attempts,
+            "packet": {"task_id": "t"},
+        }
+
+    def token_from_claim(self, claimed):
+        return SimpleNamespace(job_id=claimed["job_id"])
+
+    def requeue(self, token, *, error, delay_seconds):
+        self.requeued = (token.job_id, dict(error), delay_seconds)
+        return {"job_id": token.job_id}
+
+    def finish(self, token, *, result, succeeded):
+        self.finished = (token.job_id, dict(result), succeeded)
+        return {"job_id": token.job_id}
+
+    def record_incident(self, event_type, *, job_id, detail):
+        self.incident = (event_type, job_id, dict(detail))
+        return {}
+
+
+class _ImmediateWorker(ReliableDurableTaskWorker):
+    def _execute_with_heartbeat(self, token, packet):
+        return dict(self.execute_packet("{}"))
+
+
 class TestReliableRuntimeHardening(unittest.TestCase):
     def test_schema_gate_is_read_only_and_accepts_ready_schema(self):
         queue = _SchemaQueue(
@@ -119,6 +157,62 @@ class TestReliableRuntimeHardening(unittest.TestCase):
         self.assertFalse(queue.finished[2])
         self.assertIn(
             "durable_retry_budget_exhausted_before_dispatch",
+            queue.finished[1]["unresolved_items"],
+        )
+
+    def test_partial_success_with_transient_specialist_is_not_cacheable(self):
+        result = {
+            "overall_status": "PARTIAL_SUCCESS",
+            "codex_result": {"status": "SUCCESS"},
+            "gemini_result": {"status": "TIMEOUT"},
+        }
+        self.assertEqual(transient_specialist_statuses(result), {"TIMEOUT"})
+        self.assertFalse(should_cache_reliable_result(result))
+
+    def test_partial_success_with_transient_specialist_is_requeued(self):
+        queue = _PartialTransientQueue(attempt_count=1, max_attempts=3)
+        result = {
+            "overall_status": "PARTIAL_SUCCESS",
+            "codex_result": {"status": "SUCCESS"},
+            "gemini_result": {"status": "TIMEOUT"},
+            "unresolved_items": ["worker_timeout"],
+        }
+        worker = _ImmediateWorker(
+            queue,
+            lambda _packet_json: result,
+            owner="worker",
+            execution_room_id="room",
+            poll_seconds=1,
+            lease_seconds=30,
+        )
+        self.assertTrue(worker.run_once())
+        self.assertIsNotNone(queue.requeued)
+        self.assertIsNone(queue.finished)
+        self.assertEqual(queue.incident[0], "SPECIALIST_TIMEOUT")
+
+    def test_partial_transient_fails_closed_when_retry_budget_is_exhausted(self):
+        queue = _PartialTransientQueue(attempt_count=3, max_attempts=3)
+        result = {
+            "overall_status": "PARTIAL_SUCCESS",
+            "codex_result": {"status": "SUCCESS"},
+            "gemini_result": {"status": "RATE_LIMITED"},
+            "unresolved_items": ["retryable_rate_limit"],
+        }
+        worker = _ImmediateWorker(
+            queue,
+            lambda _packet_json: result,
+            owner="worker",
+            execution_room_id="room",
+            poll_seconds=1,
+            lease_seconds=30,
+        )
+        self.assertTrue(worker.run_once())
+        self.assertIsNone(queue.requeued)
+        self.assertIsNotNone(queue.finished)
+        self.assertFalse(queue.finished[2])
+        self.assertEqual(queue.finished[1]["overall_status"], "FAILED_CLOSED")
+        self.assertIn(
+            "transient_specialist_retry_budget_exhausted",
             queue.finished[1]["unresolved_items"],
         )
 
