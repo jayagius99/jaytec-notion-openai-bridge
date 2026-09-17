@@ -32,8 +32,13 @@ CREATE TABLE IF NOT EXISTS jaytec_jobs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Retry/backoff readiness is orthogonal to lease ownership. This column is
+-- additive so older v1.3 databases upgrade safely in-place.
+ALTER TABLE jaytec_jobs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS jaytec_jobs_status_idx ON jaytec_jobs(status, priority, updated_at);
 CREATE INDEX IF NOT EXISTS jaytec_jobs_task_idx ON jaytec_jobs(project_id, task_id);
+CREATE INDEX IF NOT EXISTS jaytec_jobs_ready_idx ON jaytec_jobs(status, next_attempt_at, priority, updated_at);
 
 CREATE TABLE IF NOT EXISTS jaytec_job_steps (
   job_id TEXT NOT NULL REFERENCES jaytec_jobs(job_id) ON DELETE CASCADE,
@@ -107,3 +112,25 @@ CREATE TABLE IF NOT EXISTS jaytec_guardian_findings (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Durable, pollable payload/result storage for specialist orchestration.
+-- The job row remains the scheduler/lease authority; this table only stores
+-- the validated packet and its durable result so a caller timeout cannot lose
+-- the assignment or require reconstruction from chat state.
+CREATE TABLE IF NOT EXISTS jaytec_task_packets (
+  job_id TEXT PRIMARY KEY REFERENCES jaytec_jobs(job_id) ON DELETE CASCADE,
+  packet_hash TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  packet JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'QUEUED' CHECK (status IN ('QUEUED','RUNNING','SUCCEEDED','FAILED_SAFE')),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts BETWEEN 1 AND 10),
+  result JSONB,
+  error JSONB,
+  last_started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS jaytec_task_packets_status_idx ON jaytec_task_packets(status, updated_at);
