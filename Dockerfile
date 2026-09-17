@@ -6,11 +6,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the full runtime needed by the production entrypoint.
-# (Previously only server.py + PROJECT_CONTEXT.md were copied, which would break
-# unified orchestration and idempotency modules after merge.)
 COPY . ./
 
 ENV PORT=8000
 EXPOSE 8000
 
-CMD ["python", "server.py"]
+# reliable_server preserves the legacy MCP surface while adding durable,
+# pollable specialist execution, Guardian Lite background health checks, and
+# bounded compatibility timeouts.
+CMD ["python", "reliable_server.py"]
