@@ -76,11 +76,11 @@ CREATE TABLE IF NOT EXISTS jaytec_operations (
   started_at TIMESTAMPTZ,
   verified_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  FOREIGN KEY (job_id, step_id) REFERENCES jaytec_job_steps(job_id, step_id) ON DELETE SET NULL
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS jaytec_operations_job_status_idx ON jaytec_operations(job_id, status, updated_at);
+CREATE INDEX IF NOT EXISTS jaytec_operations_step_idx ON jaytec_operations(job_id, step_id);
 
 CREATE TABLE IF NOT EXISTS jaytec_job_events (
   event_id BIGSERIAL PRIMARY KEY,
