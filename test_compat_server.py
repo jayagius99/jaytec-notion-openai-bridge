@@ -3,7 +3,6 @@ import os
 import subprocess
 import sys
 import unittest
-from types import SimpleNamespace
 
 import compat_server
 from durable_tasks_runtime import ReliableDurableTaskQueue
@@ -84,24 +83,17 @@ class TestCompatServer(unittest.TestCase):
         self.queue = _Queue()
         self.worker = _Worker()
         self.guardian = _Guardian()
-        compat_server._APP = SimpleNamespace(
-            _jaytec_reliability={
-                "queue": self.queue,
-                "worker": self.worker,
-                "guardian": self.guardian,
-                "guardian_loop": _Loop(),
-            }
-        )
-
-    def tearDown(self):
-        compat_server._APP = None
+        self.runtime = {
+            "queue": self.queue,
+            "worker": self.worker,
+            "guardian": self.guardian,
+            "guardian_loop": _Loop(),
+        }
+        self.middleware = compat_server.ReliabilityCompatMiddleware(self.runtime)
 
     def _call(self, task):
-        text = compat_server._compat_legacy_command(
-            task,
-            lambda: "legacy-status",
-            lambda packet: "legacy-packet:" + packet,
-        )
+        text = self.middleware.dispatch(task)
+        self.assertIsNotNone(text, f"compat command unexpectedly delegated: {task}")
         return json.loads(text)
 
     def test_reliability_status_uses_existing_collaborate_surface(self):
@@ -180,8 +172,8 @@ class TestCompatServer(unittest.TestCase):
 
     def test_compat_path_preserves_real_packet_validation_before_db(self):
         validation_queue = _ValidationQueue()
-        compat_server._APP = SimpleNamespace(
-            _jaytec_reliability={
+        self.middleware = compat_server.ReliabilityCompatMiddleware(
+            {
                 "queue": validation_queue,
                 "worker": self.worker,
                 "guardian": self.guardian,
@@ -206,8 +198,8 @@ class TestCompatServer(unittest.TestCase):
 
     def test_compat_path_preserves_real_secret_rejection_before_db(self):
         validation_queue = _ValidationQueue()
-        compat_server._APP = SimpleNamespace(
-            _jaytec_reliability={
+        self.middleware = compat_server.ReliabilityCompatMiddleware(
+            {
                 "queue": validation_queue,
                 "worker": self.worker,
                 "guardian": self.guardian,
@@ -261,13 +253,9 @@ class TestCompatServer(unittest.TestCase):
         self.assertFalse(result["available"])
         self.assertEqual(result["error_class"], "UNKNOWN_COMPAT_COMMAND")
 
-    def test_legacy_status_command_still_delegates_to_original_router(self):
-        text = compat_server._compat_legacy_command(
-            "JAYTEC_ORCHESTRATION_STATUS",
-            lambda: "legacy-status",
-            lambda packet: "legacy-packet:" + packet,
-        )
-        self.assertEqual(text, "legacy-status")
+    def test_ordinary_legacy_command_is_delegated_by_middleware(self):
+        result = self.middleware.dispatch("JAYTEC_ORCHESTRATION_STATUS")
+        self.assertIsNone(result)
 
     def test_fastmcp_catalog_and_cached_collaborate_path_survive_repeat_startup(self):
         env = os.environ.copy()
