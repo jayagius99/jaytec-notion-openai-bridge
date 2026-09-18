@@ -6,8 +6,8 @@ services:
     region: oregon
     branch: staging/execute-task-packet-v1
     buildCommand: pip install -r requirements.txt
-    # Validation/review probes fail closed without preventing staging boot. The paid OpenAI/Codex engineering door is LOCKED_RESERVE and no provider probe runs while locked.
-    startCommand: python staging_adversarial_probe.py && (python staging_manus_door_probe.py || true) && (python staging_gemini_migration_review.py || true) && (python staging_manus_review_readback.py || true) && python staging_server.py
+    # Startup runs deterministic local validation only. Specialist/provider review probes are on-demand; locked or exhausted lanes never spend credits or slow every deploy.
+    startCommand: python staging_adversarial_probe.py && python staging_server.py
     autoDeploy: true
     envVars:
       - key: MCP_AUTH_TOKEN
