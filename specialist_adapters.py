@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Mapping
 
-from openai import OpenAI
+from openai import OpenAI, RateLimitError as OpenAIRateLimitError
+
+from orchestration import RateLimitError as OrchestrationRateLimitError
 
 from circuit_breaker import CircuitBreaker
 from worker_json import json_object
@@ -67,6 +69,38 @@ def require_exact_model(name: str, expected: str, *, context: str) -> None:
         raise RuntimeError(f"{context}: model mismatch (expected {expected}, got {name})")
 
 
+def _safe_openai_rate_limit_details(exc: Exception) -> dict[str, Any]:
+    """Extract only non-secret diagnostics needed to classify OpenAI 429s."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    body = getattr(exc, "body", None)
+    error = body.get("error", {}) if isinstance(body, Mapping) else {}
+    if not isinstance(error, Mapping):
+        error = {}
+
+    def _header(name: str) -> Any:
+        try:
+            return headers.get(name)
+        except Exception:
+            return None
+
+    details = {
+        "status_code": getattr(exc, "status_code", None),
+        "error_type": error.get("type"),
+        "error_code": error.get("code"),
+        "error_param": error.get("param"),
+        "request_id": getattr(exc, "request_id", None) or _header("x-request-id"),
+        "retry_after": _header("retry-after"),
+        "x_ratelimit_limit_requests": _header("x-ratelimit-limit-requests"),
+        "x_ratelimit_remaining_requests": _header("x-ratelimit-remaining-requests"),
+        "x_ratelimit_reset_requests": _header("x-ratelimit-reset-requests"),
+        "x_ratelimit_limit_tokens": _header("x-ratelimit-limit-tokens"),
+        "x_ratelimit_remaining_tokens": _header("x-ratelimit-remaining-tokens"),
+        "x_ratelimit_reset_tokens": _header("x-ratelimit-reset-tokens"),
+    }
+    return {k: v for k, v in details.items() if v is not None}
+
+
 def build_codex_dispatch(
     *,
     openai_client: OpenAI,
@@ -83,11 +117,19 @@ def build_codex_dispatch(
             + "\nTASK_PACKET_JSON:\n"
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         )
-        response = openai_client.responses.create(
-            model=codex_model,
-            input=prompt,
-            reasoning={"effort": "high"},
-        )
+        try:
+            response = openai_client.responses.create(
+                model=codex_model,
+                input=prompt,
+                reasoning={"effort": "high"},
+            )
+        except OpenAIRateLimitError as exc:
+            details = _safe_openai_rate_limit_details(exc)
+            raise OrchestrationRateLimitError(
+                "OpenAI rate limited",
+                retry_after=details.get("retry_after"),
+                details=details,
+            ) from exc
         result = json_object(response.output_text or "")
         result.setdefault("model", codex_model)
         return result
