@@ -21,7 +21,7 @@ MODEL = os.environ.get(
 ).strip()
 ALLOWED_MODELS = {
     "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "google/gemini-2.0-flash-exp:free",
+    "google/gemma-4-31b-it:free",
 }
 MAX_PACKET_CHARS = 24_000
 

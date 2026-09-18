@@ -18,7 +18,7 @@ class TestIndependentG1Review(unittest.TestCase):
     def test_packet_is_bounded_and_secret_safe(self):
         module = _load()
         self.assertIn("nvidia/nemotron-3-ultra-550b-a55b:free", module.ALLOWED_MODELS)
-        self.assertIn("google/gemini-2.0-flash-exp:free", module.ALLOWED_MODELS)
+        self.assertIn("google/gemma-4-31b-it:free", module.ALLOWED_MODELS)
         ok = module._validate_packet({"proofs": {"P01": "PASS"}, "evidence": ["hash-only"]})
         self.assertEqual("PASS", ok["proofs"]["P01"])
         with self.assertRaisesRegex(ValueError, "FORBIDDEN_KEY"):
@@ -31,7 +31,7 @@ class TestIndependentG1Review(unittest.TestCase):
         self.assertEqual(
             {
                 "nvidia/nemotron-3-ultra-550b-a55b:free",
-                "google/gemini-2.0-flash-exp:free",
+                "google/gemma-4-31b-it:free",
             },
             module.ALLOWED_MODELS,
         )
