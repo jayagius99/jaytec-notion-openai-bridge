@@ -53,7 +53,7 @@ jobs:
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
             test_worker_output_parsing.py test_idempotency_postgres.py test_dockerfile_packaging.py \
-            test_contract_equivalence.py test_server_candidate_probe.py
+            test_contract_equivalence.py test_server_candidate_probe.py test_engineering_migration_guard.py
       - name: Import guard (server.py must be importable without secrets)
         run: python -c "import server; print('server_import_ok')"
       - name: Run unit tests
