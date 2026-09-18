@@ -27,6 +27,8 @@ EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
 # Semantically it now means the JAYTEC engineering specialist role.
 EXPECTED_CODEX_MODEL = EXPECTED_ENGINEERING_MODEL
 EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
+ENGINEERING_PROVIDER_ACTIVE = "ACTIVE"
+ENGINEERING_PROVIDER_LOCKED_RESERVE = "LOCKED_RESERVE"
 
 ENGINEERING_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
 
@@ -69,6 +71,16 @@ REQUIRED SHAPE (types are strict):
 - requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
 
 Never expose credentials. Do not perform engineering writes."""
+
+
+def resolve_engineering_provider_mode(env: Mapping[str, str] | None = None) -> str:
+    source = os.environ if env is None else env
+    mode = str(
+        source.get("ENGINEERING_PROVIDER_MODE", ENGINEERING_PROVIDER_LOCKED_RESERVE) or ""
+    ).strip().upper()
+    if mode not in {ENGINEERING_PROVIDER_ACTIVE, ENGINEERING_PROVIDER_LOCKED_RESERVE}:
+        raise RuntimeError(f"invalid ENGINEERING_PROVIDER_MODE: {mode}")
+    return mode
 
 
 def resolve_engineering_model(env: Mapping[str, str] | None = None) -> str:
