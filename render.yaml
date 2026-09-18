@@ -27,3 +27,7 @@ services:
         fromDatabase:
           name: jaytec-orchestration-state
           property: connectionString
+      - key: JAYTEC_STAGING_DATABASE_URL
+        fromDatabase:
+          name: jaytec-orchestration-state
+          property: connectionString

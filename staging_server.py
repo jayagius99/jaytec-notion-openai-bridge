@@ -39,7 +39,10 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
 CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+DATABASE_URL = (
+    os.environ.get("JAYTEC_STAGING_DATABASE_URL", "").strip()
+    or os.environ.get("DATABASE_URL", "").strip()
+)
 
 if not MCP_AUTH_TOKEN:
     raise RuntimeError("MCP_AUTH_TOKEN is required")

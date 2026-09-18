@@ -11,7 +11,10 @@ class TestPostgresRegistryPresence(unittest.TestCase):
 
 class TestPostgresRegistrySemantics(unittest.TestCase):
     def setUp(self):
-        self.db = os.environ.get("TEST_DATABASE_URL", "").strip()
+        self.db = (
+            os.environ.get("JAYTEC_STAGING_DATABASE_URL", "").strip()
+            or os.environ.get("TEST_DATABASE_URL", "").strip()
+        )
         if not self.db:
             self.skipTest("TEST_DATABASE_URL not set")
         from idempotency_postgres import PostgresExecutionRegistry
