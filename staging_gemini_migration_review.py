@@ -7,7 +7,6 @@ credits. No tools or side effects are authorized.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
 
 from orchestration import execute_task_packet_core, redact
 from staging_server import GEMINI_DISPATCH, GEMINI_MODEL, REGISTRY
@@ -25,7 +24,7 @@ def packet():
         "parent_task_id": TASK_ID,
         "request": (
             "Act as an independent adversarial architecture reviewer. Review staging commit "
-            "91b786ad52ad32265ca3ff01300442fa8c5447e2 in "
+            "migration lineage through 6e3cdfa1b7d9c7ca3a57d656bec05e6d89a28cd1 in "
             "jayagius99/jaytec-notion-openai-bridge. JAYTEC retains legacy TaskPacket key "
             "'codex' only for wire compatibility, but changes the semantic role from a "
             "hard-pinned gpt-5.3-codex specialist to a provider-neutral engineering-specialist "
@@ -41,7 +40,7 @@ def packet():
         "workflow_id": "WORKFLOW_ARCHITECTURE_DECISION",
         "risk_level": "low",
         "required_context": {
-            "commit": "91b786ad52ad32265ca3ff01300442fa8c5447e2",
+            "migration_baseline": "6e3cdfa1b7d9c7ca3a57d656bec05e6d89a28cd1",
             "current_primary_engineering_model": "gpt-5.6-sol",
             "legacy_wire_key": "codex",
             "sealed_v1": True,
@@ -70,7 +69,7 @@ def packet():
         ],
         "side_effect_policy": "none",
         "idempotency_key": KEY,
-        "deadline": (datetime.now(timezone.utc) + timedelta(minutes=8)).isoformat(),
+        "deadline": "2026-09-20T00:00:00+00:00",
         "max_fanout": 1,
         "max_retries": 0,
         "return_schema_version": "1.0",
