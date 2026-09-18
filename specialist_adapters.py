@@ -23,6 +23,7 @@ from openai import OpenAI
 from circuit_breaker import CircuitBreaker
 from orchestration import ProviderUnavailableError, RateLimitError
 from jaytec_read import (
+    JAYTEC_READ_FETCH_ENGINES,
     JAYTEC_READ_PROMPT,
     build_openrouter_web_fetch_tool,
     enforce_read_report,
@@ -198,11 +199,18 @@ def build_gemini_dispatch(
     if gemini_timeout_s <= 0:
         raise ValueError("gemini_timeout_s must be positive")
 
-    def _prompt(packet: Mapping[str, Any], *, retry_format: bool = False) -> str:
+    def _prompt(
+        packet: Mapping[str, Any],
+        *,
+        retry_format: bool = False,
+        fetch_engine: str | None = None,
+    ) -> str:
         prefix = GEMINI_RESEARCH_MODE_V1_1
         if is_jaytec_read_packet(packet):
             prefix += "\n" + JAYTEC_READ_PROMPT
             prefix += "\nSOURCE_URL: " + source_url_from_packet(packet)
+            if fetch_engine:
+                prefix += "\nFETCH_ENGINE: " + fetch_engine
         if retry_format:
             prefix += "\n" + GEMINI_FORMAT_RETRY
         return (
@@ -215,11 +223,23 @@ def build_gemini_dispatch(
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         )
 
-    def _single_call(packet: Mapping[str, Any], *, retry_format: bool) -> Mapping[str, Any]:
+    def _single_call(
+        packet: Mapping[str, Any],
+        *,
+        retry_format: bool,
+        fetch_engine: str | None = None,
+    ) -> Mapping[str, Any]:
         read_source_url = source_url_from_packet(packet) if is_jaytec_read_packet(packet) else None
         request_kwargs: dict[str, Any] = {
             "model": gemini_model,
-            "messages": [{"role": "user", "content": _prompt(packet, retry_format=retry_format)}],
+            "messages": [{
+                "role": "user",
+                "content": _prompt(
+                    packet,
+                    retry_format=retry_format,
+                    fetch_engine=fetch_engine,
+                ),
+            }],
             "temperature": 0,
             "timeout": gemini_timeout_s,
             "stream": False,
@@ -232,7 +252,10 @@ def build_gemini_dispatch(
             },
         }
         if read_source_url is not None:
-            request_kwargs["tools"] = [build_openrouter_web_fetch_tool(read_source_url)]
+            engine = fetch_engine or JAYTEC_READ_FETCH_ENGINES[0]
+            request_kwargs["tools"] = [
+                build_openrouter_web_fetch_tool(read_source_url, engine=engine)
+            ]
             request_kwargs["tool_choice"] = "required"
 
         try:
@@ -244,7 +267,11 @@ def build_gemini_dispatch(
 
         returned_provider_model = _provider_model(response)
         if returned_provider_model is not None:
-            require_exact_model(returned_provider_model, gemini_model, context="gemini_provider_response")
+            require_exact_model(
+                returned_provider_model,
+                gemini_model,
+                context="gemini_provider_response",
+            )
 
         choice = response.choices[0]
         finish_reason = _finish_reason(choice)
@@ -265,23 +292,76 @@ def build_gemini_dispatch(
             extracted_object=diagnostics.extracted_object,
         )
         if read_source_url is not None:
+            engine = fetch_engine or JAYTEC_READ_FETCH_ENGINES[0]
             transport_diagnostics["web_retrieval"] = {
                 "enabled": True,
-                "engine": "openrouter",
-                "source_url_sha256": hashlib.sha256(read_source_url.encode("utf-8")).hexdigest(),
+                "engine": engine,
+                "source_url_sha256": hashlib.sha256(
+                    read_source_url.encode("utf-8")
+                ).hexdigest(),
                 "notion_fallback": False,
             }
             result = enforce_read_report(result, read_source_url)
         result["bridge_diagnostics"] = transport_diagnostics
         return result
 
-    def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _single_with_format_retry(
+        packet: Mapping[str, Any],
+        *,
+        fetch_engine: str | None = None,
+    ) -> Mapping[str, Any]:
         try:
-            return _single_call(packet, retry_format=False)
+            return _single_call(
+                packet,
+                retry_format=False,
+                fetch_engine=fetch_engine,
+            )
         except WorkerJsonError:
             retries = packet.get("max_retries", 0)
             if not isinstance(retries, int) or isinstance(retries, bool) or retries < 1:
                 raise
-            return _single_call(packet, retry_format=True)
+            return _single_call(
+                packet,
+                retry_format=True,
+                fetch_engine=fetch_engine,
+            )
+
+    def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+        if not is_jaytec_read_packet(packet):
+            return _single_with_format_retry(packet)
+
+        attempts: list[dict[str, Any]] = []
+        last_result: Mapping[str, Any] | None = None
+        for engine in JAYTEC_READ_FETCH_ENGINES:
+            result = _single_with_format_retry(packet, fetch_engine=engine)
+            last_result = result
+            attempts.append(
+                {
+                    "engine": engine,
+                    "status": result.get("status"),
+                    "verified": (
+                        isinstance(result.get("conclusion"), Mapping)
+                        and isinstance(result["conclusion"].get("READ_REPORT"), Mapping)
+                        and result["conclusion"]["READ_REPORT"].get("VERIFIED") is True
+                    ),
+                }
+            )
+            if result.get("status") == "SUCCESS" and attempts[-1]["verified"] is True:
+                out = dict(result)
+                diagnostics = dict(out.get("bridge_diagnostics") or {})
+                diagnostics["web_retrieval_attempts"] = attempts
+                out["bridge_diagnostics"] = diagnostics
+                return out
+            if result.get("status") in {"POLICY_BLOCKED", "INVALID_PACKET"}:
+                break
+
+        if last_result is None:
+            raise RuntimeError("jaytec_read_no_fetch_attempts")
+        out = dict(last_result)
+        diagnostics = dict(out.get("bridge_diagnostics") or {})
+        diagnostics["web_retrieval_attempts"] = attempts
+        diagnostics["notion_fallback"] = False
+        out["bridge_diagnostics"] = diagnostics
+        return out
 
     return circuit.guard(_dispatch)
