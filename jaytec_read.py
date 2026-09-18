@@ -134,8 +134,12 @@ def validate_public_source_url(url: str) -> str:
     if ":" in hostname and not hostname.startswith("["):
         hostname = f"[{hostname}]"
     netloc = hostname
-    if parsed.port is not None:
-        netloc += f":{parsed.port}"
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise JaytecReadPolicyError("source_url_port_invalid") from exc
+    if port is not None:
+        netloc += f":{port}"
 
     return urlunsplit((parsed.scheme, netloc, parsed.path or "/", parsed.query, ""))
 
