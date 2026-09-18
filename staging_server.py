@@ -28,7 +28,9 @@ from specialist_adapters import (
     build_codex_dispatch,
     build_engineering_dispatch,
     build_gemini_dispatch,
+    ENGINEERING_PROVIDER_ACTIVE,
     resolve_engineering_model,
+    resolve_engineering_provider_mode,
 )
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -36,6 +38,7 @@ MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 ENGINEERING_MODEL = resolve_engineering_model()
 CODEX_MODEL = ENGINEERING_MODEL
+ENGINEERING_PROVIDER_MODE = resolve_engineering_provider_mode()
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
@@ -80,14 +83,20 @@ GEMINI_CIRCUIT = CircuitBreaker(
     reset_after_seconds=CIRCUIT_RESET_SECONDS,
 )
 
-OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+OPENAI_CLIENT = (
+    OpenAI(api_key=OPENAI_API_KEY)
+    if ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE and OPENAI_API_KEY
+    else None
+)
 OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
 
 # Build dispatchers ONCE to avoid runtime drift and repeated guards.
 ENGINEERING_DISPATCH = (
     build_engineering_dispatch(openai_client=OPENAI_CLIENT, engineering_model=ENGINEERING_MODEL, circuit=CODEX_CIRCUIT)
     if OPENAI_CLIENT
-    else CODEX_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENAI_API_KEY is not configured on the staging bridge")))
+    else CODEX_CIRCUIT.guard(
+        lambda _packet: (_ for _ in ()).throw(RuntimeError("ENGINEERING_PROVIDER_DOOR_LOCKED_RESERVE"))
+    )
 )
 CODEX_DISPATCH = ENGINEERING_DISPATCH  # TaskPacket v1 wire alias
 
@@ -110,8 +119,9 @@ def orchestration_status() -> str:
             "status": "STAGING",
             "operation": "execute_task_packet",
             "engineering_model": ENGINEERING_MODEL,
+            "engineering_provider_mode": ENGINEERING_PROVIDER_MODE,
             "codex_model": CODEX_MODEL,  # legacy compatibility field
-            "codex_adapter_configured": bool(OPENAI_API_KEY),
+            "codex_adapter_configured": bool(OPENAI_CLIENT),
             "codex_circuit": CODEX_CIRCUIT.snapshot(),
             "gemini_model": GEMINI_MODEL,
             "gemini_adapter_configured": bool(OPENROUTER_API_KEY),
