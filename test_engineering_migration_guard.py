@@ -4,7 +4,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from orchestration import ExecutionRegistry, EXPECTED_MODELS, execute_task_packet_core
-from specialist_adapters import EXPECTED_CODEX_MODEL, EXPECTED_ENGINEERING_MODEL
+from specialist_adapters import (
+    EXPECTED_CODEX_MODEL,
+    EXPECTED_ENGINEERING_MODEL,
+    resolve_engineering_model,
+)
 
 
 def packet(key="migration-stress"):
@@ -40,6 +44,23 @@ class TestEngineeringMigrationGuard(unittest.TestCase):
         self.assertEqual("gpt-5.6-sol", EXPECTED_ENGINEERING_MODEL)
         self.assertEqual(EXPECTED_ENGINEERING_MODEL, EXPECTED_CODEX_MODEL)
         self.assertEqual("gpt-5.6-sol", EXPECTED_MODELS["codex"])
+
+    def test_engineering_model_config_alias_is_fail_closed(self):
+        self.assertEqual("gpt-5.6-sol", resolve_engineering_model({}))
+        self.assertEqual("gpt-5.6-sol", resolve_engineering_model({"ENGINEERING_MODEL": "gpt-5.6-sol"}))
+        self.assertEqual("gpt-5.6-sol", resolve_engineering_model({"CODEX_MODEL": "gpt-5.6-sol"}))
+        self.assertEqual(
+            "gpt-5.6-sol",
+            resolve_engineering_model({
+                "ENGINEERING_MODEL": "gpt-5.6-sol",
+                "CODEX_MODEL": "gpt-5.6-sol",
+            }),
+        )
+        with self.assertRaises(RuntimeError):
+            resolve_engineering_model({
+                "ENGINEERING_MODEL": "gpt-5.6-sol",
+                "CODEX_MODEL": "gpt-5.3-codex",
+            })
 
     def test_active_runtime_has_no_legacy_53_model_lock(self):
         active = [
