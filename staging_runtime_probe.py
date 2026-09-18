@@ -122,6 +122,7 @@ def _summarize(label: str, packet: Dict[str, Any], result: Dict[str, Any]) -> Di
         "side_effects_attempted": result.get("side_effects_attempted", []),
         "approval_required": result.get("approval_required"),
         "retry_count": result.get("usage_summary", {}).get("retry_count", 0),
+        "retry_trace": result.get("retry_trace", []),
         "return_schema_version": result.get("return_schema_version"),
         "idempotent_replay": result.get("usage_summary", {}).get("idempotent_replay"),
     }
