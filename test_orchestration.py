@@ -220,6 +220,24 @@ class TestOrchestration(unittest.TestCase):
         out = execute_task_packet_core(p, {"gemini": worker}, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("RATE_LIMITED", out["overall_status"])
 
+    def test_rate_limit_details_are_preserved(self):
+        p = base_packet(); p["specialist_plan"] = ["codex"]; p["max_fanout"] = 1; p["max_retries"] = 0
+        def worker(_):
+            raise RateLimitError(
+                retry_after=0,
+                details={
+                    "error_code": "project_spend_limit_exceeded",
+                    "error_type": "insufficient_quota",
+                    "x_ratelimit_remaining_requests": "0",
+                },
+            )
+        out = execute_task_packet_core(p, {"codex": worker}, ExecutionRegistry(), sleep_fn=lambda _: None)
+        self.assertEqual("RATE_LIMITED", out["overall_status"])
+        details = out["retry_trace"][0]["provider_details"]
+        self.assertEqual("project_spend_limit_exceeded", details["error_code"])
+        self.assertEqual("insufficient_quota", details["error_type"])
+        self.assertEqual("0", details["x_ratelimit_remaining_requests"])
+
     def test_provider_unavailable_retries_and_fails_closed(self):
         p = base_packet(); p["specialist_plan"] = ["codex"]; p["max_fanout"] = 1; p["max_retries"] = 1
         def worker(_): raise ProviderUnavailableError(retry_after=0)
