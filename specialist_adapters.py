@@ -233,6 +233,7 @@ def build_gemini_dispatch(
         }
         if read_source_url is not None:
             request_kwargs["tools"] = [build_openrouter_web_fetch_tool(read_source_url)]
+            request_kwargs["tool_choice"] = "required"
 
         try:
             response = openrouter_client.chat.completions.create(**request_kwargs)
