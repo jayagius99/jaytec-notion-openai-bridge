@@ -21,14 +21,15 @@ from specialist_adapters import (
     EXPECTED_GEMINI_MODEL,
     build_codex_dispatch,
     build_gemini_dispatch,
+    resolve_engineering_model,
 )
 
 # --- Runtime configuration (NO secrets in code) ---
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol").strip()
 
-# Exact model locks (must match orchestration.EXPECTED_MODELS)
-CODEX_MODEL = os.environ.get("CODEX_MODEL", EXPECTED_CODEX_MODEL).strip()
+# Provider-neutral engineering model config with legacy CODEX_MODEL compatibility.
+CODEX_MODEL = resolve_engineering_model()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 
 # OpenRouter route for Gemini research (optional; disabled unless configured).
