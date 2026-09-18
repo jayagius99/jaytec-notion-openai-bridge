@@ -6,8 +6,8 @@ services:
     region: oregon
     branch: staging/execute-task-packet-v1
     buildCommand: pip install -r requirements.txt
-    # Validation/review probes fail closed without preventing staging boot. Engineering-provider proof is one-shot/idempotent; the legacy Codex 429 diagnostic is no longer run.
-    startCommand: python staging_adversarial_probe.py && (python staging_engineering_provider_probe.py || true) && (python staging_manus_door_probe.py || true) && (python staging_gemini_migration_review.py || true) && (python staging_manus_review_readback.py || true) && python staging_server.py
+    # Validation/review probes fail closed without preventing staging boot. The paid OpenAI/Codex engineering door is LOCKED_RESERVE and no provider probe runs while locked.
+    startCommand: python staging_adversarial_probe.py && (python staging_manus_door_probe.py || true) && (python staging_gemini_migration_review.py || true) && (python staging_manus_review_readback.py || true) && python staging_server.py
     autoDeploy: true
     envVars:
       - key: MCP_AUTH_TOKEN
@@ -16,6 +16,8 @@ services:
         sync: false
       - key: ENGINEERING_MODEL
         value: gpt-5.6-sol
+      - key: ENGINEERING_PROVIDER_MODE
+        value: LOCKED_RESERVE
       - key: CODEX_MODEL
         value: gpt-5.6-sol
       - key: OPENROUTER_API_KEY
