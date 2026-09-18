@@ -14,4 +14,4 @@ EXPOSE 8000
 # compat_server wraps the unchanged reliable runtime at the HTTP boundary so
 # stale cached clients can reach native reliability tools through collaborate
 # without mutating the legacy router or tool registry.
-CMD ["python", "compat_server.py"]
+CMD ["sh", "-c", "python jaytec_read_startup_selftest.py && exec python compat_server.py"]
