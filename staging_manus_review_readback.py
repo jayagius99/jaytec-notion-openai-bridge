@@ -77,13 +77,33 @@ def main() -> int:
             item for item in summarized
             if item.get("type") == "assistant_message" and item.get("content")
         ]
+        error_messages = [
+            item for item in summarized
+            if item.get("type") == "error_message" and item.get("content")
+        ]
+        status_errors = [
+            item for item in summarized
+            if item.get("type") == "status_update" and item.get("agent_status") == "error"
+        ]
         meaningful_task = any(
             detail_data.get(k) not in (None, "")
             for k in ("id", "status", "title", "task_url", "credit_usage")
         )
+        task_status = str(detail_data.get("status") or "").lower()
 
-        if meaningful_task and assistant_messages:
+        # A review counts only when Manus reached a successful terminal state and
+        # returned substantive assistant content without an error event. Earlier
+        # progress chatter must never be misclassified as an opinion.
+        if (
+            task_status in {"completed", "success", "succeeded"}
+            and assistant_messages
+            and not error_messages
+            and not status_errors
+        ):
             out["status"] = "PASS"
+        elif task_status in {"error", "failed", "stopped", "cancelled", "canceled"} or error_messages or status_errors:
+            out["status"] = "FAILED_CLOSED"
+            out["error"] = "MANUS_REVIEW_FAILED_OR_CREDIT_BLOCKED"
         elif meaningful_task:
             out["status"] = "PENDING"
             out["error"] = "MANUS_REVIEW_OUTPUT_NOT_AVAILABLE_YET"
