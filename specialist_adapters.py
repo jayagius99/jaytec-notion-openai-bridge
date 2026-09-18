@@ -46,6 +46,9 @@ REQUIRED SHAPE (types are strict):
 
 Never include markdown fences or surrounding prose. Never include credentials or secrets."""
 
+# TaskPacket v1/source compatibility alias. New code uses ENGINEERING_CONTRACT.
+CODEX_CONTRACT = ENGINEERING_CONTRACT
+
 GEMINI_RESEARCH_MODE_V1_1 = """JAYTEC_GEMINI_RESEARCH_MODE v1.1.0
 ROLE: RESEARCH SPECIALIST. Treat each request as stateless.
 
@@ -133,8 +136,8 @@ def build_codex_dispatch(
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         prompt = (
-            "ROLE: GPT-5.3 CODEX ENGINEERING\n"
-            + CODEX_CONTRACT
+            "ROLE: JAYTEC ENGINEERING SPECIALIST — GPT-5.6 SOL\n"
+            + ENGINEERING_CONTRACT
             + "\nTASK_PACKET_JSON:\n"
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         )
