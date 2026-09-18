@@ -24,6 +24,7 @@ JAYTEC_READ_ALLOWED_OPERATIONS = frozenset(
     {"read", "research", "analyze", "validate", "web_fetch"}
 )
 JAYTEC_READ_REQUIRED_OPERATIONS = frozenset({"read", "validate", "web_fetch"})
+JAYTEC_READ_FETCH_ENGINES = ("openrouter", "exa", "parallel")
 
 READ_REPORT_FIELDS = (
     "READ_REPORT_ID",
@@ -146,15 +147,21 @@ def validate_public_source_url(url: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path or "/", parsed.query, ""))
 
 
-def build_openrouter_web_fetch_tool(source_url: str) -> dict[str, Any]:
+def build_openrouter_web_fetch_tool(
+    source_url: str,
+    *,
+    engine: str = "openrouter",
+) -> dict[str, Any]:
     normalized = validate_public_source_url(source_url)
+    if engine not in JAYTEC_READ_FETCH_ENGINES:
+        raise JaytecReadPolicyError("jaytec_read_fetch_engine_forbidden")
     domain = urlsplit(normalized).hostname
     if not domain:
         raise JaytecReadPolicyError("source_url_host_missing")
     return {
         "type": "openrouter:web_fetch",
         "parameters": {
-            "engine": "openrouter",
+            "engine": engine,
             "max_content_tokens": 50000,
             "allowed_domains": [domain],
         },

@@ -133,39 +133,31 @@ class TestGeminiTransportHardening(unittest.TestCase):
             dispatch(packet(max_retries=1))
 
 
-    def test_jaytec_read_enables_web_fetch_and_requires_verified_report(self):
-        read_packet = {
-            "task_id": "READ-1",
-            "subtask_id": "READ-1-R1",
-            "workflow_id": "JAYTEC_READ",
-            "max_retries": 0,
-            "allowed_operations": ["read", "research", "analyze", "validate", "web_fetch"],
-            "required_context": {"source_url": "https://chatgpt.com/share/example"},
-        }
-        payload = {
-            "status": "SUCCESS",
+    def _read_payload(self, *, verified, title="Example conversation", fetch_status="SUCCESS"):
+        return {
+            "status": "SUCCESS" if verified else "FAILED_CLOSED",
             "model": EXPECTED_GEMINI_MODEL,
-            "findings": ["Recovered exact conversation title and details."],
-            "evidence": ["Exact shared page fetched."],
-            "confidence": "HIGH",
+            "findings": ["Recovered exact conversation title and details."] if verified else [],
+            "evidence": ["Exact shared page fetched."] if verified else [],
+            "confidence": "HIGH" if verified else "LOW",
             "conclusion": {
                 "READ_REPORT": {
                     "READ_REPORT_ID": "READ-example",
                     "SOURCE_URL": "https://chatgpt.com/share/example",
                     "ACCESS_ROUTE": EXPECTED_GEMINI_MODEL,
-                    "FETCH_STATUS": "SUCCESS",
-                    "VERIFIED": True,
-                    "TITLE": "Example conversation",
+                    "FETCH_STATUS": fetch_status,
+                    "VERIFIED": verified,
+                    "TITLE": title if verified else None,
                     "SOURCE_METADATA": {"kind": "chat_share"},
-                    "SUMMARY": "Grounded source summary.",
-                    "KEY_FINDINGS": ["Source-specific fact."],
+                    "SUMMARY": "Grounded source summary." if verified else "Fetch failed.",
+                    "KEY_FINDINGS": ["Source-specific fact."] if verified else [],
                     "DECISIONS": [],
-                    "UNRESOLVED": [],
+                    "UNRESOLVED": [] if verified else ["Exact page unavailable."],
                     "RISKS": [],
                     "REFERENCES_IDENTIFIERS": ["example"],
-                    "MEETING_RELEVANCE": "Useful",
-                    "SUGGESTED_MEETING_DISCUSSION": ["Review it."],
-                    "CONFIDENCE": "HIGH",
+                    "MEETING_RELEVANCE": "Useful" if verified else "Unknown",
+                    "SUGGESTED_MEETING_DISCUSSION": [],
+                    "CONFIDENCE": "HIGH" if verified else "LOW",
                     "DEDUPLICATION_KEY": "example",
                     "ROUTE_AUDIT": {
                         "web_retrieval_used": True,
@@ -175,7 +167,7 @@ class TestGeminiTransportHardening(unittest.TestCase):
                     },
                 }
             },
-            "unresolved_items": [],
+            "unresolved_items": [] if verified else ["fetch_failed"],
             "files_or_artifacts": [],
             "architecture_changes_required": [],
             "knowledge_writeback_proposal": [],
@@ -184,8 +176,77 @@ class TestGeminiTransportHardening(unittest.TestCase):
             "task_id": "READ-1",
             "subtask_id": "READ-1-R1",
         }
-        client, dispatch = self.build([response(json.dumps(payload))])
-        out = dispatch(read_packet)
+
+    def _read_packet(self):
+        return {
+            "task_id": "READ-1",
+            "subtask_id": "READ-1-R1",
+            "workflow_id": "JAYTEC_READ",
+            "max_retries": 0,
+            "allowed_operations": ["read", "research", "analyze", "validate", "web_fetch"],
+            "required_context": {"source_url": "https://chatgpt.com/share/example"},
+        }
+
+    def test_jaytec_read_falls_back_from_openrouter_to_exa_only(self):
+        failed = self._read_payload(
+            verified=False,
+            fetch_status="HTTP 403: Forbidden",
+        )
+        success = self._read_payload(verified=True)
+        client, dispatch = self.build([
+            response(json.dumps(failed)),
+            response(json.dumps(success)),
+        ])
+        out = dispatch(self._read_packet())
+        self.assertEqual("SUCCESS", out["status"])
+        self.assertEqual(2, len(client.chat.completions.calls))
+        engines = [
+            call["tools"][0]["parameters"]["engine"]
+            for call in client.chat.completions.calls
+        ]
+        self.assertEqual(["openrouter", "exa"], engines)
+        self.assertEqual(
+            [
+                {"engine": "openrouter", "status": "FAILED_CLOSED", "verified": False},
+                {"engine": "exa", "status": "SUCCESS", "verified": True},
+            ],
+            out["bridge_diagnostics"]["web_retrieval_attempts"],
+        )
+        self.assertFalse(
+            out["bridge_diagnostics"]["web_retrieval"]["notion_fallback"]
+        )
+
+    def test_jaytec_read_all_fetch_engines_fail_closed_without_notion(self):
+        failed = self._read_payload(
+            verified=False,
+            fetch_status="UNAVAILABLE",
+        )
+        client, dispatch = self.build([
+            response(json.dumps(failed)),
+            response(json.dumps(failed)),
+            response(json.dumps(failed)),
+        ])
+        out = dispatch(self._read_packet())
+        self.assertEqual("FAILED_CLOSED", out["status"])
+        engines = [
+            call["tools"][0]["parameters"]["engine"]
+            for call in client.chat.completions.calls
+        ]
+        self.assertEqual(["openrouter", "exa", "parallel"], engines)
+        self.assertFalse(out["bridge_diagnostics"]["notion_fallback"])
+        self.assertEqual(
+            [False, False, False],
+            [
+                item["verified"]
+                for item in out["bridge_diagnostics"]["web_retrieval_attempts"]
+            ],
+        )
+
+    def test_jaytec_read_enables_web_fetch_and_requires_verified_report(self):
+        client, dispatch = self.build([
+            response(json.dumps(self._read_payload(verified=True)))
+        ])
+        out = dispatch(self._read_packet())
         self.assertEqual("SUCCESS", out["status"])
         call = client.chat.completions.calls[0]
         self.assertEqual("openrouter:web_fetch", call["tools"][0]["type"])
@@ -194,6 +255,7 @@ class TestGeminiTransportHardening(unittest.TestCase):
             ["chatgpt.com"],
             call["tools"][0]["parameters"]["allowed_domains"],
         )
+        self.assertEqual("openrouter", call["tools"][0]["parameters"]["engine"])
         self.assertTrue(out["bridge_diagnostics"]["web_retrieval"]["enabled"])
         self.assertFalse(out["bridge_diagnostics"]["web_retrieval"]["notion_fallback"])
 
