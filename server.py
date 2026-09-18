@@ -22,7 +22,9 @@ from specialist_adapters import (
     build_codex_dispatch,
     build_engineering_dispatch,
     build_gemini_dispatch,
+    ENGINEERING_PROVIDER_ACTIVE,
     resolve_engineering_model,
+    resolve_engineering_provider_mode,
 )
 
 # --- Runtime configuration (NO secrets in code) ---
@@ -32,6 +34,7 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol").strip()
 # Provider-neutral engineering model config with legacy CODEX_MODEL compatibility.
 ENGINEERING_MODEL = resolve_engineering_model()
 CODEX_MODEL = ENGINEERING_MODEL
+ENGINEERING_PROVIDER_MODE = resolve_engineering_provider_mode()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 
 # OpenRouter route for Gemini research (optional; disabled unless configured).
@@ -66,8 +69,8 @@ def _require_startup_prereqs() -> None:
         raise RuntimeError(
             "MCP_AUTH_TOKEN is not set. Refusing to start an unauthenticated remote MCP server."
         )
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not set.")
+    if ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE and not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY is not set while ENGINEERING_PROVIDER_MODE=ACTIVE.")
 
     # Fail closed: production requires durable idempotency.
     if RUNTIME_MODE == "production":
@@ -201,6 +204,7 @@ def _orchestration_status_json(
             "status": "PRODUCTION" if runtime_mode == "production" else "CANDIDATE",
             "operation": "execute_task_packet",
             "engineering_model": codex_model,
+            "engineering_provider_mode": ENGINEERING_PROVIDER_MODE,
             "codex_model": codex_model,  # legacy compatibility field
             "gemini_model": gemini_model,
             "codex_circuit": codex_circuit,
@@ -355,7 +359,11 @@ def create_mcp_app() -> FastMCP:
     )
     mcp = FastMCP("JAYTEC OpenAI Engineering Bridge", auth=auth)
 
-    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    openai_client = (
+        OpenAI(api_key=OPENAI_API_KEY)
+        if ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE and OPENAI_API_KEY
+        else None
+    )
     openrouter_client = (
         OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
         if OPENROUTER_API_KEY
@@ -395,10 +403,18 @@ def create_mcp_app() -> FastMCP:
         reset_after_seconds=CIRCUIT_RESET_SECONDS,
     )
 
-    engineering_dispatch = build_engineering_dispatch(
-        openai_client=openai_client,
-        engineering_model=ENGINEERING_MODEL,
-        circuit=codex_circuit,
+    engineering_dispatch = (
+        build_engineering_dispatch(
+            openai_client=openai_client,
+            engineering_model=ENGINEERING_MODEL,
+            circuit=codex_circuit,
+        )
+        if openai_client is not None
+        else codex_circuit.guard(
+            lambda _packet: (_ for _ in ()).throw(
+                RuntimeError("ENGINEERING_PROVIDER_DOOR_LOCKED_RESERVE")
+            )
+        )
     )
     codex_dispatch = engineering_dispatch  # TaskPacket v1 wire alias
 
