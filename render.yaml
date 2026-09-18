@@ -23,3 +23,7 @@ services:
         fromDatabase:
           name: jaytec-orchestration-state
           property: connectionString
+      - key: TEST_DATABASE_URL
+        fromDatabase:
+          name: jaytec-orchestration-state
+          property: connectionString
