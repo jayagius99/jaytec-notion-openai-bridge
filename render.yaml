@@ -6,8 +6,8 @@ services:
     region: oregon
     branch: staging/execute-task-packet-v1
     buildCommand: pip install -r requirements.txt
-    # Runtime provider smoke tests are validation-only and run separately; provider 429s must not prevent staging from booting.
-    startCommand: python staging_adversarial_probe.py && python staging_codex_429_diagnostic.py && python staging_server.py
+    # Provider probes are validation-only. Codex 429 and Manus door failure must not prevent staging boot.
+    startCommand: python staging_adversarial_probe.py && (python staging_codex_429_diagnostic.py || true) && (python staging_manus_door_probe.py || true) && python staging_server.py
     autoDeploy: true
     envVars:
       - key: MCP_AUTH_TOKEN
@@ -20,6 +20,8 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: google/gemini-3.1-pro-preview
+      - key: MANUS_API_KEY
+        sync: false
       - key: DATABASE_URL
         fromDatabase:
           name: jaytec-orchestration-state
