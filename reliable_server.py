@@ -32,6 +32,7 @@ from workload_read_model import WorkloadReadModel
 
 RUNTIME_ID = "JAYTEC_RELIABILITY_RUNTIME_V1"
 LEGACY_SYNC_PROVIDER_TIMEOUT_S = float(os.environ.get("LEGACY_SYNC_PROVIDER_TIMEOUT_S", "8"))
+JAYTEC_READ_SYNC_TIMEOUT_S = float(os.environ.get("JAYTEC_READ_SYNC_TIMEOUT_S", "45"))
 DURABLE_CODEX_TIMEOUT_S = float(os.environ.get("DURABLE_CODEX_TIMEOUT_S", "90"))
 DURABLE_GEMINI_TIMEOUT_S = float(os.environ.get("DURABLE_GEMINI_TIMEOUT_S", "120"))
 DURABLE_WORKER_ENABLED = os.environ.get(
@@ -139,12 +140,21 @@ def _bounded_legacy_gemini_dispatch(*, openrouter_client, gemini_model, gemini_t
         gemini_timeout_s=max(1.0, min(float(gemini_timeout_s), LEGACY_SYNC_PROVIDER_TIMEOUT_S)),
         circuit=circuit,
     )
+    read_underlying = _ORIGINAL_BUILD_GEMINI(
+        openrouter_client=openrouter_client,
+        gemini_model=gemini_model,
+        gemini_timeout_s=max(1.0, min(float(gemini_timeout_s), JAYTEC_READ_SYNC_TIMEOUT_S)),
+        circuit=circuit,
+    )
 
     def no_format_retry(packet):
-        # Compatibility calls must stay below the MCP dependency timeout. Long
-        # or format-retry work belongs on the durable submit/poll path.
         bounded = copy.deepcopy(dict(packet))
         bounded["max_retries"] = 0
+        # Ordinary compatibility calls remain tightly bounded. JAYTEC:READ is
+        # a dedicated direct retrieval command and gets a larger, still-bounded
+        # window so web_fetch + Gemini can complete without routing elsewhere.
+        if bounded.get("workflow_id") == "JAYTEC_READ":
+            return read_underlying(bounded)
         return underlying(bounded)
 
     return _retryable_single_attempt_dispatch(no_format_retry, model=EXPECTED_GEMINI_MODEL)

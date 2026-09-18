@@ -75,3 +75,14 @@ Create the OpenAI API key yourself in the OpenAI API platform. The bridge cannot
 ## Important limitation
 
 This calls an OpenAI API model. It does **not** attach Notion to an existing ChatGPT conversation, ChatGPT account memory, or this exact live chat session. If Notion wants the OpenAI peer to know project context, it should pass that context in the MCP call.
+
+
+## JAYTEC:READ
+
+The runtime now exposes a dedicated jaytec_read(url) MCP tool. It routes the
+task through the canonical Gemini adapter with OpenRouter web_fetch enabled and
+domain-restricted to the requested source. The workflow is fail-closed and has
+no Notion, Codex, or other-agent fallback.
+
+See JAYTEC_COMMAND_POLICY.md for the explicit Notion authorization gate and
+READ route contract.
