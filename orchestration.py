@@ -72,9 +72,16 @@ class PacketValidationError(ValueError):
 
 
 class RateLimitError(RuntimeError):
-    def __init__(self, message: str = "rate limited", *, retry_after: Any = None):
+    def __init__(
+        self,
+        message: str = "rate limited",
+        *,
+        retry_after: Any = None,
+        details: Optional[Mapping[str, Any]] = None,
+    ):
         super().__init__(message)
         self.retry_after = retry_after
+        self.details = dict(details or {})
 
 
 class ProviderUnavailableError(RuntimeError):
@@ -478,14 +485,16 @@ def _invoke_with_retries(
         except (RateLimitError, ProviderUnavailableError) as exc:
             status = "RATE_LIMITED" if isinstance(exc, RateLimitError) else "FAILED_CLOSED"
             retry_after = retry_after_seconds(getattr(exc, "retry_after", None))
-            retry_trace.append(
-                {
-                    "specialist": specialist,
-                    "attempt": attempt + 1,
-                    "error": type(exc).__name__,
-                    "retry_after_seconds": retry_after,
-                }
-            )
+            trace_item = {
+                "specialist": specialist,
+                "attempt": attempt + 1,
+                "error": type(exc).__name__,
+                "retry_after_seconds": retry_after,
+            }
+            provider_details = getattr(exc, "details", None)
+            if isinstance(provider_details, Mapping) and provider_details:
+                trace_item["provider_details"] = redact(dict(provider_details))
+            retry_trace.append(trace_item)
             if attempt >= max_retries:
                 return (
                     {
