@@ -6,7 +6,8 @@ services:
     region: oregon
     branch: staging/execute-task-packet-v1
     buildCommand: pip install -r requirements.txt
-    startCommand: python staging_adversarial_probe.py && python staging_runtime_probe.py && python staging_server.py
+    # Runtime provider smoke tests are validation-only and run separately; provider 429s must not prevent staging from booting.
+    startCommand: python staging_adversarial_probe.py && python staging_server.py
     autoDeploy: true
     envVars:
       - key: MCP_AUTH_TOKEN
