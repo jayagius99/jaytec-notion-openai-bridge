@@ -198,7 +198,7 @@ def _orchestration_status_json(
         {
             "status": "PRODUCTION" if runtime_mode == "production" else "CANDIDATE",
             "operation": "execute_task_packet",
-            "codex_model": codex_model,
+            "engineering_model": codex_model,\n            "codex_model": codex_model,  # legacy compatibility field
             "gemini_model": gemini_model,
             "codex_circuit": codex_circuit,
             "gemini_circuit": gemini_circuit,
@@ -392,11 +392,12 @@ def create_mcp_app() -> FastMCP:
         reset_after_seconds=CIRCUIT_RESET_SECONDS,
     )
 
-    codex_dispatch = build_codex_dispatch(
+    engineering_dispatch = build_engineering_dispatch(
         openai_client=openai_client,
-        codex_model=CODEX_MODEL,
+        engineering_model=ENGINEERING_MODEL,
         circuit=codex_circuit,
     )
+    codex_dispatch = engineering_dispatch  # TaskPacket v1 wire alias
 
     if openrouter_client is not None:
         gemini_dispatch = build_gemini_dispatch(

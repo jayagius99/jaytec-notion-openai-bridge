@@ -33,7 +33,7 @@ from specialist_adapters import (
 PORT = int(os.environ.get("PORT", "8000"))
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-CODEX_MODEL = resolve_engineering_model()
+ENGINEERING_MODEL = resolve_engineering_model()\nCODEX_MODEL = ENGINEERING_MODEL
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
@@ -82,11 +82,12 @@ OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
 
 # Build dispatchers ONCE to avoid runtime drift and repeated guards.
-CODEX_DISPATCH = (
-    build_codex_dispatch(openai_client=OPENAI_CLIENT, codex_model=CODEX_MODEL, circuit=CODEX_CIRCUIT)
+ENGINEERING_DISPATCH = (
+    build_engineering_dispatch(openai_client=OPENAI_CLIENT, engineering_model=ENGINEERING_MODEL, circuit=CODEX_CIRCUIT)
     if OPENAI_CLIENT
     else CODEX_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENAI_API_KEY is not configured on the staging bridge")))
 )
+CODEX_DISPATCH = ENGINEERING_DISPATCH  # TaskPacket v1 wire alias
 
 GEMINI_DISPATCH = (
     build_gemini_dispatch(
@@ -106,7 +107,7 @@ def orchestration_status() -> str:
         {
             "status": "STAGING",
             "operation": "execute_task_packet",
-            "codex_model": CODEX_MODEL,
+            "engineering_model": ENGINEERING_MODEL,\n            "codex_model": CODEX_MODEL,  # legacy compatibility field
             "codex_adapter_configured": bool(OPENAI_API_KEY),
             "codex_circuit": CODEX_CIRCUIT.snapshot(),
             "gemini_model": GEMINI_MODEL,

@@ -28,7 +28,7 @@ EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
 EXPECTED_CODEX_MODEL = EXPECTED_ENGINEERING_MODEL
 EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
 
-CODEX_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
+ENGINEERING_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
 
 REQUIRED SHAPE (types are strict):
 - status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
@@ -157,6 +157,24 @@ def build_codex_dispatch(
 
     return circuit.guard(_dispatch)
 
+
+
+def build_engineering_dispatch(
+    *,
+    openai_client: OpenAI,
+    engineering_model: str,
+    circuit: CircuitBreaker,
+) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+    """Canonical provider-neutral engineering dispatch entrypoint.
+
+    TaskPacket v1 still serializes the role under the legacy codex key, but new
+    callers should use this function and ENGINEERING_MODEL terminology.
+    """
+    return build_codex_dispatch(
+        openai_client=openai_client,
+        codex_model=engineering_model,
+        circuit=circuit,
+    )
 
 def build_gemini_dispatch(
     *,

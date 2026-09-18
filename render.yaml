@@ -7,7 +7,7 @@ services:
     branch: staging/execute-task-packet-v1
     buildCommand: pip install -r requirements.txt
     # Provider/review probes are validation-only. Engineering-provider or Manus review failure must not prevent staging boot.
-    startCommand: python staging_adversarial_probe.py && (python staging_codex_429_diagnostic.py || true) && (python staging_manus_door_probe.py || true) && (python staging_gemini_migration_review.py || true) && (python staging_manus_review_readback.py || true) && python staging_server.py
+    startCommand: python staging_adversarial_probe.py && (python staging_engineering_provider_probe.py || true) && (python staging_manus_door_probe.py || true) && (python staging_gemini_migration_review.py || true) && (python staging_manus_review_readback.py || true) && python staging_server.py
     autoDeploy: true
     envVars:
       - key: MCP_AUTH_TOKEN
