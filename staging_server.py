@@ -27,6 +27,7 @@ from specialist_adapters import (
     EXPECTED_GEMINI_MODEL,
     build_codex_dispatch,
     build_gemini_dispatch,
+    resolve_engineering_model,
 )
 
 PORT = int(os.environ.get("PORT", "8000"))
