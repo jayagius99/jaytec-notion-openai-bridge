@@ -1,7 +1,7 @@
 """Shared specialist adapter contracts + dispatch construction.
 
 This module exists to prevent drift between staging_server.py and server.py.
-It contains the exact staging-tested CODEX_CONTRACT and GEMINI_RESEARCH_MODE_V1_1
+It contains the staging-tested engineering-specialist contract and GEMINI_RESEARCH_MODE_V1_1
 strings and the dispatch semantics used by both entrypoints.
 
 Security / safety:
@@ -45,6 +45,9 @@ REQUIRED SHAPE (types are strict):
 - requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
 
 Never include markdown fences or surrounding prose. Never include credentials or secrets."""
+
+# Legacy contract symbol retained for TaskPacket v1 imports only.
+CODEX_CONTRACT = ENGINEERING_CONTRACT
 
 GEMINI_RESEARCH_MODE_V1_1 = """JAYTEC_GEMINI_RESEARCH_MODE v1.1.0
 ROLE: RESEARCH SPECIALIST. Treat each request as stateless.
