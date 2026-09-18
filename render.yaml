@@ -7,7 +7,7 @@ services:
     branch: staging/execute-task-packet-v1
     buildCommand: pip install -r requirements.txt
     # Startup runs deterministic local validation only. Specialist/provider review probes are on-demand; locked or exhausted lanes never spend credits or slow every deploy.
-    startCommand: python staging_adversarial_probe.py && python staging_server.py
+    startCommand: python staging_adversarial_probe.py && python staging_independent_g1_review.py && python staging_server.py
     autoDeploy: true
     envVars:
       - key: MCP_AUTH_TOKEN
