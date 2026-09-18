@@ -57,7 +57,15 @@ def main() -> int:
         summarized = [_message_summary(r) for r in rows if isinstance(r, Mapping)]
         # API requests descending order; keep only the newest bounded content.
         out["messages"] = summarized[:6]
-        out["status"] = "PASS"
+        meaningful_task = any(
+            detail_data.get(k) not in (None, "")
+            for k in ("status", "title", "task_url", "credit_usage")
+        )
+        if meaningful_task or summarized:
+            out["status"] = "PASS"
+        else:
+            out["status"] = "UNVERIFIED"
+            out["error"] = "MANUS_TASK_NOT_VISIBLE_OR_EMPTY"
     except ManusError as exc:
         out["error"] = str(exc)
     except Exception as exc:

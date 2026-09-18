@@ -11,7 +11,7 @@ import json
 from orchestration import execute_task_packet_core, redact
 from staging_server import GEMINI_DISPATCH, GEMINI_MODEL, REGISTRY
 
-KEY = "engineering-migration-gemini-review-v1"
+KEY = "engineering-migration-gemini-review-v2"
 TASK_ID = "JAYTEC-2026-0003-G1"
 SUBTASK_ID = "G1-ENGINEERING-MIGRATION-GEMINI-REVIEW"
 
