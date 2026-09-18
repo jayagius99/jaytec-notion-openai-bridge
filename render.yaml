@@ -6,8 +6,8 @@ services:
     region: oregon
     branch: staging/execute-task-packet-v1
     buildCommand: pip install -r requirements.txt
-    # Review probes are validation-only and fail closed without preventing staging boot. The legacy Codex 429 diagnostic is no longer run at boot.
-    startCommand: python staging_adversarial_probe.py && (python staging_manus_door_probe.py || true) && (python staging_gemini_migration_review.py || true) && (python staging_manus_review_readback.py || true) && python staging_server.py
+    # Validation/review probes fail closed without preventing staging boot. Engineering-provider proof is one-shot/idempotent; the legacy Codex 429 diagnostic is no longer run.
+    startCommand: python staging_adversarial_probe.py && (python staging_engineering_provider_probe.py || true) && (python staging_manus_door_probe.py || true) && (python staging_gemini_migration_review.py || true) && (python staging_manus_review_readback.py || true) && python staging_server.py
     autoDeploy: true
     envVars:
       - key: MCP_AUTH_TOKEN
