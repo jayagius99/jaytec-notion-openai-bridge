@@ -22,6 +22,13 @@ from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
 from orchestration import ProviderUnavailableError, RateLimitError
+from jaytec_read import (
+    JAYTEC_READ_PROMPT,
+    build_openrouter_web_fetch_tool,
+    enforce_read_report,
+    is_jaytec_read_packet,
+    source_url_from_packet,
+)
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
 EXPECTED_CODEX_MODEL = "gpt-5.3-codex"
@@ -193,6 +200,9 @@ def build_gemini_dispatch(
 
     def _prompt(packet: Mapping[str, Any], *, retry_format: bool = False) -> str:
         prefix = GEMINI_RESEARCH_MODE_V1_1
+        if is_jaytec_read_packet(packet):
+            prefix += "\n" + JAYTEC_READ_PROMPT
+            prefix += "\nSOURCE_URL: " + source_url_from_packet(packet)
         if retry_format:
             prefix += "\n" + GEMINI_FORMAT_RETRY
         return (
@@ -206,21 +216,26 @@ def build_gemini_dispatch(
         )
 
     def _single_call(packet: Mapping[str, Any], *, retry_format: bool) -> Mapping[str, Any]:
+        read_source_url = source_url_from_packet(packet) if is_jaytec_read_packet(packet) else None
+        request_kwargs: dict[str, Any] = {
+            "model": gemini_model,
+            "messages": [{"role": "user", "content": _prompt(packet, retry_format=retry_format)}],
+            "temperature": 0,
+            "timeout": gemini_timeout_s,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+            "extra_body": {
+                "provider": {
+                    "sort": "price",
+                    "allow_fallbacks": True,
+                }
+            },
+        }
+        if read_source_url is not None:
+            request_kwargs["tools"] = [build_openrouter_web_fetch_tool(read_source_url)]
+
         try:
-            response = openrouter_client.chat.completions.create(
-                model=gemini_model,
-                messages=[{"role": "user", "content": _prompt(packet, retry_format=retry_format)}],
-                temperature=0,
-                timeout=gemini_timeout_s,
-                stream=False,
-                response_format={"type": "json_object"},
-                extra_body={
-                    "provider": {
-                        "sort": "price",
-                        "allow_fallbacks": True,
-                    }
-                },
-            )
+            response = openrouter_client.chat.completions.create(**request_kwargs)
         except Exception as exc:
             _normalize_provider_exception(exc, context="gemini_provider")
         if not response.choices:
@@ -242,12 +257,21 @@ def build_gemini_dispatch(
 
         result, diagnostics = json_object_with_diagnostics(content)
         result.setdefault("model", gemini_model)
-        result["bridge_diagnostics"] = _safe_transport_diagnostics(
+        transport_diagnostics = _safe_transport_diagnostics(
             content=content,
             finish_reason=finish_reason,
             provider_model=returned_provider_model,
             extracted_object=diagnostics.extracted_object,
         )
+        if read_source_url is not None:
+            transport_diagnostics["web_retrieval"] = {
+                "enabled": True,
+                "engine": "openrouter",
+                "source_url_sha256": hashlib.sha256(read_source_url.encode("utf-8")).hexdigest(),
+                "notion_fallback": False,
+            }
+            result = enforce_read_report(result, read_source_url)
+        result["bridge_diagnostics"] = transport_diagnostics
         return result
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
