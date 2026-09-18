@@ -104,6 +104,23 @@ class TestJaytecReadPolicy(unittest.TestCase):
         self.assertEqual("openrouter", tool["parameters"]["engine"])
         self.assertEqual(["chatgpt.com"], tool["parameters"]["allowed_domains"])
 
+    def test_fetch_engine_is_explicitly_allowlisted(self):
+        exa = build_openrouter_web_fetch_tool(
+            "https://chatgpt.com/share/example",
+            engine="exa",
+        )
+        self.assertEqual("exa", exa["parameters"]["engine"])
+        parallel = build_openrouter_web_fetch_tool(
+            "https://chatgpt.com/share/example",
+            engine="parallel",
+        )
+        self.assertEqual("parallel", parallel["parameters"]["engine"])
+        with self.assertRaises(JaytecReadPolicyError):
+            build_openrouter_web_fetch_tool(
+                "https://chatgpt.com/share/example",
+                engine="native",
+            )
+
     def test_read_packet_requires_gemini_only(self):
         good = validate_packet(read_packet())
         self.assertTrue(good.ok, good.errors)
