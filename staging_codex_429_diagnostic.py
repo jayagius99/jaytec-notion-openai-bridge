@@ -1,32 +1,56 @@
-"""STAGING ONLY: one-shot exact-Codex 429 diagnostic.
+"""STAGING ONLY: bounded exact-Codex provider diagnostic.
 
-This runs once per 24h idempotency window and never blocks staging boot.
-It prints only redacted metadata required to classify the provider failure.
+Runs once per 24h idempotency window and never blocks staging boot.
+The probe is deliberately tiny so a 429 is not confused with a large-prompt TPM event.
+Only redacted provider diagnostics are printed/stored.
 """
 from __future__ import annotations
 
 import json
+from typing import Any, Mapping
 
-from orchestration import RateLimitError, redact
-from staging_server import CODEX_DISPATCH, CODEX_MODEL, IDEMPOTENCY_STORE, REGISTRY
+from openai import RateLimitError as OpenAIRateLimitError
 
-KEY = "codex-429-diagnostic-v1"
-DIGEST = "codex-429-diagnostic-v1"
+from orchestration import redact
+from staging_server import CODEX_MODEL, IDEMPOTENCY_STORE, OPENAI_CLIENT, REGISTRY
 
-PACKET = {
-    "task_id": "JAYTEC-G1-CODEX-DIAGNOSTIC",
-    "subtask_id": "CODEX-429-DIAGNOSTIC-V1",
-    "request": "Harmless staging provider diagnostic. Confirm receipt only. No tools, files, external actions or side effects.",
-    "intent": "classify exact gpt-5.3-codex provider availability",
-    "workflow_id": "JAYTEC_G1_CODEX_DIAGNOSTIC",
-    "risk_level": "low",
-    "specialist_plan": ["codex"],
-    "allowed_operations": ["read", "validate"],
-    "expected_output": "one harmless structured acknowledgement",
-    "validation_requirements": ["exact model identity", "no side effects"],
-    "side_effect_policy": "staging_only",
-    "constraints": ["no tools", "no writes", "no external actions", "no fallback"],
-}
+KEY = "codex-429-diagnostic-v2"
+DIGEST = "codex-429-diagnostic-v2"
+
+
+def _safe_429_details(exc: Exception) -> dict[str, Any]:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    body = getattr(exc, "body", None)
+
+    if body is None and response is not None:
+        try:
+            body = response.json()
+        except Exception:
+            body = None
+
+    def header(name: str) -> Any:
+        try:
+            return headers.get(name)
+        except Exception:
+            return None
+
+    details = {
+        "status_code": getattr(exc, "status_code", None),
+        "request_id": getattr(exc, "request_id", None) or header("x-request-id"),
+        "retry_after": header("retry-after"),
+        "x_ratelimit_limit_requests": header("x-ratelimit-limit-requests"),
+        "x_ratelimit_remaining_requests": header("x-ratelimit-remaining-requests"),
+        "x_ratelimit_reset_requests": header("x-ratelimit-reset-requests"),
+        "x_ratelimit_limit_tokens": header("x-ratelimit-limit-tokens"),
+        "x_ratelimit_remaining_tokens": header("x-ratelimit-remaining-tokens"),
+        "x_ratelimit_reset_tokens": header("x-ratelimit-reset-tokens"),
+        "openai_organization": header("openai-organization"),
+        "openai_project": header("openai-project"),
+        "body": body if isinstance(body, Mapping) else None,
+        "message": str(exc)[:2000],
+    }
+    return redact({k: v for k, v in details.items() if v is not None})
 
 
 def main() -> int:
@@ -54,7 +78,7 @@ def main() -> int:
             + json.dumps(
                 redact(
                     {
-                        "phase": "provider_probe",
+                        "phase": "tiny_provider_probe",
                         "status": "SKIP_REPLAY",
                         "model": CODEX_MODEL,
                         "idempotency_store": IDEMPOTENCY_STORE,
@@ -67,39 +91,49 @@ def main() -> int:
         )
         return 0
 
-    summary = {
-        "phase": "provider_probe",
+    summary: dict[str, Any] = {
+        "phase": "tiny_provider_probe",
         "model": CODEX_MODEL,
         "idempotency_store": IDEMPOTENCY_STORE,
+        "probe_shape": "responses.create tiny input; no tools; no reasoning override",
     }
 
-    try:
-        result = CODEX_DISPATCH(PACKET)
-        summary.update(
-            {
-                "status": "SUCCESS",
-                "returned_model": result.get("model") if isinstance(result, dict) else None,
-            }
-        )
-    except RateLimitError as exc:
-        summary.update(
-            {
-                "status": "RATE_LIMITED",
-                "retry_after": getattr(exc, "retry_after", None),
-                "provider_details": getattr(exc, "details", {}),
-            }
-        )
-    except Exception as exc:
-        summary.update({"status": "ERROR", "error": type(exc).__name__})
+    if OPENAI_CLIENT is None:
+        summary.update({"status": "ERROR", "error": "OPENAI_CLIENT_NOT_CONFIGURED"})
+    else:
+        try:
+            response = OPENAI_CLIENT.responses.create(
+                model=CODEX_MODEL,
+                input="Reply exactly OK.",
+            )
+            summary.update(
+                {
+                    "status": "SUCCESS",
+                    "response_id": getattr(response, "id", None),
+                    "returned_model": getattr(response, "model", None) or CODEX_MODEL,
+                }
+            )
+        except OpenAIRateLimitError as exc:
+            summary.update(
+                {
+                    "status": "RATE_LIMITED",
+                    "provider_details": _safe_429_details(exc),
+                }
+            )
+        except Exception as exc:
+            summary.update(
+                {
+                    "status": "ERROR",
+                    "error": type(exc).__name__,
+                    "message": redact(str(exc)[:1000]),
+                }
+            )
 
     safe = redact(summary)
     try:
         REGISTRY.store(KEY, DIGEST, safe)
     except Exception as exc:
-        safe = {
-            **safe,
-            "idempotency_store_error": type(exc).__name__,
-        }
+        safe = {**safe, "idempotency_store_error": type(exc).__name__}
 
     print(
         "JAYTEC_CODEX_429_DIAGNOSTIC " + json.dumps(redact(safe), sort_keys=True),
