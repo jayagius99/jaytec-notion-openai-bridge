@@ -70,11 +70,13 @@ class TestEngineeringMigrationGuard(unittest.TestCase):
             "staging_server.py",
             "staging_runtime_probe.py",
             ".github/workflows/orchestration-staging.yml",
-            "render.yaml",\n            "staging_engineering_provider_probe.py",
+            "render.yaml",
+            "staging_engineering_provider_probe.py",
         ]
         for name in active:
             text = Path(name).read_text(encoding="utf-8")
-            self.assertNotIn("gpt-5.3-codex", text, name)\n            self.assertNotIn("GPT-5.3 CODEX ENGINEERING", text, name)
+            self.assertNotIn("gpt-5.3-codex", text, name)
+            self.assertNotIn("GPT-5.3 CODEX ENGINEERING", text, name)
 
     def test_runtime_uses_canonical_engineering_role_and_no_obsolete_boot_probe(self):
         adapter = Path("specialist_adapters.py").read_text(encoding="utf-8")

@@ -26,6 +26,7 @@ from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
     build_codex_dispatch,
+    build_engineering_dispatch,
     build_gemini_dispatch,
     resolve_engineering_model,
 )
@@ -33,7 +34,8 @@ from specialist_adapters import (
 PORT = int(os.environ.get("PORT", "8000"))
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-ENGINEERING_MODEL = resolve_engineering_model()\nCODEX_MODEL = ENGINEERING_MODEL
+ENGINEERING_MODEL = resolve_engineering_model()
+CODEX_MODEL = ENGINEERING_MODEL
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
@@ -107,7 +109,8 @@ def orchestration_status() -> str:
         {
             "status": "STAGING",
             "operation": "execute_task_packet",
-            "engineering_model": ENGINEERING_MODEL,\n            "codex_model": CODEX_MODEL,  # legacy compatibility field
+            "engineering_model": ENGINEERING_MODEL,
+            "codex_model": CODEX_MODEL,  # legacy compatibility field
             "codex_adapter_configured": bool(OPENAI_API_KEY),
             "codex_circuit": CODEX_CIRCUIT.snapshot(),
             "gemini_model": GEMINI_MODEL,

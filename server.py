@@ -20,6 +20,7 @@ from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
     build_codex_dispatch,
+    build_engineering_dispatch,
     build_gemini_dispatch,
     resolve_engineering_model,
 )
@@ -29,7 +30,8 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol").strip()
 
 # Provider-neutral engineering model config with legacy CODEX_MODEL compatibility.
-CODEX_MODEL = resolve_engineering_model()
+ENGINEERING_MODEL = resolve_engineering_model()
+CODEX_MODEL = ENGINEERING_MODEL
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 
 # OpenRouter route for Gemini research (optional; disabled unless configured).
@@ -198,7 +200,8 @@ def _orchestration_status_json(
         {
             "status": "PRODUCTION" if runtime_mode == "production" else "CANDIDATE",
             "operation": "execute_task_packet",
-            "engineering_model": codex_model,\n            "codex_model": codex_model,  # legacy compatibility field
+            "engineering_model": codex_model,
+            "codex_model": codex_model,  # legacy compatibility field
             "gemini_model": gemini_model,
             "codex_circuit": codex_circuit,
             "gemini_circuit": gemini_circuit,
