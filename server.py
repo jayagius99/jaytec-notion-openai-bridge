@@ -12,6 +12,7 @@ from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from jaytec_read import build_jaytec_read_packet
 from orchestration import (
     ExecutionRegistry,
     PacketValidationError,
@@ -469,50 +470,11 @@ def create_mcp_app() -> FastMCP:
     def jaytec_read(url: str) -> str:
         """Read one public URL through the Gemini-only JAYTEC:READ route.
 
-        This tool is hard-locked to Gemini + OpenRouter web_fetch.  It does not
-        call Notion and it has no Notion fallback.  Retrieval or verification
+        This tool is hard-locked to Gemini + OpenRouter web_fetch. It does not
+        call Notion and it has no Notion fallback. Retrieval or verification
         failure is returned as FAILED_CLOSED.
         """
-        now = datetime.now(timezone.utc)
-        normalized_seed = url.strip() if isinstance(url, str) else ""
-        digest = hashlib.sha256(normalized_seed.encode("utf-8", errors="replace")).hexdigest()
-        stamp = int(now.timestamp())
-        packet = {
-            "packet_version": "1.0",
-            "task_id": f"JAYTEC-READ-{digest[:12]}-{stamp}",
-            "subtask_id": f"JAYTEC-READ-{digest[:12]}-{stamp}-R1",
-            "request": (
-                "Fetch and read the exact SOURCE_URL. Produce a verified JAYTEC READ REPORT. "
-                "Do not use search snippets as a substitute for the requested page."
-            ),
-            "intent": "Recover source-specific content from a public URL for JAYTEC continuity.",
-            "workflow_id": "JAYTEC_READ",
-            "risk_level": "LOW",
-            "specialist_plan": ["gemini"],
-            "allowed_operations": ["read", "research", "analyze", "validate", "web_fetch"],
-            "expected_output": "A standardized conclusion.READ_REPORT with source-specific evidence.",
-            "validation_requirements": [
-                "Exact SOURCE_URL is fetched",
-                "Title and summary are grounded in fetched page content",
-                "KEY_FINDINGS contains source-specific evidence",
-                "VERIFIED is true only when page retrieval is proven",
-                "Notion is not used and no fallback agent is used",
-            ],
-            "side_effect_policy": "none",
-            "idempotency_key": f"jaytec-read:{digest}:{stamp}",
-            "deadline": (now + timedelta(minutes=3)).isoformat(),
-            "max_fanout": 1,
-            "max_retries": 1,
-            "return_schema_version": "1.0",
-            "required_context": {"source_url": normalized_seed},
-            "known_facts": [],
-            "constraints": [
-                "Gemini only",
-                "OpenRouter web_fetch only for retrieval",
-                "No Notion fallback",
-                "Fail closed if exact page cannot be verified",
-            ],
-        }
+        packet = build_jaytec_read_packet(url)
         return _packet_json(json.dumps(packet, ensure_ascii=False, sort_keys=True))
 
     return mcp
