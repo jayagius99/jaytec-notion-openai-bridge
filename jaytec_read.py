@@ -13,7 +13,9 @@ Hard rule:
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
@@ -156,6 +158,66 @@ def build_openrouter_web_fetch_tool(source_url: str) -> dict[str, Any]:
             "max_content_tokens": 50000,
             "allowed_domains": [domain],
         },
+    }
+
+
+
+def build_jaytec_read_packet(
+    source_url: str,
+    *,
+    now: datetime | None = None,
+    request_suffix: str = "",
+    validation_suffix: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build the canonical Gemini-only JAYTEC:READ packet."""
+
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    normalized = validate_public_source_url(source_url)
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    stamp = int(current.timestamp())
+    request = (
+        "Fetch and read the exact SOURCE_URL. Produce a verified JAYTEC READ REPORT. "
+        "Do not use search snippets as a substitute for the requested page."
+    )
+    if request_suffix.strip():
+        request += " " + request_suffix.strip()
+
+    validations = [
+        "Exact SOURCE_URL is fetched",
+        "Title and summary are grounded in fetched page content",
+        "KEY_FINDINGS contains source-specific evidence",
+        "VERIFIED is true only when page retrieval is proven",
+        "Notion is not used and no fallback agent is used",
+    ]
+    if validation_suffix:
+        validations.extend(str(item) for item in validation_suffix if str(item).strip())
+
+    return {
+        "packet_version": "1.0",
+        "task_id": f"JAYTEC-READ-{digest[:12]}-{stamp}",
+        "subtask_id": f"JAYTEC-READ-{digest[:12]}-{stamp}-R1",
+        "request": request,
+        "intent": "Recover source-specific content from a public URL for JAYTEC continuity.",
+        "workflow_id": JAYTEC_READ_WORKFLOW_ID,
+        "risk_level": "LOW",
+        "specialist_plan": ["gemini"],
+        "allowed_operations": ["read", "research", "analyze", "validate", "web_fetch"],
+        "expected_output": "A standardized conclusion.READ_REPORT with source-specific evidence.",
+        "validation_requirements": validations,
+        "side_effect_policy": "none",
+        "idempotency_key": f"jaytec-read:{digest}:{stamp}",
+        "deadline": (current + timedelta(minutes=3)).isoformat(),
+        "max_fanout": 1,
+        "max_retries": 1,
+        "return_schema_version": "1.0",
+        "required_context": {"source_url": normalized},
+        "known_facts": [],
+        "constraints": [
+            "Gemini only",
+            "OpenRouter web_fetch only for retrieval",
+            "No Notion fallback",
+            "Fail closed if exact page cannot be verified",
+        ],
     }
 
 
