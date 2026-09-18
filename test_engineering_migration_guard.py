@@ -48,7 +48,7 @@ class TestEngineeringMigrationGuard(unittest.TestCase):
             "server.py",
             "staging_server.py",
             "staging_runtime_probe.py",
-            ".github/workflows/orchestration-staging.yml",
+            ".github/workflows/orchestration-staging.yml",\n            "render.yaml",
         ]
         for name in active:
             text = Path(name).read_text(encoding="utf-8")

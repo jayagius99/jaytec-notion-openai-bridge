@@ -6,8 +6,8 @@ services:
     region: oregon
     branch: staging/execute-task-packet-v1
     buildCommand: pip install -r requirements.txt
-    # Provider probes are validation-only. Codex 429 and Manus door failure must not prevent staging boot.
-    startCommand: python staging_adversarial_probe.py && (python staging_codex_429_diagnostic.py || true) && (python staging_manus_door_probe.py || true) && python staging_server.py
+    # Provider/review probes are validation-only. Engineering-provider or Manus review failure must not prevent staging boot.
+    startCommand: python staging_adversarial_probe.py && (python staging_codex_429_diagnostic.py || true) && (python staging_manus_door_probe.py || true) && (python staging_manus_review_readback.py || true) && python staging_server.py
     autoDeploy: true
     envVars:
       - key: MCP_AUTH_TOKEN
@@ -15,7 +15,7 @@ services:
       - key: OPENAI_API_KEY
         sync: false
       - key: CODEX_MODEL
-        value: gpt-5.3-codex
+        value: gpt-5.6-sol
       - key: OPENROUTER_API_KEY
         sync: false
       - key: GEMINI_MODEL
