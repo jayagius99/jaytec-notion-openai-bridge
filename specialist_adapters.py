@@ -12,6 +12,7 @@ Security / safety:
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Callable, Mapping
 
 from openai import OpenAI, RateLimitError as OpenAIRateLimitError
@@ -65,6 +66,23 @@ REQUIRED SHAPE (types are strict):
 - requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
 
 Never expose credentials. Do not perform engineering writes."""
+
+
+def resolve_engineering_model(env: Mapping[str, str] | None = None) -> str:
+    """Resolve authoritative ENGINEERING_MODEL with legacy CODEX_MODEL compatibility.
+
+    If both variables are set, they must match. A mismatch fails closed before
+    any provider call so stale legacy configuration cannot silently override the
+    provider-neutral engineering contract.
+    """
+    source = os.environ if env is None else env
+    primary = str(source.get("ENGINEERING_MODEL", "") or "").strip()
+    legacy = str(source.get("CODEX_MODEL", "") or "").strip()
+    if primary and legacy and primary != legacy:
+        raise RuntimeError(
+            f"engineering model config conflict (ENGINEERING_MODEL={primary}, CODEX_MODEL={legacy})"
+        )
+    return primary or legacy or EXPECTED_ENGINEERING_MODEL
 
 
 def require_exact_model(name: str, expected: str, *, context: str) -> None:
