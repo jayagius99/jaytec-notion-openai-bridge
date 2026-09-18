@@ -189,6 +189,7 @@ class TestGeminiTransportHardening(unittest.TestCase):
         self.assertEqual("SUCCESS", out["status"])
         call = client.chat.completions.calls[0]
         self.assertEqual("openrouter:web_fetch", call["tools"][0]["type"])
+        self.assertEqual("required", call["tool_choice"])
         self.assertEqual(
             ["chatgpt.com"],
             call["tools"][0]["parameters"]["allowed_domains"],
