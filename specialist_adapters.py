@@ -137,7 +137,7 @@ def build_codex_dispatch(
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         prompt = (
             "ROLE: GPT-5.3 CODEX ENGINEERING\n"
-            + CODEX_CONTRACT
+            + ENGINEERING_CONTRACT
             + "\nTASK_PACKET_JSON:\n"
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         )
