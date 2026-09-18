@@ -19,7 +19,10 @@ MODEL = os.environ.get(
     "JAYTEC_G1_INDEPENDENT_REVIEW_MODEL",
     "nvidia/nemotron-3-ultra-550b-a55b:free",
 ).strip()
-EXPECTED_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+ALLOWED_MODELS = {
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "google/gemini-2.0-flash-exp:free",
+}
 MAX_PACKET_CHARS = 24_000
 
 FORBIDDEN_KEYS = {
@@ -69,8 +72,8 @@ def main() -> int:
         }, sort_keys=True))
         return 0
 
-    if MODEL != EXPECTED_MODEL:
-        raise RuntimeError("INDEPENDENT_REVIEW_MODEL_MISMATCH")
+    if MODEL not in ALLOWED_MODELS:
+        raise RuntimeError("INDEPENDENT_REVIEW_MODEL_NOT_ALLOWLISTED")
 
     raw = os.environ.get("JAYTEC_G1_REVIEW_PACKET_JSON", "").strip()
     if not raw:
