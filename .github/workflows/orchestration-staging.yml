@@ -66,7 +66,7 @@ jobs:
             -e RUNTIME_MODE=staging_candidate \
             -e MCP_AUTH_TOKEN=test \
             -e OPENAI_API_KEY=test \
-            -e CODEX_MODEL=gpt-5.3-codex \
+            -e CODEX_MODEL=gpt-5.6-sol \
             -e GEMINI_MODEL=google/gemini-3.1-pro-preview \
             jaytec-bridge-ci:smoke \
-            python -c "import os, importlib; os.environ['RUNTIME_MODE']='staging_candidate'; os.environ['MCP_AUTH_TOKEN']='test'; os.environ['OPENAI_API_KEY']='test'; os.environ['CODEX_MODEL']='gpt-5.3-codex'; os.environ['GEMINI_MODEL']='google/gemini-3.1-pro-preview'; import server; importlib.reload(server); server.create_mcp_app(); print('container_startup_ok')"
+            python -c "import os, importlib; os.environ['RUNTIME_MODE']='staging_candidate'; os.environ['MCP_AUTH_TOKEN']='test'; os.environ['OPENAI_API_KEY']='test'; os.environ['CODEX_MODEL']='gpt-5.6-sol'; os.environ['GEMINI_MODEL']='google/gemini-3.1-pro-preview'; import server; importlib.reload(server); server.create_mcp_app(); print('container_startup_ok')"

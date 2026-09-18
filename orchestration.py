@@ -14,7 +14,7 @@ PACKET_VERSION = "1.0"
 RETURN_SCHEMA_VERSION = "1.0"
 ALLOWED_SPECIALISTS = ("codex", "gemini")
 EXPECTED_MODELS = {
-    "codex": "gpt-5.3-codex",
+    "codex": "gpt-5.6-sol",
     "gemini": "google/gemini-3.1-pro-preview",
 }
 ALLOWED_STATUSES = {

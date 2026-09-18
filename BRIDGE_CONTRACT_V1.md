@@ -45,7 +45,7 @@ Allowed overall statuses:
 
 - strict schema validation and unknown-field rejection
 - bounded specialist fan-out (`max_fanout <= 2`)
-- exact specialist model locks (`gpt-5.3-codex`, `google/gemini-3.1-pro-preview`)
+- qualified engineering-specialist contract with exact current primary `gpt-5.6-sol` (legacy TaskPacket key `codex`) plus exact Gemini research model `google/gemini-3.1-pro-preview`; no silent model substitution
 - deterministic fan-in order (`codex`, then `gemini`)
 - deterministic request SHA-256 hash and execution ID
 - idempotent replay and conflicting-duplicate rejection
@@ -61,9 +61,9 @@ Allowed overall statuses:
 
 ## Current transport truth
 
-### Codex
+### Engineering specialist (legacy TaskPacket key: `codex`)
 
-Repository source and Render deployment contain the dedicated `codex_*` surface and `CODEX_MODEL` support. Historical admin-context tests showed `gpt-5.3-codex` capability. Current Notion Custom Agent runs repeatedly fail at the platform/tool execution stage as `codex_get_status` begins, before a tool result is returned. Therefore direct Notion→Codex routing is **BLOCKED / NOT VERIFIED OPERATIONAL** until the Notion approval/runtime gate is resolved.
+TaskPacket v1 retains the historical `codex` key and `CODEX_MODEL` environment name only for wire/config compatibility. The semantic role is now the provider-neutral JAYTEC engineering specialist. The approved current primary is exact `gpt-5.6-sol`. Any route must prove exact model identity, satisfy this contract, fail closed on mismatch, and preserve the same safety/validation gates. The legacy `gpt-5.3-codex` dependency is superseded and must not block G1/V2 simply because that model or its API project is unavailable.
 
 ### Gemini
 
@@ -75,8 +75,8 @@ The staging production direction is a thin server-side Gemini adapter (or repair
 
 Do not merge/deploy this staging architecture as production until:
 
-1. Codex normal agent route returns status, health, capability and structured task results without repeated approval failure.
+1. At least one approved engineering-specialist route (current primary: exact `gpt-5.6-sol`) passes identity, contract, no-side-effect and evidence validation.
 2. Gemini non-trivial structured research packet passes deterministically, with exact model identity and contract injection.
-3. Combined Codex+Gemini pilot passes task/subtask preservation, retry behavior, duplicate handling, deterministic fan-in, conflict reporting and Notion final validation.
+3. Combined engineering-specialist + Gemini pilot passes task/subtask preservation, retry behavior, duplicate handling, deterministic fan-in, conflict reporting and final validation.
 4. Approval behavior is measured in the real Notion UI/runtime.
 5. Rollback and fallback paths are recorded.

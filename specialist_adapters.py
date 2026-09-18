@@ -21,14 +21,17 @@ from orchestration import RateLimitError as OrchestrationRateLimitError
 from circuit_breaker import CircuitBreaker
 from worker_json import json_object
 
-EXPECTED_CODEX_MODEL = "gpt-5.3-codex"
+EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
+# TaskPacket v1 keeps the historical "codex" specialist key for wire compatibility.
+# Semantically it now means the JAYTEC engineering specialist role.
+EXPECTED_CODEX_MODEL = EXPECTED_ENGINEERING_MODEL
 EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
 
 CODEX_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
 
 REQUIRED SHAPE (types are strict):
 - status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
-- model: string exactly gpt-5.3-codex
+- model: string exactly gpt-5.6-sol
 - findings: JSON array of strings (NOT an object)
 - evidence: JSON array of strings (NOT an object)
 - confidence: string|null
@@ -108,7 +111,7 @@ def build_codex_dispatch(
     circuit: CircuitBreaker,
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     # Fail closed BEFORE any upstream call.
-    require_exact_model(codex_model, EXPECTED_CODEX_MODEL, context="codex")
+    require_exact_model(codex_model, EXPECTED_ENGINEERING_MODEL, context="engineering")
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         prompt = (

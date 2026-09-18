@@ -242,7 +242,7 @@ def main() -> int:
             config["mcp_auth_configured"],
             config["codex_adapter_configured"],
             config["gemini_adapter_configured"],
-            CODEX_MODEL == "gpt-5.3-codex",
+            CODEX_MODEL == "gpt-5.6-sol",
             GEMINI_MODEL == "google/gemini-3.1-pro-preview",
         ]
     ):
