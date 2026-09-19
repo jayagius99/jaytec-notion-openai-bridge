@@ -153,7 +153,22 @@ class ManusGovernanceTests(unittest.TestCase):
         verify_manus_completion(
             {
                 "status": "SUCCESS",
-                "evidence": ["test passed"],
+                "evidence": [
+                    {
+                        "kind": "test",
+                        "source": "test_manus_governance",
+                        "reference": "structured-success-evidence",
+                        "observed_at": "2026-09-19T00:00:00Z",
+                        "claim": "The bounded test result satisfies every required completion-verification facet.",
+                        "supports": [
+                            "instruction_match_verified",
+                            "scope_verified",
+                            "evidence_verified",
+                            "no_unauthorized_side_effects",
+                            "duplicate_work_check_passed",
+                        ],
+                    }
+                ],
                 "verification": {
                     "instruction_match_verified": True,
                     "scope_verified": True,
@@ -166,6 +181,7 @@ class ManusGovernanceTests(unittest.TestCase):
 
     def test_specialist_request_is_request_only(self):
         r = specialist_request(
+            parent_task_id="T-1",
             specialist="gemini",
             objective="review architecture",
             reason="independent review needed",
