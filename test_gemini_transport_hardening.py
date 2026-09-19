@@ -69,7 +69,7 @@ def valid_payload():
     )
 
 
-class TestGeminiTransportHardening(unittest.TestCase):
+class TestReviewerTransportHardening(unittest.TestCase):
     def build(self, responses):
         client = FakeClient(responses)
         dispatch = build_gemini_dispatch(
@@ -80,14 +80,15 @@ class TestGeminiTransportHardening(unittest.TestCase):
         )
         return client, dispatch
 
-    def test_requests_json_object_and_records_safe_diagnostics(self):
+    def test_requests_json_schema_and_records_safe_diagnostics(self):
         client, dispatch = self.build([response(valid_payload())])
         out = dispatch(packet())
         self.assertEqual("SUCCESS", out["status"])
         self.assertEqual(EXPECTED_GEMINI_MODEL, out["model"])
         self.assertEqual(1, len(client.chat.completions.calls))
         call = client.chat.completions.calls[0]
-        self.assertEqual({"type": "json_object"}, call["response_format"])
+        self.assertEqual("json_schema", call["response_format"]["type"])
+        self.assertEqual("jaytec_reviewer_result", call["response_format"]["json_schema"]["name"])
         self.assertEqual("stop", out["bridge_diagnostics"]["finish_reason"])
         self.assertEqual(EXPECTED_GEMINI_MODEL, out["bridge_diagnostics"]["provider_model"])
         self.assertEqual(64, len(out["bridge_diagnostics"]["content_sha256"]))
@@ -161,7 +162,7 @@ class TestGeminiTransportHardening(unittest.TestCase):
                     "DEDUPLICATION_KEY": "example",
                     "ROUTE_AUDIT": {
                         "web_retrieval_used": True,
-                        "gemini_used": True,
+                        "reviewer_used": True,
                         "notion_used": False,
                         "other_agents_used": [],
                     },

@@ -105,7 +105,7 @@ jobs:
             -e OPENAI_API_KEY=test \
             -e OPENROUTER_API_KEY=test \
             -e CODEX_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free \
-            -e GEMINI_MODEL=google/gemini-3.1-pro-preview \
+            -e GEMINI_MODEL=deepseek/deepseek-v4-flash-0731:free \
             -e DURABLE_WORKER_ENABLED=0 \
             -e GUARDIAN_LOOP_ENABLED=0 \
             jaytec-bridge-ci:smoke)

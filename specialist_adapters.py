@@ -33,7 +33,8 @@ from jaytec_read import (
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
 EXPECTED_CODEX_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
-EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
+EXPECTED_REVIEWER_MODEL = "deepseek/deepseek-v4-flash-0731:free"
+EXPECTED_GEMINI_MODEL = EXPECTED_REVIEWER_MODEL  # legacy TaskPacket wire role compatibility
 
 SPECIALIST_AUTHORITY_CONTRACT = """JAYTEC SPECIALIST AUTHORITY CONTRACT
 - Jay is owner/root authority.
@@ -65,8 +66,8 @@ REQUIRED SHAPE (types are strict):
 
 Never include markdown fences or surrounding prose. Never include credentials or secrets."""
 
-GEMINI_RESEARCH_MODE_V1_1 = SPECIALIST_AUTHORITY_CONTRACT + """\nJAYTEC_GEMINI_RESEARCH_MODE v1.1.0
-ROLE: RESEARCH SPECIALIST. Treat each request as stateless.
+GEMINI_RESEARCH_MODE_V1_1 = SPECIALIST_AUTHORITY_CONTRACT + """\nJAYTEC_INDEPENDENT_REVIEW_MODE v1.0.0
+ROLE: INDEPENDENT RESEARCH / ARCHITECTURE / ADVERSARIAL REVIEW SPECIALIST. Treat each request as stateless.
 
 Return ONLY one valid JSON object (no markdown fences and no surrounding prose).
 Preserve TASK_ID and SUBTASK_ID. Keep strings properly JSON escaped. If the
@@ -75,7 +76,7 @@ analysis in conclusion rather than expanding many duplicated fields.
 
 REQUIRED SHAPE (types are strict):
 - status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
-- model: string exactly google/gemini-3.1-pro-preview
+- model: string exactly deepseek/deepseek-v4-flash-0731:free
 - findings: JSON array of strings
 - evidence: JSON array of strings
 - confidence: string|null
@@ -91,7 +92,7 @@ Never expose credentials. Do not perform engineering writes."""
 
 GEMINI_FORMAT_RETRY = """Your previous transport attempt did not produce a complete parseable JSON object.
 Re-answer the ORIGINAL TASK_PACKET_JSON from scratch. Do not quote or repair the prior response.
-Return one compact valid JSON object only, using exactly the required JAYTEC Gemini research fields.
+Return one compact valid JSON object only, using exactly the required JAYTEC independent reviewer fields.
 Never include markdown fences, comments, trailing prose, NaN/Infinity, or unescaped newlines inside JSON strings."""
 
 
@@ -166,6 +167,40 @@ def _normalize_provider_exception(exc: Exception, *, context: str) -> None:
     raise exc
 
 
+def _specialist_result_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": [
+                    "SUCCESS", "PARTIAL_SUCCESS", "NEEDS_VALIDATION",
+                    "POLICY_BLOCKED", "FAILED_CLOSED", "INVALID_PACKET",
+                    "TIMEOUT", "RATE_LIMITED"
+                ],
+            },
+            "model": {"type": "string"},
+            "findings": {"type": "array", "items": {"type": "string"}},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": ["string", "null"]},
+            "conclusion": {},
+            "unresolved_items": {"type": "array", "items": {"type": "string"}},
+            "files_or_artifacts": {"type": "array"},
+            "architecture_changes_required": {"type": "array"},
+            "knowledge_writeback_proposal": {"type": "array"},
+            "side_effects_attempted": {"type": "array"},
+            "requested_operations": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": [
+            "status", "model", "findings", "evidence", "confidence", "conclusion",
+            "unresolved_items", "files_or_artifacts", "architecture_changes_required",
+            "knowledge_writeback_proposal", "side_effects_attempted",
+            "requested_operations",
+        ],
+    }
+
+
 def build_codex_dispatch(
     *,
     openai_client: OpenAI,
@@ -209,6 +244,7 @@ def build_codex_dispatch(
         )
 
     def _single_call(packet: Mapping[str, Any], *, retry_format: bool) -> Mapping[str, Any]:
+        tool_name = "submit_engineering_result"
         request_kwargs: dict[str, Any] = {
             "model": codex_model,
             "messages": [{"role": "user", "content": _prompt(packet, retry_format=retry_format)}],
@@ -216,7 +252,24 @@ def build_codex_dispatch(
             "max_tokens": max_output_tokens,
             "timeout": codex_timeout_s,
             "stream": False,
-            "extra_body": {"provider": {"allow_fallbacks": False}},
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": "Return the bounded JAYTEC engineering result to ChatGPT. This tool has no side effects.",
+                    "parameters": _specialist_result_schema(),
+                },
+            }],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": tool_name},
+            },
+            "extra_body": {
+                "provider": {
+                    "allow_fallbacks": False,
+                    "require_parameters": True,
+                }
+            },
         }
         try:
             response = openai_client.chat.completions.create(**request_kwargs)
@@ -232,15 +285,44 @@ def build_codex_dispatch(
                 codex_model,
                 context="engineering_provider_response",
             )
-        content = response.choices[0].message.content or ""
-        result, diagnostics = json_object_with_diagnostics(content)
+        choice = response.choices[0]
+        message = choice.message
+        tool_calls = getattr(message, "tool_calls", None) or []
+        if len(tool_calls) != 1:
+            raise WorkerJsonError(
+                "ENGINEERING_TOOL_CALL_REQUIRED",
+                f"expected_one_tool_call;got={len(tool_calls)}",
+            )
+        call = tool_calls[0]
+        function = getattr(call, "function", None)
+        name = getattr(function, "name", None)
+        if name != tool_name:
+            raise WorkerJsonError(
+                "ENGINEERING_TOOL_NAME_MISMATCH",
+                f"expected={tool_name};got={name}",
+            )
+        arguments = getattr(function, "arguments", None)
+        if not isinstance(arguments, str):
+            raise WorkerJsonError("ENGINEERING_TOOL_ARGS_MISSING", "arguments_not_string")
+        try:
+            result = json.loads(arguments)
+        except Exception as exc:
+            raise WorkerJsonError(
+                "ENGINEERING_TOOL_ARGS_INVALID_JSON",
+                hashlib.sha256(arguments.encode("utf-8", errors="replace")).hexdigest(),
+            ) from exc
+        if not isinstance(result, dict):
+            raise WorkerJsonError("ENGINEERING_TOOL_ARGS_NOT_OBJECT", type(result).__name__)
         result.setdefault("model", codex_model)
-        result["bridge_diagnostics"] = _safe_transport_diagnostics(
-            content=content,
-            finish_reason=_finish_reason(response.choices[0]),
-            provider_model=returned_provider_model,
-            extracted_object=diagnostics.extracted_object,
-        )
+        result["bridge_diagnostics"] = {
+            "finish_reason": _finish_reason(choice),
+            "provider_model": returned_provider_model,
+            "structured_transport": "forced_tool_call",
+            "tool_name": tool_name,
+            "tool_args_sha256": hashlib.sha256(
+                arguments.encode("utf-8", errors="replace")
+            ).hexdigest(),
+        }
         return result
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -276,7 +358,7 @@ def build_gemini_dispatch(
     gemini_timeout_s: float,
     circuit: CircuitBreaker,
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
-    require_exact_model(gemini_model, EXPECTED_GEMINI_MODEL, context="gemini")
+    require_exact_model(gemini_model, EXPECTED_GEMINI_MODEL, context="reviewer")
     if gemini_timeout_s <= 0:
         raise ValueError("gemini_timeout_s must be positive")
 
@@ -324,11 +406,18 @@ def build_gemini_dispatch(
             "temperature": 0,
             "timeout": gemini_timeout_s,
             "stream": False,
-            "response_format": {"type": "json_object"},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "jaytec_reviewer_result",
+                    "strict": True,
+                    "schema": _specialist_result_schema(),
+                },
+            },
             "extra_body": {
                 "provider": {
-                    "sort": "price",
-                    "allow_fallbacks": True,
+                    "allow_fallbacks": False,
+                    "require_parameters": True,
                 }
             },
         }
@@ -342,16 +431,16 @@ def build_gemini_dispatch(
         try:
             response = openrouter_client.chat.completions.create(**request_kwargs)
         except Exception as exc:
-            _normalize_provider_exception(exc, context="gemini_provider")
+            _normalize_provider_exception(exc, context="reviewer_provider")
         if not response.choices:
-            raise RuntimeError("gemini_no_choices")
+            raise RuntimeError("reviewer_no_choices")
 
         returned_provider_model = _provider_model(response)
         if returned_provider_model is not None:
             require_exact_model(
                 returned_provider_model,
                 gemini_model,
-                context="gemini_provider_response",
+                context="reviewer_provider_response",
             )
 
         choice = response.choices[0]
@@ -414,7 +503,7 @@ def build_gemini_dispatch(
             for op in operations
             if isinstance(op, str)
         ):
-            raise RuntimeError("gemini_role_task_not_authorized")
+            raise RuntimeError("reviewer_role_task_not_authorized")
         if not is_jaytec_read_packet(packet):
             return _single_with_format_retry(packet)
 

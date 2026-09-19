@@ -1,11 +1,11 @@
 """JAYTEC:READ hard-lock policy and OpenRouter web-retrieval helpers.
 
 This module is intentionally small and dependency-free.  It does not fetch URLs
-inside the JAYTEC bridge.  For JAYTEC:READ, Gemini receives OpenRouter's
+inside the JAYTEC bridge.  For JAYTEC:READ, The registered independent reviewer receives OpenRouter's
 server-side web_fetch tool, restricted to the requested public domain.
 
 Hard rule:
-- JAYTEC:READ is Gemini + web retrieval only.
+- JAYTEC:READ is independent-reviewer + web retrieval only.
 - No Notion fallback is part of this workflow.
 - If the source cannot be retrieved and source-specific evidence cannot be
   returned, the workflow fails closed.
@@ -72,7 +72,7 @@ CONFIDENCE, DEDUPLICATION_KEY, ROUTE_AUDIT.
 
 ROUTE_AUDIT must be an object containing:
 - web_retrieval_used: boolean
-- gemini_used: true
+- reviewer_used: true
 - notion_used: false
 - other_agents_used: []
 
@@ -176,7 +176,7 @@ def build_jaytec_read_packet(
     request_suffix: str = "",
     validation_suffix: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build the canonical Gemini-only JAYTEC:READ packet."""
+    """Build the canonical independent-reviewer JAYTEC:READ packet."""
 
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     normalized = validate_public_source_url(source_url)
@@ -220,7 +220,7 @@ def build_jaytec_read_packet(
         "required_context": {"source_url": normalized},
         "known_facts": [],
         "constraints": [
-            "Gemini only",
+            "Independent reviewer only",
             "OpenRouter web_fetch only for retrieval",
             "No Notion fallback",
             "Fail closed if exact page cannot be verified",
@@ -229,7 +229,7 @@ def build_jaytec_read_packet(
 
 
 def enforce_read_report(result: Mapping[str, Any], source_url: str) -> dict[str, Any]:
-    """Fail closed unless Gemini returned a complete, verified READ_REPORT."""
+    """Fail closed unless the independent reviewer returned a complete, verified READ_REPORT."""
 
     normalized_source = validate_public_source_url(source_url)
     out = dict(result)
@@ -273,8 +273,8 @@ def enforce_read_report(result: Mapping[str, Any], source_url: str) -> dict[str,
     if not isinstance(route_audit, Mapping):
         problems.append("jaytec_read_route_audit_missing")
     else:
-        if route_audit.get("gemini_used") is not True:
-            problems.append("jaytec_read_route_audit_gemini")
+        if route_audit.get("reviewer_used") is not True:
+            problems.append("jaytec_read_route_audit_reviewer")
         if route_audit.get("web_retrieval_used") is not True:
             problems.append("jaytec_read_route_audit_web")
         if route_audit.get("notion_used") is not False:

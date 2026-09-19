@@ -16,7 +16,7 @@ class TestProductionReady(unittest.TestCase):
         os.environ.pop("OPENAI_API_KEY", None)
         os.environ["OPENROUTER_API_KEY"] = "test"
         os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
-        os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
+        os.environ["GEMINI_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
 
         server = self._reload()
 
@@ -39,7 +39,7 @@ class TestProductionReady(unittest.TestCase):
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ.pop("OPENROUTER_API_KEY", None)
         os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
-        os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
+        os.environ["GEMINI_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
 
         server = self._reload()
 
@@ -62,7 +62,7 @@ class TestProductionReady(unittest.TestCase):
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ.pop("OPENROUTER_API_KEY", None)
         os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
-        os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
+        os.environ["GEMINI_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
 
         server = self._reload()
 

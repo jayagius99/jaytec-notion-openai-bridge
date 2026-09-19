@@ -89,7 +89,17 @@ class FakeEngineerCompletions:
             model="nvidia/nemotron-3-ultra-550b-a55b:free",
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content=json.dumps(meeting_output()))
+                    message=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="submit_meeting_engineer_result",
+                                    arguments=json.dumps(meeting_output()),
+                                )
+                            )
+                        ],
+                    )
                 )
             ],
             usage=SimpleNamespace(
@@ -105,14 +115,14 @@ class FakeEngineerClient:
         self.chat = SimpleNamespace(completions=FakeEngineerCompletions())
 
 
-class FakeGeminiCompletions:
+class FakeReviewerCompletions:
     def __init__(self):
         self.calls = 0
 
     def create(self, **kwargs):
         self.calls += 1
         return SimpleNamespace(
-            model="google/gemini-3.1-pro-preview",
+            model="deepseek/deepseek-v4-flash-0731:free",
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(content=json.dumps(meeting_output()))
@@ -126,9 +136,9 @@ class FakeGeminiCompletions:
         )
 
 
-class FakeGeminiClient:
+class FakeReviewerClient:
     def __init__(self):
-        self.chat = SimpleNamespace(completions=FakeGeminiCompletions())
+        self.chat = SimpleNamespace(completions=FakeReviewerCompletions())
 
 
 class MeetingBusTests(unittest.TestCase):
@@ -251,35 +261,35 @@ class MeetingBusTests(unittest.TestCase):
         provider = client.chat.completions.last_kwargs["extra_body"]["provider"]
         self.assertFalse(provider["allow_fallbacks"])
 
-    def test_engineer_and_gemini_are_distinct_meeting_roles(self):
+    def test_engineer_and_reviewer_are_distinct_meeting_roles(self):
         engineer = meeting_bus.dispatch_request(
             valid_request("engineer"),
             registry=FakeRegistry(),
             engineer_client=FakeEngineerClient(),
             enabled=True,
         )
-        gemini = meeting_bus.dispatch_request(
-            valid_request("gemini"),
+        reviewer = meeting_bus.dispatch_request(
+            valid_request("reviewer"),
             registry=FakeRegistry(),
-            gemini_client=FakeGeminiClient(),
+            reviewer_client=FakeReviewerClient(),
             enabled=True,
         )
-        self.assertNotEqual(engineer["result"]["model"], gemini["result"]["model"])
+        self.assertNotEqual(engineer["result"]["model"], reviewer["result"]["model"])
         self.assertEqual(engineer["participant"], "engineer")
-        self.assertEqual(gemini["participant"], "gemini")
+        self.assertEqual(reviewer["participant"], "reviewer")
 
-    def test_gemini_dispatch(self):
+    def test_reviewer_dispatch(self):
         registry = FakeRegistry()
-        client = FakeGeminiClient()
+        client = FakeReviewerClient()
         result = meeting_bus.dispatch_request(
-            valid_request("gemini"),
+            valid_request("reviewer"),
             registry=registry,
-            gemini_client=client,
+            reviewer_client=client,
             enabled=True,
         )
         self.assertEqual(
             result["result"]["model"],
-            "google/gemini-3.1-pro-preview",
+            "deepseek/deepseek-v4-flash-0731:free",
         )
         self.assertFalse(result["notion_used"])
         self.assertEqual(client.chat.completions.calls, 1)
