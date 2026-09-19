@@ -348,7 +348,17 @@ class Completions:
             model="nvidia/nemotron-3-ultra-550b-a55b:free",
             choices=[SimpleNamespace(
                 finish_reason="stop",
-                message=SimpleNamespace(content=json.dumps(payload))
+                message=SimpleNamespace(
+                    content="",
+                    tool_calls=[
+                        SimpleNamespace(
+                            function=SimpleNamespace(
+                                name="submit_engineering_result",
+                                arguments=json.dumps(payload)
+                            )
+                        )
+                    ]
+                )
             )]
         )
 
