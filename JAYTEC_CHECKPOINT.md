@@ -57,6 +57,58 @@ Therefore:
 
 Do not begin that connector work unless Jay explicitly resumes/authorizes it.
 
+## FUTURE V3 RESEARCH ITEM — CONTROLLED TOR NETWORK ROUTE
+
+Recorded: 2026-09-20 (Australia/Adelaide)  
+Status: RESEARCH CAPTURED / NOT AUTHORIZED FOR IMPLEMENTATION
+
+Jay requested that Tor capability be researched for JAYTEC V3 and preserved so it is not forgotten during future V3 design or implementation.
+
+Research direction:
+- Treat Tor as a bounded, provider-neutral JAYTEC network route/adapter, NOT as a machine-wide default proxy.
+- Normal outbound routing remains unchanged unless a request is explicitly authorized or policy-routed through Tor.
+- ChatGPT/JAYTEC remains coordinator and decision authority. Notion remains transport/state only and must not independently invoke, route, research, retry, or decide Tor use.
+- Specialists/workers must not silently enable Tor or bypass JAYTEC authority, approval, cost, security, audit, verification, anti-duplication, or checkpoint gates.
+- Prefer an isolated gateway/fetcher whose only destination path is a local Tor client; the fetcher must have no direct Internet egress path. The Tor process itself is the only component permitted to establish Tor relay connections.
+- Resolve destination hostnames through Tor rather than local DNS; add explicit DNS/direct-egress leak tests and fail closed on leak evidence.
+- Bind proxy/control interfaces to localhost or isolated local IPC. Do not expose an open Tor proxy to the LAN or public Internet.
+- Use strong per-request/session stream isolation where supported so unrelated JAYTEC requests do not needlessly share circuits.
+- Restrict the initial machine interface to bounded HTTP/HTTPS text retrieval. No torrenting, arbitrary generic proxying, executable launch, unrestricted browser automation, or automatic opening of downloaded documents.
+- Block loopback, private-network, link-local, cloud-metadata and other SSRF-sensitive destinations from the retrieval surface.
+- Enforce request size, response size, timeout, concurrency and rate limits.
+- Require HTTPS for ordinary clearnet destinations where available; Tor protects the route to the exit, not plaintext traffic from an exit relay to a non-HTTPS destination.
+- .onion access, if enabled, must be explicit and policy-controlled. A Tor route is not permission to bypass authentication, paywalls, access controls, CAPTCHAs, legal restrictions or JAYTEC safety rules.
+- Credentialed or identity-bearing sessions are OFF by default because logging into an account or submitting identifying information can defeat the intended anonymity/privacy property.
+- Keep audit evidence without unnecessarily recording sensitive URL query strings, credentials, cookies or secrets. Logs should identify the initiating JAYTEC request, route choice, policy result, timing, destination class, status and bounded transfer metadata.
+- Use a separate Tor Browser/human-interactive lane for true browser activity rather than pointing an ordinary browser at a Tor SOCKS port.
+
+Backend decision remains OPEN:
+- Arti is the Tor Project's Rust implementation and is currently suitable for Tor client/proxy use and embedding experiments; its modular/memory-safe design is attractive for V3.
+- C Tor remains relevant where mature control-port behavior or features not yet equivalent in Arti are required.
+- Keep the Tor backend behind a JAYTEC adapter/contract instead of hard-coding one implementation before the future design gate.
+
+Mandatory pre-implementation gate:
+1. explicit V3 implementation authorization from Jay;
+2. threat model and abuse/scope review;
+3. DNS-leak and direct-egress tests;
+4. SSRF/private-network rejection tests;
+5. circuit/session isolation tests;
+6. credential/cookie/header leakage tests;
+7. content-type/download containment tests;
+8. audit-log privacy review;
+9. fail-closed behavior when Tor is unavailable;
+10. confirmation that Tor integration does not weaken existing JAYTEC authority, Notion, cost, security, verification, anti-duplication, or checkpoint rules.
+
+Official research basis captured for later design review:
+- Tor Project: Tor Browser best practices — https://support.torproject.org/tor-browser/security/using-tb-safely/
+- Tor Project: SOCKS/DNS leak testing — https://support.torproject.org/little-t-tor/troubleshooting/check-for-leaks/
+- Tor Specifications: stream isolation and circuit sharing — https://spec.torproject.org/path-spec/stream-isolation.html
+- Tor Specifications: SOCKS extensions — https://spec.torproject.org/socks-extensions
+- Arti documentation — https://arti.torproject.org/
+- Arti capability/status documentation — https://arti.torproject.org/FAQs/
+
+This entry is continuity only. It does not resume V2, alter the current JAYTEC:READ route, install Tor, create a service, expose a proxy, spend money, or authorize implementation.
+
 ## DO NOT REPEAT
 
 - Do not reintroduce Notion fallback into JAYTEC:READ.
