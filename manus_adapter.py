@@ -334,10 +334,8 @@ class ManusClient:
                 source=Actor.MANUS,
                 destination=actor_for[key],
                 purpose=purpose,
-                current_task_authorized=(
-                    current_task_authorized
-                    and (purpose not in MUTATING or connector_mutation_authorized)
-                ),
+                current_task_authorized=current_task_authorized,
+                connector_mutation_authorized=connector_mutation_authorized,
             )
             canonical_purposes.append((key, purpose.value))
 
