@@ -219,3 +219,12 @@ Required behavior:
 This is a standing cost-safety and continuity rule across OpenRouter, OpenAI,
 Manus, Notion credits when explicitly authorized, and any future metered JAYTEC
 provider.
+
+### Free-profile exception: Manus Lite
+
+Manus Lite is treated as a free profile in JAYTEC. A Manus API `credit_usage`
+field is usage telemetry, not proof of monetary spend. If the Manus API returns
+an insufficient-credit/quota-style error while JAYTEC has pinned and verified
+Lite, report it as a **Manus Lite availability/quota blocker**, not as a request
+for Jay to purchase or top up Manus credits. Paid Manus profiles remain blocked
+unless Jay explicitly authorizes one in the current user message.
