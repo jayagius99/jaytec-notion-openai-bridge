@@ -84,3 +84,16 @@ Rules:
 - A paid-profile override is one-task-only and does not change this standing default.
 
 Executable enforcement lives in `manus_policy.py` and must be reused by any future Manus adapter before it is allowed into production routing.
+
+
+## Temporary ChatGPT + JAYTEC collaboration directive
+
+Effective until Jay explicitly activates the new GOD Project / Executive Control Project:
+
+- For every substantive task Jay assigns to ChatGPT, ChatGPT must involve JAYTEC as a supporting system where a real JAYTEC route/capability exists.
+- JAYTEC may be used for retrieval, research, verification, routing, state inspection, diagnostics, specialist consultation, execution support, or cross-checking as appropriate to the task.
+- ChatGPT remains responsible for verifying JAYTEC's output and presenting the final result to Jay.
+- This directive does not override existing hard gates, safety/security rules, Notion restrictions, Manus profile restrictions, cost controls, or tool permission boundaries.
+- ChatGPT must not claim JAYTEC participated when no actual JAYTEC path/tool/runtime was used.
+- If the relevant JAYTEC route is unavailable, ChatGPT should preserve the objective, use legitimate available alternatives where appropriate, and disclose that JAYTEC participation could not be obtained for that task.
+- Once the new GOD Project / Executive Control Project is activated, this temporary directive is superseded by that Project's governing authority model and instructions.
