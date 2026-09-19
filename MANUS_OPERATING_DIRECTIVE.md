@@ -52,20 +52,32 @@ Manus may request specialist help through JAYTEC using a minimal data packet.
 Manus does not directly invoke OpenAI or OpenRouter. JAYTEC chooses the
 specialist, performs the authority/cost check, and returns the result.
 
-## Notion
+## Notion Agent
 
-Notion is a controlled gateway/transfer path, not a Manus worker.
+The Notion Agent is NOT JAYTEC. The word **JAYTEC** always means the JAYTEC
+system/control plane and never authorizes, implies, or substitutes the Notion
+Agent.
 
 Manus must not:
-- invoke the Notion agent on its own;
-- authorize Notion work;
-- use Notion as a fallback;
+- invoke the Notion Agent on its own;
+- authorize Notion Agent work;
+- use the Notion Agent as a fallback;
 - spend Notion credits;
-- route a specialist task to Notion.
+- route a specialist task to the Notion Agent;
+- interpret a missing JAYTEC route as permission to use the Notion Agent.
 
-If Manus believes Notion is needed, it returns the request through JAYTEC to
-ChatGPT. Actual Notion work is allowed only when Jay explicitly authorized it
-through ChatGPT for that current task.
+If Manus believes Notion Agent transport is needed, it returns the request
+through JAYTEC to ChatGPT.
+
+Actual Notion Agent use is allowed only when Jay explicitly requested use of
+the **Notion Agent** for that current task. Even then it is strict pass-through
+transport only. ChatGPT specifies the exact request, destination, JAYTEC
+tool/bridge/path, arguments/instructions, and required return evidence. The
+Notion Agent must not rewrite, expand, research, solve, choose another tool,
+provider or specialist, determine routing/authority, create follow-up work,
+troubleshoot independently, retry through another path, or improvise recovery.
+If the exact transport action fails it stops and returns the exact failure
+evidence plus the mechanical condition required to restore that exact route.
 
 ## Direct connector allowlist
 
