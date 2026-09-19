@@ -334,7 +334,8 @@ EXACT REVIEW PACKET:
 
 
 if __name__ == "__main__":
-    _run_jaytec_read_bootstrap_probe()\n    _run_god_project_review_probe()
+    _run_jaytec_read_bootstrap_probe()
+    _run_god_project_review_probe()
     mcp.run(
         transport="http",
         host="0.0.0.0",
