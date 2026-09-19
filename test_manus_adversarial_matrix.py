@@ -41,6 +41,7 @@ class ManusAdversarialMatrixTests(unittest.TestCase):
                                 destination=dst,
                                 purpose=purpose,
                                 current_task_authorized=True,
+                                connector_mutation_authorized=True,
                                 jay_authorized_notion_via_chatgpt=True,
                             )
                         else:
@@ -50,6 +51,7 @@ class ManusAdversarialMatrixTests(unittest.TestCase):
                                     destination=dst,
                                     purpose=purpose,
                                     current_task_authorized=True,
+                                    connector_mutation_authorized=True,
                                     jay_authorized_notion_via_chatgpt=True,
                                 )
 
@@ -124,6 +126,22 @@ class ManusAdversarialMatrixTests(unittest.TestCase):
                 )
                 self.assertFalse(decision.allowed)
                 self.assertTrue(decision.must_escalate)
+
+    def test_ordinary_delegation_never_implies_connector_mutation(self):
+        for destination in (Actor.GITHUB, Actor.NEON, Actor.RENDER):
+            for purpose in (Purpose.WRITE, Purpose.DEPLOY, Purpose.DELETE, Purpose.MIGRATE, Purpose.CREDENTIAL_CHANGE):
+                with self.subTest(destination=destination, purpose=purpose):
+                    with self.assertRaisesRegex(
+                        RelationshipPolicyError,
+                        "RELATIONSHIP_CONNECTOR_MUTATION_AUTH_REQUIRED",
+                    ):
+                        authorize_relationship(
+                            source=Actor.MANUS,
+                            destination=destination,
+                            purpose=purpose,
+                            current_task_authorized=True,
+                            connector_mutation_authorized=False,
+                        )
 
     def test_lite_is_only_automatic_profile(self):
         lite = authorize_manus_route(
