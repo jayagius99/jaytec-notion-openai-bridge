@@ -304,5 +304,165 @@ print(json.dumps({
         self.assertEqual(len(set(payload["rooms"])), 4)
 
 
+    def test_legacy_sync_sol_wrapper_forwards_bounded_config(self):
+        env = os.environ.copy()
+        env.update(
+            {
+                "RUNTIME_MODE": "staging_candidate",
+                "DURABLE_WORKER_ENABLED": "0",
+                "GUARDIAN_LOOP_ENABLED": "0",
+                "ENGINEERING_PROVIDER_MODE": "BOUNDED_SOL_ONLY",
+                "ENGINEERING_SOL_OUTPUT_TOKEN_CAP": "777",
+                "ENGINEERING_SOL_MAX_PACKET_RETRIES": "1",
+                "CODEX_MODEL": "gpt-5.6-sol",
+            }
+        )
+        code = r'''
+import json
+from types import SimpleNamespace
+from circuit_breaker import CircuitBreaker
+import reliable_server
+
+class Responses:
+    def __init__(self):
+        self.calls = 0
+        self.kwargs = None
+    def create(self, **kwargs):
+        self.calls += 1
+        self.kwargs = kwargs
+        return SimpleNamespace(output_text=json.dumps({
+            "status": "SUCCESS",
+            "model": "gpt-5.6-sol",
+            "findings": [],
+            "evidence": [],
+            "unresolved_items": [],
+            "side_effects_attempted": []
+        }))
+
+class Client:
+    def __init__(self):
+        self.responses = Responses()
+
+client = Client()
+dispatch = reliable_server._bounded_legacy_codex_dispatch(
+    openai_client=client,
+    codex_model="gpt-5.6-sol",
+    circuit=CircuitBreaker(failure_threshold=3, reset_after_seconds=60),
+)
+packet = {
+    "workflow_id": "JAYTEC_ENGINEERING_RUNTIME_PROBE",
+    "required_context": {
+        "authority_controller": "CHATGPT_OPENAI_LEAD",
+        "specialist_authority": "SUBORDINATE"
+    },
+    "max_retries": 0
+}
+result = dispatch(packet)
+print(json.dumps({
+    "status": result["status"],
+    "calls": client.responses.calls,
+    "max_output_tokens": client.responses.kwargs["max_output_tokens"]
+}))
+'''
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout.strip())
+        self.assertEqual(payload["status"], "SUCCESS")
+        self.assertEqual(payload["calls"], 1)
+        self.assertEqual(payload["max_output_tokens"], 777)
+
+    def test_legacy_sync_sol_wrapper_stays_locked_when_provider_mode_locked(self):
+        env = os.environ.copy()
+        env.update(
+            {
+                "RUNTIME_MODE": "staging_candidate",
+                "DURABLE_WORKER_ENABLED": "0",
+                "GUARDIAN_LOOP_ENABLED": "0",
+                "ENGINEERING_PROVIDER_MODE": "LOCKED_RESERVE",
+                "CODEX_MODEL": "gpt-5.6-sol",
+            }
+        )
+        code = r'''
+import json
+from types import SimpleNamespace
+from circuit_breaker import CircuitBreaker
+import reliable_server
+
+class Responses:
+    def __init__(self):
+        self.calls = 0
+    def create(self, **kwargs):
+        self.calls += 1
+        raise AssertionError("provider must not be called while locked")
+
+class Client:
+    def __init__(self):
+        self.responses = Responses()
+
+client = Client()
+dispatch = reliable_server._bounded_legacy_codex_dispatch(
+    openai_client=client,
+    codex_model="gpt-5.6-sol",
+    circuit=CircuitBreaker(failure_threshold=3, reset_after_seconds=60),
+)
+packet = {
+    "workflow_id": "JAYTEC_ENGINEERING_RUNTIME_PROBE",
+    "required_context": {
+        "authority_controller": "CHATGPT_OPENAI_LEAD",
+        "specialist_authority": "SUBORDINATE"
+    },
+    "max_retries": 0
+}
+try:
+    dispatch(packet)
+except RuntimeError as exc:
+    print(json.dumps({"error": str(exc), "calls": client.responses.calls}))
+'''
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout.strip())
+        self.assertEqual(payload["error"], "engineering_provider_locked")
+        self.assertEqual(payload["calls"], 0)
+
+    def test_runtime_call_sites_use_central_sol_config(self):
+        env = os.environ.copy()
+        env.update(
+            {
+                "RUNTIME_MODE": "staging_candidate",
+                "DURABLE_WORKER_ENABLED": "0",
+                "GUARDIAN_LOOP_ENABLED": "0",
+            }
+        )
+        code = r'''
+import inspect
+import json
+import reliable_server
+import server
+print(json.dumps({
+    "server": "**engineering_dispatch_kwargs()" in inspect.getsource(server.create_mcp_app),
+    "legacy_wrapper": "legacy_server.engineering_dispatch_kwargs()" in inspect.getsource(reliable_server._bounded_legacy_codex_dispatch),
+    "durable": "**legacy_server.engineering_dispatch_kwargs()" in inspect.getsource(reliable_server.create_mcp_app)
+}))
+'''
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(completed.stdout.strip())
+        self.assertEqual(payload, {"server": True, "legacy_wrapper": True, "durable": True})
+
 if __name__ == "__main__":
     unittest.main()

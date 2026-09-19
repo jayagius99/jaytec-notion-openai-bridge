@@ -63,6 +63,15 @@ BRIDGE_ID_CODEX = "BRIDGE_CODEX_ENGINEERING"
 LEGACY_ORCHESTRATION_STATUS_TASK = "JAYTEC_ORCHESTRATION_STATUS"
 LEGACY_EXECUTE_TASK_PACKET_PREFIX = "JAYTEC_EXECUTE_TASK_PACKET_JSON:"
 
+def engineering_dispatch_kwargs() -> Dict[str, Any]:
+    """Single source of truth for bounded Sol adapter construction."""
+    return {
+        "provider_mode": ENGINEERING_PROVIDER_MODE,
+        "max_output_tokens": ENGINEERING_SOL_OUTPUT_TOKEN_CAP,
+        "max_packet_retries": ENGINEERING_SOL_MAX_PACKET_RETRIES,
+    }
+
+
 
 def _require_startup_prereqs() -> None:
     if not MCP_AUTH_TOKEN:
@@ -403,6 +412,7 @@ def create_mcp_app() -> FastMCP:
         openai_client=openai_client,
         codex_model=CODEX_MODEL,
         circuit=codex_circuit,
+        **engineering_dispatch_kwargs(),
     )
 
     if openrouter_client is not None:

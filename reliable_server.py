@@ -123,12 +123,28 @@ def _transient_safe_execute_task_packet_json(
     )
 
 
-def _bounded_legacy_codex_dispatch(*, openai_client, codex_model, circuit):
+def _bounded_legacy_codex_dispatch(
+    *,
+    openai_client,
+    codex_model,
+    circuit,
+    provider_mode=None,
+    max_output_tokens=None,
+    max_packet_retries=None,
+):
+    config = dict(legacy_server.engineering_dispatch_kwargs())
+    if provider_mode is not None:
+        config["provider_mode"] = provider_mode
+    if max_output_tokens is not None:
+        config["max_output_tokens"] = max_output_tokens
+    if max_packet_retries is not None:
+        config["max_packet_retries"] = max_packet_retries
     underlying = _ORIGINAL_BUILD_CODEX(
         openai_client=openai_client,
         codex_model=codex_model,
         circuit=circuit,
         codex_timeout_s=max(1.0, LEGACY_SYNC_PROVIDER_TIMEOUT_S),
+        **config,
     )
     return _retryable_single_attempt_dispatch(underlying, model=EXPECTED_CODEX_MODEL)
 
@@ -329,6 +345,7 @@ def create_mcp_app():
                 codex_model=legacy_server.CODEX_MODEL,
                 circuit=durable_codex_circuit,
                 codex_timeout_s=DURABLE_CODEX_TIMEOUT_S,
+                **legacy_server.engineering_dispatch_kwargs(),
             ),
             model=EXPECTED_CODEX_MODEL,
         )
