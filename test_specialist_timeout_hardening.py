@@ -28,7 +28,11 @@ class FakeEngineeringCompletions:
 
 class FakeEngineeringClient:
     def __init__(self, exc=None):
-        self.chat = FakeChat(exc)
+        self.chat = type(
+            "FakeEngineeringChat",
+            (),
+            {"completions": FakeEngineeringCompletions(exc)},
+        )()
 
 
 class FakeCompletions:
@@ -51,7 +55,7 @@ class FakeGeminiClient:
         self.chat = FakeChat(exc)
 
 
-def sol_packet():
+def engineering_packet():
     return {
         "task_id": "t",
         "subtask_id": "s",
@@ -75,7 +79,7 @@ class TestSpecialistTimeoutHardening(unittest.TestCase):
             provider_mode="OPENROUTER_FREE_PRIMARY",
         )
         with self.assertRaises(TimeoutError):
-            dispatch(sol_packet())
+            dispatch(engineering_packet())
         self.assertEqual(client.chat.completions.timeout, 7.5)
 
     def test_gemini_timeout_is_bounded_and_normalized(self):
@@ -107,7 +111,7 @@ class TestSpecialistTimeoutHardening(unittest.TestCase):
             provider_mode="OPENROUTER_FREE_PRIMARY",
         )
         with self.assertRaises(RateLimitError):
-            dispatch(sol_packet())
+            dispatch(engineering_packet())
 
     def test_5xx_is_normalized_to_provider_unavailable(self):
         client = FakeGeminiClient(FakeProviderError("upstream unavailable", status_code=503))
