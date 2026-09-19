@@ -109,6 +109,9 @@ def _rows(body: Mapping[str, Any]) -> list[Mapping[str, Any]]:
 
 def _task(body: Mapping[str, Any]) -> Mapping[str, Any]:
     value = body.get("task")
+    if isinstance(value, Mapping):
+        return value
+    value = body.get("data")
     return value if isinstance(value, Mapping) else {}
 
 
@@ -454,18 +457,45 @@ class ManusClient:
         self,
         route: BoundManusRoute,
         task_id: str,
+        *,
+        attempts: int = 3,
+        delay_seconds: float = 0.5,
     ) -> Mapping[str, Any]:
-        detail = self.task_detail(task_id)
-        task = _task(detail)
-        observed = task.get("agent_profile")
+        """Verify observed Manus profile with a short bounded propagation window.
+
+        A concrete mismatch fails immediately. Missing profile identity is
+        retried only as a read-only propagation allowance, then fails closed.
+        """
+        bounded_attempts = min(max(int(attempts), 1), 5)
+        last_detail: Mapping[str, Any] = {}
+        for attempt in range(bounded_attempts):
+            detail = self.task_detail(task_id)
+            last_detail = detail
+            task = _task(detail)
+            project_id = task.get("project_id")
+            if (
+                project_id not in (None, "")
+                and str(project_id) != route.authorization.project_id
+            ):
+                raise ManusError("MANUS_TASK_PROJECT_MISMATCH")
+
+            observed = task.get("agent_profile")
+            if observed not in (None, ""):
+                verify_manus_profile(
+                    route.authorization.profile,
+                    observed_profile=str(observed),
+                )
+                return detail
+
+            if attempt + 1 < bounded_attempts:
+                time.sleep(max(0.0, min(float(delay_seconds), 2.0)))
+
+        # Reuse canonical policy error for unobservable identity.
         verify_manus_profile(
             route.authorization.profile,
-            observed_profile=str(observed) if observed is not None else None,
+            observed_profile=None,
         )
-        project_id = task.get("project_id")
-        if project_id not in (None, "") and str(project_id) != route.authorization.project_id:
-            raise ManusError("MANUS_TASK_PROJECT_MISMATCH")
-        return detail
+        return last_detail
 
 
 def safe_identity_summary(body: Mapping[str, Any]) -> dict[str, Any]:
