@@ -2,7 +2,7 @@
 
 This module exposes no general specialist API. It accepts only authenticated
 GitHub Actions requests from the JAYTEC meeting-ledger branch and only permits
-advisory Gemini/Sol calls for a named meeting. Notion and ChatGPT Work are not
+advisory engineer/reviewer/Sol calls for a named meeting. Notion and ChatGPT Work are not
 part of this route.
 """
 
@@ -40,8 +40,8 @@ ENGINEER_MODEL = os.environ.get(
     "MEETING_ENGINEER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free"
 ).strip()
 SOL_MODEL = os.environ.get("MEETING_SOL_MODEL", "gpt-5.6-sol").strip()
-GEMINI_MODEL = os.environ.get(
-    "MEETING_GEMINI_MODEL", "google/gemini-3.1-pro-preview"
+REVIEWER_MODEL = os.environ.get(
+    "MEETING_REVIEWER_MODEL", "deepseek/deepseek-v4-flash-0731:free"
 ).strip()
 OPENROUTER_BASE_URL = os.environ.get(
     "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
@@ -61,7 +61,7 @@ ENGINEER_ENABLED = os.environ.get("MEETING_ENGINEER_ENABLED", "1").strip().lower
     "1", "true", "yes", "on"
 }
 ENGINEER_OUTPUT_TOKEN_CAP = int(os.environ.get("MEETING_ENGINEER_OUTPUT_TOKEN_CAP", "1200"))
-GEMINI_ENABLED = os.environ.get("MEETING_GEMINI_ENABLED", "1").strip().lower() in {
+REVIEWER_ENABLED = os.environ.get("MEETING_REVIEWER_ENABLED", "1").strip().lower() in {
     "1", "true", "yes", "on"
 }
 
@@ -69,7 +69,7 @@ MAX_BODY_BYTES = 65_536
 MAX_BRIEF_CHARS = 20_000
 MAX_ROLE_QUESTION_CHARS = 8_000
 MAX_OUTPUT_TOKENS = 3_000
-ALLOWED_PARTICIPANTS = frozenset({"engineer", "gemini", "sol"})
+ALLOWED_PARTICIPANTS = frozenset({"engineer", "reviewer", "sol"})
 ALLOWED_OPERATIONS = frozenset({"analyze", "review", "challenge"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 
@@ -260,6 +260,31 @@ def _usage(usage: Any) -> dict[str, int]:
     return result
 
 
+def _meeting_result_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "status": {"type": "string", "enum": ["SUCCESS", "PARTIAL_SUCCESS", "FAILED_CLOSED"]},
+            "current_state_observations": {"type": "array", "items": {"type": "string"}},
+            "evidence": {"type": "array", "items": {"type": "string"}},
+            "risks": {"type": "array", "items": {"type": "string"}},
+            "disagreements_or_challenges": {"type": "array", "items": {"type": "string"}},
+            "recommended_next_focus": {"type": "array", "items": {"type": "string"}},
+            "cost_efficiency_observations": {"type": "array", "items": {"type": "string"}},
+            "unresolved_questions": {"type": "array", "items": {"type": "string"}},
+            "confidence": {"type": "string"},
+            "side_effects_attempted": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": [
+            "status", "current_state_observations", "evidence", "risks",
+            "disagreements_or_challenges", "recommended_next_focus",
+            "cost_efficiency_observations", "unresolved_questions",
+            "confidence", "side_effects_attempted"
+        ],
+    }
+
+
 def _normalize_output(participant: str, model: str, raw_text: str) -> dict[str, Any]:
     try:
         parsed, diagnostics = json_object_with_diagnostics(raw_text or "")
@@ -349,6 +374,7 @@ def _call_engineer(request: Mapping[str, Any], client: Optional[OpenAI] = None):
     if client is None and not api_key:
         raise MeetingBusError("engineer_api_not_configured")
     client = client or OpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
+    tool_name = "submit_meeting_engineer_result"
     try:
         response = client.chat.completions.create(
             model=ENGINEER_MODEL,
@@ -358,7 +384,16 @@ def _call_engineer(request: Mapping[str, Any], client: Optional[OpenAI] = None):
                 int(request.get("max_output_tokens", 1800)),
                 ENGINEER_OUTPUT_TOKEN_CAP,
             ),
-            extra_body={"provider": {"allow_fallbacks": False}},
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": "Return the engineering participant's meeting review. This tool has no side effects.",
+                    "parameters": _meeting_result_schema(),
+                },
+            }],
+            tool_choice={"type": "function", "function": {"name": tool_name}},
+            extra_body={"provider": {"allow_fallbacks": False, "require_parameters": True}},
             timeout=float(os.environ.get("MEETING_ENGINEER_TIMEOUT_S", "90")),
         )
     except Exception as exc:
@@ -369,44 +404,63 @@ def _call_engineer(request: Mapping[str, Any], client: Optional[OpenAI] = None):
     returned_model = getattr(response, "model", None)
     if returned_model not in (None, ENGINEER_MODEL):
         raise MeetingBusError("engineer_provider_model_mismatch")
+    tool_calls = getattr(choices[0].message, "tool_calls", None) or []
+    if len(tool_calls) != 1:
+        raise MeetingBusError("engineer_tool_call_required")
+    function = getattr(tool_calls[0], "function", None)
+    if getattr(function, "name", None) != tool_name:
+        raise MeetingBusError("engineer_tool_name_mismatch")
+    arguments = getattr(function, "arguments", None)
+    if not isinstance(arguments, str):
+        raise MeetingBusError("engineer_tool_args_missing")
+    try:
+        parsed = json.loads(arguments)
+    except Exception as exc:
+        raise MeetingBusError("engineer_tool_args_invalid_json") from exc
     return (
-        _normalize_output("engineer", ENGINEER_MODEL, choices[0].message.content or ""),
+        _normalize_output("engineer", ENGINEER_MODEL, _canonical_json(parsed)),
         _usage(getattr(response, "usage", None)),
     )
 
 
-def _call_gemini(request: Mapping[str, Any], client: Optional[OpenAI] = None):
-    if not GEMINI_ENABLED:
-        raise MeetingPolicyError("gemini_meeting_lane_disabled")
-    if GEMINI_MODEL != "google/gemini-3.1-pro-preview":
-        raise MeetingPolicyError("gemini_model_lock_mismatch")
+def _call_reviewer(request: Mapping[str, Any], client: Optional[OpenAI] = None):
+    if not REVIEWER_ENABLED:
+        raise MeetingPolicyError("reviewer_meeting_lane_disabled")
+    if REVIEWER_MODEL != "deepseek/deepseek-v4-flash-0731:free":
+        raise MeetingPolicyError("reviewer_model_lock_mismatch")
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if client is None and not api_key:
-        raise MeetingBusError("gemini_api_not_configured")
+        raise MeetingBusError("reviewer_api_not_configured")
     client = client or OpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
     try:
         response = client.chat.completions.create(
-            model=GEMINI_MODEL,
+            model=REVIEWER_MODEL,
             messages=[{"role": "user", "content": _participant_prompt(request)}],
             temperature=0,
             max_tokens=int(request.get("max_output_tokens", 1800)),
-            response_format={"type": "json_object"},
-            extra_body={"provider": {"sort": "price", "allow_fallbacks": True}},
-            timeout=float(os.environ.get("MEETING_GEMINI_TIMEOUT_S", "90")),
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "jaytec_meeting_reviewer_result",
+                    "strict": True,
+                    "schema": _meeting_result_schema(),
+                },
+            },
+            extra_body={"provider": {"allow_fallbacks": False, "require_parameters": True}},
+            timeout=float(os.environ.get("MEETING_REVIEWER_TIMEOUT_S", "90")),
         )
     except Exception as exc:
-        raise MeetingBusError("gemini_provider_error:" + type(exc).__name__) from exc
+        raise MeetingBusError("reviewer_provider_error:" + type(exc).__name__) from exc
     choices = getattr(response, "choices", None)
     if not choices:
-        raise MeetingBusError("gemini_no_choices")
+        raise MeetingBusError("reviewer_no_choices")
     returned_model = getattr(response, "model", None)
-    if returned_model not in (None, GEMINI_MODEL):
-        raise MeetingBusError("gemini_provider_model_mismatch")
+    if returned_model not in (None, REVIEWER_MODEL):
+        raise MeetingBusError("reviewer_provider_model_mismatch")
     return (
-        _normalize_output("gemini", GEMINI_MODEL, choices[0].message.content or ""),
+        _normalize_output("reviewer", REVIEWER_MODEL, choices[0].message.content or ""),
         _usage(getattr(response, "usage", None)),
     )
-
 
 def _registry():
     database_url = os.environ.get("DATABASE_URL", "").strip()
@@ -425,8 +479,8 @@ def dispatch_request(
     *,
     registry: Optional[Any] = None,
     engineer_client: Optional[OpenAI] = None,
+    reviewer_client: Optional[OpenAI] = None,
     sol_client: Optional[OpenAI] = None,
-    gemini_client: Optional[OpenAI] = None,
     enabled: Optional[bool] = None,
 ) -> dict[str, Any]:
     request = validate_request(raw_request)
@@ -454,10 +508,10 @@ def dispatch_request(
 
     if request["participant"] == "engineer":
         specialist_result, usage = _call_engineer(request, client=engineer_client)
-    elif request["participant"] == "sol":
-        specialist_result, usage = _call_sol(request, client=sol_client)
+    elif request["participant"] == "reviewer":
+        specialist_result, usage = _call_reviewer(request, client=reviewer_client)
     else:
-        specialist_result, usage = _call_gemini(request, client=gemini_client)
+        specialist_result, usage = _call_sol(request, client=sol_client)
 
     result = {
         "schema_version": "1.0",
@@ -508,10 +562,12 @@ def status() -> dict[str, Any]:
                 "reserve_mode": SOL_RESERVE_MODE,
                 "output_token_cap": SOL_OUTPUT_TOKEN_CAP,
             },
-            "gemini": {
-                "model": GEMINI_MODEL,
-                "enabled": GEMINI_ENABLED,
+            "reviewer": {
+                "model": REVIEWER_MODEL,
+                "enabled": REVIEWER_ENABLED,
                 "configured": bool(os.environ.get("OPENROUTER_API_KEY", "").strip()),
+                "cost_profile": "free_primary",
+                "silent_fallback": False,
             },
         },
         "max_provider_calls_per_participant_per_meeting": 1,
