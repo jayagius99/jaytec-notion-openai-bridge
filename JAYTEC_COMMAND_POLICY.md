@@ -1,20 +1,70 @@
 # JAYTEC Command Execution Policy
 
-## Global Notion hard gate
+## Identity routing law — strict / non-negotiable
 
-Notion must not perform, route, retrieve, research, execute, repair, analyze, or
-act as a fallback for a JAYTEC task unless Jay explicitly authorizes Notion in
-the current user message.
+These identities are distinct and MUST NEVER be conflated:
+
+- JAYTEC = the JAYTEC system, architecture, infrastructure, control plane,
+  bridges, routing layer, runtime, state, policies and specialist pathways.
+- NOTION = the Notion Agent only.
+- CHATGPT = Jay's owner-facing coordinator.
+- GEMINI = Gemini review/research specialist.
+- SOL = GPT-5.6 Sol engineering/coding specialist.
+- MANUS = Manus automation specialist.
+
+"Ask JAYTEC", "use JAYTEC", "send this through JAYTEC", "check with JAYTEC",
+or equivalent wording ALWAYS targets the JAYTEC system/control plane. It NEVER
+authorizes, implies, selects, or substitutes the Notion Agent.
+
+If the required JAYTEC route is unavailable, fail closed and report the exact
+unavailable JAYTEC path. Do NOT substitute Notion Agent.
+
+Canonical authority remains:
+
+`Jay -> ChatGPT -> JAYTEC -> specialist/resource`
+
+The Notion Agent is never inserted into that authority chain. When explicitly
+authorized, it is transport only.
+
+Executable identity/edge enforcement lives in `relationship_policy.py`.
+
+## Global Notion Agent hard gate
+
+The Notion Agent must not perform, route, retrieve, research, execute, repair,
+analyze, troubleshoot, choose tools/providers/specialists, determine routing or
+authority, create follow-up work, improvise recovery, or act as a fallback for
+a JAYTEC task unless Jay explicitly requests use of the **Notion Agent** in the
+current user instruction.
+
+Merely saying "JAYTEC", referring to historical Notion connectivity, discussing
+the Notion Agent, quoting a rule about the Notion Agent, or mentioning Notion in
+context does NOT authorize use.
 
 Previous approvals, standing "full authority" instructions, old chat context,
 agent defaults, convenience fallbacks, or historical JAYTEC behavior do not
 count as current authorization.
 
-If a workflow cannot complete without Notion and the current message did not
-explicitly authorize Notion, the workflow must fail closed and report the
-blocker. It must not silently route through Notion.
+When explicitly authorized, the Notion Agent is STRICT PASS-THROUGH TRANSPORT.
+ChatGPT must provide:
+- the exact request to transmit;
+- the exact destination;
+- the exact JAYTEC tool/bridge/path to call;
+- the exact arguments/instructions to pass;
+- the exact response/evidence to return.
 
-Notion may still be used when Jay explicitly requests it for that task.
+The Notion Agent must not rewrite, expand, reason about, research, solve,
+reroute, retry through another path, or independently troubleshoot the request.
+
+If the exact instructed transport action fails, it must stop and return only:
+- the exact error;
+- failed tool/call/path;
+- relevant execution/log evidence;
+- machine-evidenced cause where available;
+- the mechanical condition required to make that exact route possible again.
+
+A "way to fix" means the factual failed condition and technical requirement
+needed to restore the intended route. It does NOT authorize an alternative
+solution or autonomous repair.
 
 ## JAYTEC:READ
 
@@ -59,15 +109,18 @@ ROUTE_AUDIT showing:
 - notion_used: false
 - other_agents_used: []
 
-## Explicit override
+## Explicit Notion Agent override
 
-An override must appear in Jay's current message, for example:
+An override must be a current, unambiguous request to use the **Notion Agent**,
+for example:
 
-- JAYTEC:READ — USE NOTION
-- Ask Notion to read this
-- Use Notion for this task
+- JAYTEC:READ — USE NOTION AGENT
+- Ask the Notion Agent to transmit this through the specified JAYTEC path
+- Use the Notion Agent as the pass-through bus for this exact call
 
-The override applies only to that current task and does not become a standing
+"Use JAYTEC" is never an override.
+
+The override applies only to that current task and does not become standing
 permission.
 
 ## Manus profile hard gate
