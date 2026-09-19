@@ -21,6 +21,7 @@ from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from jaytec_read import build_jaytec_read_packet, enforce_read_report
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
@@ -197,7 +198,35 @@ def execute_task_packet(packet_json: str) -> str:
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
+def _run_jaytec_read_bootstrap_probe() -> None:
+    """STAGING-ONLY one-shot JAYTEC:READ diagnostic.
+
+    Activated only when JAYTEC_READ_BOOTSTRAP_URL is set in the staging
+    environment. It performs no writes and logs only the validated READ result.
+    """
+    target = os.environ.get("JAYTEC_READ_BOOTSTRAP_URL", "").strip()
+    if not target:
+        return
+    packet = build_jaytec_read_packet(
+        target,
+        request_suffix="This is a one-shot staging recovery read requested by Jay. Return source-specific evidence only.",
+        validation_suffix=["Return the exact shared-chat content needed to resume the paused JAYTEC security work."],
+    )
+    result = execute_task_packet_core(
+        packet,
+        {"gemini": GEMINI_DISPATCH},
+        REGISTRY,
+    )
+    validated = enforce_read_report(result, target)
+    print(
+        "JAYTEC_READ_BOOTSTRAP_RESULT="
+        + json.dumps(validated, ensure_ascii=False, sort_keys=True),
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
+    _run_jaytec_read_bootstrap_probe()
     mcp.run(
         transport="http",
         host="0.0.0.0",
