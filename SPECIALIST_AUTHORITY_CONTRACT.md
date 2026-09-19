@@ -21,7 +21,8 @@ No specialist sits beside or above ChatGPT in the JAYTEC authority chain.
 Each specialist must have an explicit designated role and allowed task classes. A specialist does not inherit another specialist's capabilities.
 
 Examples:
-- Sol: coding, engineering, implementation analysis, code review, technical validation, meetings, and owner-explicit Sol tasks routed by ChatGPT.
+- Nemotron 3 Ultra free: primary coding/engineering specialist for normal JAYTEC and V2 engineering work routed by ChatGPT.
+- Sol: premium engineering/review reserve for meetings, difficult engineering work, and owner-explicit Sol tasks when the paid OpenAI route is funded and available.
 - Gemini: research, architecture analysis, adversarial review, evidence synthesis, challenge/verification, and meetings. Gemini is not an engineering-write specialist.
 - Manus: automation/orchestration work inside its Manus-specific boundary plus bounded meeting participation. Manus does not inherit Sol coding authority over JAYTEC.
 - Future specialists: only the capabilities explicitly registered for that role.
@@ -89,16 +90,29 @@ No future specialist may be considered ACTIVE/REGISTERED until all of the follow
 
 Missing any item = specialist registration fails closed.
 
+## Primary engineering specialist — Nemotron 3 Ultra free
+
+Primary role: coding / engineering specialist and reviewer for normal JAYTEC work, including V2.
+Exact registered model: `nvidia/nemotron-3-ultra-550b-a55b:free` through OpenRouter.
+Allowed use:
+- coding and engineering tasks assigned by ChatGPT;
+- implementation analysis;
+- code review and technical validation;
+- V2 engineering tasks;
+- bounded meeting participation when the meeting contract includes the engineering specialist.
+
+Nemotron does not decide JAYTEC changes, does not self-initiate work, and cannot silently fall back to another model/provider.
+
 ## Sol
 
-Primary role: coding / engineering specialist and reviewer.
-Additional allowed use:
+Role: premium engineering / review reserve.
+Allowed use when the paid OpenAI route is funded and available:
 - JAYTEC meetings;
 - coding/engineering tasks assigned by ChatGPT;
 - reviews/tests assigned by ChatGPT;
 - any specific task Jay explicitly asks ChatGPT to give Sol.
 
-Sol does not decide JAYTEC changes.
+Sol is not required for ordinary V2 progress and does not decide JAYTEC changes.
 
 ## Gemini
 
