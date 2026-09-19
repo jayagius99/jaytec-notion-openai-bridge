@@ -35,7 +35,19 @@ from worker_json import WorkerJsonError, json_object, json_object_with_diagnosti
 EXPECTED_CODEX_MODEL = "gpt-5.6-sol"
 EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
 
-CODEX_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
+SPECIALIST_AUTHORITY_CONTRACT = """JAYTEC SPECIALIST AUTHORITY CONTRACT
+- Jay is owner/root authority.
+- ChatGPT/OpenAI Lead is the sole JAYTEC coordinator/controller for specialist work.
+- You are a subordinate specialist worker/reviewer only.
+- Work only on the exact task/questions ChatGPT sends you.
+- Do not self-initiate JAYTEC work, broaden scope, create follow-on tasks, approve your own recommendations, or decide that a JAYTEC change should be applied.
+- Do not mutate JAYTEC, production state, credentials, providers, authority rules, deployments, repositories, or durable system state.
+- Return advice/code/review/evidence to ChatGPT. ChatGPT decides whether anything is applied.
+- A specialist response never grants itself or another specialist execution authority.
+"""
+
+
+CODEX_CONTRACT = SPECIALIST_AUTHORITY_CONTRACT + """\nReturn ONLY one JSON object. Preserve task_id and subtask_id.
 
 REQUIRED SHAPE (types are strict):
 - status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
@@ -53,7 +65,7 @@ REQUIRED SHAPE (types are strict):
 
 Never include markdown fences or surrounding prose. Never include credentials or secrets."""
 
-GEMINI_RESEARCH_MODE_V1_1 = """JAYTEC_GEMINI_RESEARCH_MODE v1.1.0
+GEMINI_RESEARCH_MODE_V1_1 = SPECIALIST_AUTHORITY_CONTRACT + """\nJAYTEC_GEMINI_RESEARCH_MODE v1.1.0
 ROLE: RESEARCH SPECIALIST. Treat each request as stateless.
 
 Return ONLY one valid JSON object (no markdown fences and no surrounding prose).
@@ -161,7 +173,7 @@ def build_codex_dispatch(
     circuit: CircuitBreaker,
     codex_timeout_s: float = 45.0,
     provider_mode: str = "LOCKED_RESERVE",
-    allowed_workflow_prefixes: tuple[str, ...] = ("JAYTEC_V2_",),
+    allowed_workflow_prefixes: tuple[str, ...] = ("JAYTEC_V2_", "JAYTEC_ENGINEERING_", "JAYTEC_OWNER_SOL_"),
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     require_exact_model(codex_model, EXPECTED_CODEX_MODEL, context="codex")
     if codex_timeout_s <= 0:
@@ -175,6 +187,13 @@ def build_codex_dispatch(
         workflow_id = str(packet.get("workflow_id", ""))
         if not any(workflow_id.startswith(prefix) for prefix in allowed_workflow_prefixes):
             raise RuntimeError("engineering_workflow_not_authorized")
+        authority = packet.get("required_context") or {}
+        if not isinstance(authority, Mapping):
+            raise RuntimeError("engineering_authority_context_required")
+        if authority.get("authority_controller") != "CHATGPT_OPENAI_LEAD":
+            raise RuntimeError("engineering_chatgpt_authority_required")
+        if authority.get("specialist_authority") != "SUBORDINATE":
+            raise RuntimeError("engineering_specialist_must_be_subordinate")
         prompt = (
             "ROLE: GPT-5.6 SOL JAYTEC ENGINEERING SPECIALIST\n"
             + CODEX_CONTRACT
