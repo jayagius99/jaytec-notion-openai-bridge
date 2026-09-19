@@ -77,7 +77,8 @@ jobs:
             test_worker_output_parsing.py test_idempotency_postgres.py test_dockerfile_packaging.py \
             test_contract_equivalence.py test_server_candidate_probe.py test_engineering_migration_guard.py \
             test_manus_adapter.py test_manus_policy.py test_manus_governance.py test_manus_dispatch_contract.py \
-            test_relationship_policy.py test_participant_contracts.py test_participant_prompt_injection.py test_manus_policy_integration_guard.py
+            test_relationship_policy.py test_participant_contracts.py test_participant_prompt_injection.py test_manus_policy_integration_guard.py \
+            test_manus_adversarial_matrix.py test_manus_governance_acceptance.py test_gemini_manus_governance_review.py
       - name: Import guard (server.py must be importable without secrets)
         run: python -c "import server; print('server_import_ok')"
       - name: Run unit tests
