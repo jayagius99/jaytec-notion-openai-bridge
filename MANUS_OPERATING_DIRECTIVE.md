@@ -80,7 +80,11 @@ must report current task connector scope as NONE/empty even though the policy
 allowlist remains GitHub/Neon/Render.
 
 Unknown direct connectors fail closed. Every task receives only the minimum
-explicit connector subset it needs, and the default connector scope is NONE. Project/user default
+explicit connector subset it needs, and the default connector scope is NONE.
+
+A normal delegated task does not itself authorize connector mutation. GitHub,
+Neon, or Render writes/deploys/deletes/migrations/credential changes require a
+separate fresh current-task mutation authorization from Jay or ChatGPT. Project/user default
 connectors must never be treated as JAYTEC authority. Connector presence is not
 permission to mutate. Read/inspect/diagnose/test/report is allowed only inside
 the task's explicit connector scope. Writes, deploys, deletes, migrations,
