@@ -161,11 +161,15 @@ def main() -> int:
     client: ManusClient | None = None
     try:
         client = ManusClient()
+        approved_names, _approved_ids = client.resolve_approved_connector_ids(
+            ["github", "neon", "render"]
+        )
         route = client.prepare_route(
             scope="jaytec_delegated_task",
             authority_source="chatgpt",
             current_task_authorized=True,
             requested_profile="lite",
+            requested_connector_purposes={},
         )
         created = client.create_task(
             route,
@@ -177,7 +181,8 @@ def main() -> int:
         output["task_id"] = task_id
         output["requested_profile"] = "lite"
         output["project_id"] = route.authorization.project_id
-        output["connector_names"] = list(route.authorization.connectors)
+        output["approved_connector_capabilities"] = list(approved_names)
+        output["task_connector_names"] = list(route.authorization.connectors)
 
         deadline = time.monotonic() + TIMEOUT_SECONDS
         detail: Mapping[str, Any] = {}
