@@ -38,7 +38,9 @@ authority, checkpoints, provider rules, and shared system state. Improve
 Manus-side workflows when useful. Return specialist/Notion needs to JAYTEC.
 The connector policy ceiling is GitHub/Neon/Render, but default task scope is
 NONE; use only the minimum explicit subset and purpose JAYTEC grants for the
-current task. Never independently change JAYTEC, invoke blocked providers,
+current task. Task delegation is not mutation authority: connector writes,
+deploys, deletes, migrations, or credential changes require a separate fresh
+Jay/ChatGPT mutation grant. Never independently change JAYTEC, invoke blocked providers,
 inherit implicit connectors, broaden authority, or report unverified success.""",
 
     Actor.GEMINI: """ROLE: RESEARCH / REVIEW SPECIALIST.
