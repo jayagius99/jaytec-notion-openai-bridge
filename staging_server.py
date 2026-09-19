@@ -230,7 +230,12 @@ def _run_jaytec_read_bootstrap_probe() -> None:
 
 
 def _run_god_project_review_probe() -> None:
-    """STAGING-ONLY independent review of the pinned GOD Project v2.0 packet."""
+    """STAGING-ONLY independent review of the pinned GOD Project v2.0 packet.
+
+    Uses JAYTEC's registered independent reviewer adapter so model identity,
+    schema enforcement, bounded format retry, diagnostics and fail-closed
+    behavior match the normal JAYTEC specialist contract.
+    """
     encoded = os.environ.get("JAYTEC_GOD_PROJECT_REVIEW_PACKET_GZ_B64", "").strip()
     expected_sha = os.environ.get("JAYTEC_GOD_PROJECT_REVIEW_PACKET_SHA256", "").strip()
     enabled = os.environ.get("JAYTEC_GOD_PROJECT_REVIEW_ENABLED", "").strip() == "1"
@@ -239,13 +244,14 @@ def _run_god_project_review_probe() -> None:
 
     result = {
         "status": "FAILED_CLOSED",
-        "model": "deepseek/deepseek-v4-flash-0731:free",
+        "model": GEMINI_MODEL,
         "ready_to_activate": False,
         "findings": [],
         "blockers": [],
         "required_changes": [],
         "confidence": None,
         "packet_sha256": None,
+        "bridge_diagnostics": {},
     }
 
     try:
@@ -256,74 +262,94 @@ def _run_god_project_review_probe() -> None:
         result["packet_sha256"] = packet_sha
         if packet_sha != expected_sha:
             raise RuntimeError("review_packet_hash_mismatch")
-        if OPENROUTER_CLIENT is None:
-            raise RuntimeError("openrouter_client_unavailable")
 
-        review_model = "deepseek/deepseek-v4-flash-0731:free"
-        prompt = """JAYTEC GOD PROJECT v2.0 — INDEPENDENT HOSTILE REVIEW
+        review_task = {
+            "task_id": "JAYTEC-GOD-PROJECT-V2-FINAL-REVIEW",
+            "subtask_id": "JAYTEC-GOD-PROJECT-V2-FINAL-REVIEW-" + packet_sha[:16],
+            "workflow_id": "JAYTEC_GOD_PROJECT_FINAL_REVIEW_V2",
+            "requested_specialist": "reviewer",
+            "allowed_operations": [
+                "research",
+                "architecture_analysis",
+                "adversarial_review",
+                "evidence_synthesis",
+                "challenge_verification",
+            ],
+            "max_retries": 1,
+            "objective": (
+                "Perform an independent hostile review of the exact JAYTEC GOD Project v2.0 "
+                "launch packet in context.launch_packet. Challenge authority hierarchy contradictions; "
+                "any route that could let ChatGPT, the Project, or specialists impersonate ROOT_OWNER; "
+                "conflict with current V2 machine state; stale or unverifiable assumptions; duplicate "
+                "or competing authority sources; missing migration, rollback, or completion gates; "
+                "fake/impossible background autonomy claims; unsafe root-control activation; weak "
+                "evidence/completion language; and setup instructions likely to make the new ChatGPT "
+                "Project mis-operate. Do not make changes or use external tools. In conclusion return "
+                "an object with exactly these keys: verdict (PASS|PASS_WITH_CHANGES|FAIL), "
+                "ready_to_activate (boolean), blockers (array of strings), required_changes "
+                "(array of strings), rationale (string). PASS means no material blocker remains. "
+                "PASS_WITH_CHANGES means changes are required before activation. FAIL means the "
+                "launch design has a material unresolved safety/authority/operability problem."
+            ),
+            "validation_criteria": [
+                "Exact reviewer model identity is preserved.",
+                "No specialist side effects or requested writes.",
+                "Every material authority/security conflict is surfaced.",
+                "Conclusion contains verdict, ready_to_activate, blockers, required_changes, rationale.",
+                "The exact packet SHA-256 is preserved by the caller.",
+            ],
+            "context": {
+                "packet_sha256": packet_sha,
+                "launch_packet": packet,
+            },
+        }
 
-You are JAYTEC's independent review specialist. You are subordinate and have no execution authority.
-
-Review the exact launch packet below. Challenge it aggressively for:
-1. authority hierarchy contradictions;
-2. any wording that could let ChatGPT/Project/specialists impersonate ROOT_OWNER;
-3. conflict with current V2 machine state;
-4. stale or unverifiable assumptions;
-5. duplicate/competing authority sources;
-6. missing migration/rollback/completion gates;
-7. fake or impossible background/autonomy claims;
-8. unsafe root-control activation;
-9. weak evidence/completion language;
-10. setup instructions likely to cause the new ChatGPT Project to mis-operate.
-
-Return ONLY JSON with exactly:
-{
-  "status": "PASS" | "PASS_WITH_CHANGES" | "FAIL",
-  "ready_to_activate": boolean,
-  "findings": [string],
-  "blockers": [string],
-  "required_changes": [string],
-  "confidence": string
-}
-
-Do not make changes. Do not use external tools. Do not broaden scope.
-
-EXACT REVIEW PACKET:
-""" + packet
-
-        response = OPENROUTER_CLIENT.chat.completions.create(
-            model=review_model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=3000,
-            timeout=90,
-            stream=False,
-            response_format={"type": "json_object"},
-            extra_body={"provider": {"allow_fallbacks": False, "require_parameters": True}},
-        )
-        if not response.choices:
-            raise RuntimeError("reviewer_no_choices")
-        provider_model = getattr(response, "model", None)
-        if provider_model and provider_model != review_model:
+        reviewed = dict(GEMINI_DISPATCH(review_task))
+        if reviewed.get("model") != GEMINI_MODEL:
             raise RuntimeError("reviewer_model_mismatch")
-        raw = response.choices[0].message.content or ""
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
-            raise RuntimeError("reviewer_output_not_object")
-        status = parsed.get("status")
-        if status not in {"PASS", "PASS_WITH_CHANGES", "FAIL"}:
-            raise RuntimeError("reviewer_status_invalid")
-        for key in ("findings", "blockers", "required_changes"):
-            if not isinstance(parsed.get(key), list) or not all(isinstance(x, str) for x in parsed[key]):
-                raise RuntimeError(f"reviewer_{key}_invalid")
-        if not isinstance(parsed.get("ready_to_activate"), bool):
+        if reviewed.get("side_effects_attempted") not in ([], None):
+            raise RuntimeError("reviewer_side_effect_violation")
+        if reviewed.get("requested_operations") not in ([], None):
+            raise RuntimeError("reviewer_requested_operations_nonempty")
+
+        conclusion = reviewed.get("conclusion")
+        if not isinstance(conclusion, dict):
+            raise RuntimeError("reviewer_conclusion_not_object")
+        verdict = conclusion.get("verdict")
+        if verdict not in {"PASS", "PASS_WITH_CHANGES", "FAIL"}:
+            raise RuntimeError("reviewer_verdict_invalid")
+        ready = conclusion.get("ready_to_activate")
+        blockers = conclusion.get("blockers")
+        required_changes = conclusion.get("required_changes")
+        if not isinstance(ready, bool):
             raise RuntimeError("reviewer_ready_flag_invalid")
-        confidence = parsed.get("confidence")
-        if not isinstance(confidence, str):
-            raise RuntimeError("reviewer_confidence_invalid")
-        result.update(parsed)
-        result["model"] = review_model
-        result["packet_sha256"] = packet_sha
+        if not isinstance(blockers, list) or not all(isinstance(x, str) for x in blockers):
+            raise RuntimeError("reviewer_blockers_invalid")
+        if not isinstance(required_changes, list) or not all(isinstance(x, str) for x in required_changes):
+            raise RuntimeError("reviewer_required_changes_invalid")
+
+        specialist_status = reviewed.get("status")
+        if specialist_status != "SUCCESS":
+            result["status"] = "FAILED_CLOSED"
+            result["blockers"] = [
+                "reviewer_specialist_status:" + str(specialist_status),
+                *[str(x) for x in reviewed.get("unresolved_items", []) if isinstance(x, str)],
+            ]
+        else:
+            result["status"] = verdict
+            result["ready_to_activate"] = bool(ready and verdict == "PASS" and not blockers and not required_changes)
+            result["blockers"] = blockers
+            result["required_changes"] = required_changes
+
+        result["findings"] = [str(x) for x in reviewed.get("findings", []) if isinstance(x, str)]
+        result["confidence"] = reviewed.get("confidence")
+        result["model"] = reviewed.get("model")
+        result["bridge_diagnostics"] = dict(reviewed.get("bridge_diagnostics") or {})
+        result["reviewer_rationale"] = conclusion.get("rationale")
+        result["reviewer_evidence"] = [str(x) for x in reviewed.get("evidence", []) if isinstance(x, str)]
+        result["reviewer_unresolved_items"] = [
+            str(x) for x in reviewed.get("unresolved_items", []) if isinstance(x, str)
+        ]
     except Exception as exc:
         result["blockers"] = [f"review_probe_error:{type(exc).__name__}:{str(exc)}"]
 
