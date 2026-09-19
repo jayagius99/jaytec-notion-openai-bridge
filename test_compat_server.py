@@ -200,7 +200,7 @@ class TestCompatProcessIsolation(unittest.TestCase):
                 "OPENAI_API_KEY": "test",
                 "OPENROUTER_API_KEY": "test",
                 "CODEX_MODEL": "nvidia/nemotron-3-ultra-550b-a55b:free",
-                "GEMINI_MODEL": "google/gemini-3.1-pro-preview",
+                "GEMINI_MODEL": "deepseek/deepseek-v4-flash-0731:free",
                 "DURABLE_WORKER_ENABLED": "0",
                 "GUARDIAN_LOOP_ENABLED": "0",
             }
