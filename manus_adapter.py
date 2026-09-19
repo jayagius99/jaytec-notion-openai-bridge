@@ -427,6 +427,25 @@ class ManusClient:
                 raise
         return created
 
+    def _verify_task_profile_or_stop(
+        self,
+        route: BoundManusRoute,
+        task_id: str,
+    ) -> Mapping[str, Any]:
+        """Verify observed Manus profile and stop the task on fail-closed mismatch."""
+
+        try:
+            return self.verify_task_profile(route, task_id)
+        except (ManusProfilePolicyError, ManusError):
+            try:
+                self.stop_task(task_id)
+            except Exception:
+                # Preserve the original verification failure as the authority
+                # signal; stop failure is secondary and must never turn a bad
+                # profile into an accepted task.
+                pass
+            raise
+
     def send_message(
         self,
         route: BoundManusRoute,
@@ -437,8 +456,8 @@ class ManusClient:
     ) -> Mapping[str, Any]:
         message = self._governed_message(route, content)
 
-        # Old tasks that are not observably Lite are not continued.
-        self.verify_task_profile(route, task_id)
+        # Old tasks that are not observably Lite are stopped and never continued.
+        self._verify_task_profile_or_stop(route, task_id)
 
         payload: dict[str, Any] = {
             "task_id": task_id,
@@ -455,7 +474,7 @@ class ManusClient:
             payload["structured_output_schema"] = dict(structured_output_schema)
 
         result = self._request("POST", "task.sendMessage", payload=payload).body
-        self.verify_task_profile(route, task_id)
+        self._verify_task_profile_or_stop(route, task_id)
         return result
 
     def verify_completed_result(
