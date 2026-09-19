@@ -32,7 +32,7 @@ from jaytec_read import (
 )
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
-EXPECTED_CODEX_MODEL = "gpt-5.6-sol"
+EXPECTED_CODEX_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
 
 SPECIALIST_AUTHORITY_CONTRACT = """JAYTEC SPECIALIST AUTHORITY CONTRACT
@@ -51,7 +51,7 @@ CODEX_CONTRACT = SPECIALIST_AUTHORITY_CONTRACT + """\nReturn ONLY one JSON objec
 
 REQUIRED SHAPE (types are strict):
 - status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
-- model: string exactly gpt-5.6-sol
+- model: string exactly nvidia/nemotron-3-ultra-550b-a55b:free
 - findings: JSON array of strings (NOT an object)
 - evidence: JSON array of strings (NOT an object)
 - confidence: string|null
@@ -172,24 +172,78 @@ def build_codex_dispatch(
     codex_model: str,
     circuit: CircuitBreaker,
     codex_timeout_s: float = 45.0,
-    provider_mode: str = "LOCKED_RESERVE",
-    allowed_workflow_prefixes: tuple[str, ...] = ("JAYTEC_V2_", "JAYTEC_ENGINEERING_", "JAYTEC_OWNER_SOL_"),
+    provider_mode: str = "OPENROUTER_FREE_PRIMARY",
+    allowed_workflow_prefixes: tuple[str, ...] = ("JAYTEC_V2_", "JAYTEC_ENGINEERING_"),
     max_output_tokens: int = 2000,
     max_packet_retries: int = 1,
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
-    require_exact_model(codex_model, EXPECTED_CODEX_MODEL, context="codex")
+    """Build the primary zero-cost engineering specialist.
+
+    The historical codex wire key is retained for TaskPacket compatibility,
+    but the specialist role is provider-neutral and resolves to the exact
+    OpenRouter free Nemotron model. The passed client must be an OpenRouter-
+    configured OpenAI-compatible client.
+    """
+    require_exact_model(codex_model, EXPECTED_CODEX_MODEL, context="engineering")
     if codex_timeout_s <= 0:
         raise ValueError("codex_timeout_s must be positive")
-    if provider_mode not in {"LOCKED_RESERVE", "BOUNDED_SOL_ONLY"}:
+    if provider_mode != "OPENROUTER_FREE_PRIMARY":
         raise ValueError("unsupported engineering provider mode")
     if type(max_output_tokens) is not int or max_output_tokens < 256 or max_output_tokens > 4000:
         raise ValueError("invalid engineering max_output_tokens")
     if type(max_packet_retries) is not int or max_packet_retries < 0 or max_packet_retries > 1:
         raise ValueError("invalid engineering max_packet_retries")
 
+    def _prompt(packet: Mapping[str, Any], *, retry_format: bool = False) -> str:
+        prefix = (
+            "ROLE: JAYTEC PRIMARY ENGINEERING SPECIALIST (NVIDIA NEMOTRON 3 ULTRA FREE)\n"
+            + CODEX_CONTRACT
+        )
+        if retry_format:
+            prefix += (
+                "\nYour previous response was not a complete parseable JSON object. "
+                "Re-answer the original task from scratch and return one compact JSON object only."
+            )
+        return prefix + "\nTASK_PACKET_JSON:\n" + json.dumps(
+            packet, ensure_ascii=False, sort_keys=True
+        )
+
+    def _single_call(packet: Mapping[str, Any], *, retry_format: bool) -> Mapping[str, Any]:
+        request_kwargs: dict[str, Any] = {
+            "model": codex_model,
+            "messages": [{"role": "user", "content": _prompt(packet, retry_format=retry_format)}],
+            "temperature": 0,
+            "max_tokens": max_output_tokens,
+            "timeout": codex_timeout_s,
+            "stream": False,
+            "extra_body": {"provider": {"allow_fallbacks": False}},
+        }
+        try:
+            response = openai_client.chat.completions.create(**request_kwargs)
+        except Exception as exc:
+            _normalize_provider_exception(exc, context="engineering_provider")
+        if not response.choices:
+            raise RuntimeError("engineering_no_choices")
+
+        returned_provider_model = _provider_model(response)
+        if returned_provider_model is not None:
+            require_exact_model(
+                returned_provider_model,
+                codex_model,
+                context="engineering_provider_response",
+            )
+        content = response.choices[0].message.content or ""
+        result, diagnostics = json_object_with_diagnostics(content)
+        result.setdefault("model", codex_model)
+        result["bridge_diagnostics"] = _safe_transport_diagnostics(
+            content=content,
+            finish_reason=_finish_reason(response.choices[0]),
+            provider_model=returned_provider_model,
+            extracted_object=diagnostics.extracted_object,
+        )
+        return result
+
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
-        if provider_mode != "BOUNDED_SOL_ONLY":
-            raise RuntimeError("engineering_provider_locked")
         workflow_id = str(packet.get("workflow_id", ""))
         if not any(workflow_id.startswith(prefix) for prefix in allowed_workflow_prefixes):
             raise RuntimeError("engineering_workflow_not_authorized")
@@ -205,28 +259,15 @@ def build_codex_dispatch(
             raise RuntimeError("engineering_invalid_retry_budget")
         if requested_retries > max_packet_retries:
             raise RuntimeError("engineering_retry_budget_exceeded")
-        prompt = (
-            "ROLE: GPT-5.6 SOL JAYTEC ENGINEERING SPECIALIST\n"
-            + CODEX_CONTRACT
-            + "\nTASK_PACKET_JSON:\n"
-            + json.dumps(packet, ensure_ascii=False, sort_keys=True)
-        )
+
         try:
-            response = openai_client.responses.create(
-                model=codex_model,
-                input=prompt,
-                reasoning={"effort": "high"},
-                max_output_tokens=max_output_tokens,
-                timeout=codex_timeout_s,
-            )
-        except Exception as exc:
-            _normalize_provider_exception(exc, context="codex_provider")
-        result = json_object(response.output_text or "")
-        result.setdefault("model", codex_model)
-        return result
+            return _single_call(packet, retry_format=False)
+        except WorkerJsonError:
+            if requested_retries < 1:
+                raise
+            return _single_call(packet, retry_format=True)
 
     return circuit.guard(_dispatch)
-
 
 def build_gemini_dispatch(
     *,

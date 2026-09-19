@@ -36,6 +36,9 @@ EXPECTED_REF = os.environ.get(
 ).strip()
 EXPECTED_WORKFLOW_PATH = ".github/workflows/meeting-specialist-bus.yml"
 
+ENGINEER_MODEL = os.environ.get(
+    "MEETING_ENGINEER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free"
+).strip()
 SOL_MODEL = os.environ.get("MEETING_SOL_MODEL", "gpt-5.6-sol").strip()
 GEMINI_MODEL = os.environ.get(
     "MEETING_GEMINI_MODEL", "google/gemini-3.1-pro-preview"
@@ -54,6 +57,10 @@ SOL_RESERVE_MODE = os.environ.get(
     "OPENAI_API_ENGINEERING_RESERVE_DOOR", "LOCKED_RESERVE"
 ).strip().upper()
 SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("MEETING_SOL_OUTPUT_TOKEN_CAP", "1200"))
+ENGINEER_ENABLED = os.environ.get("MEETING_ENGINEER_ENABLED", "1").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+ENGINEER_OUTPUT_TOKEN_CAP = int(os.environ.get("MEETING_ENGINEER_OUTPUT_TOKEN_CAP", "1200"))
 GEMINI_ENABLED = os.environ.get("MEETING_GEMINI_ENABLED", "1").strip().lower() in {
     "1", "true", "yes", "on"
 }
@@ -62,7 +69,7 @@ MAX_BODY_BYTES = 65_536
 MAX_BRIEF_CHARS = 20_000
 MAX_ROLE_QUESTION_CHARS = 8_000
 MAX_OUTPUT_TOKENS = 3_000
-ALLOWED_PARTICIPANTS = frozenset({"gemini", "sol"})
+ALLOWED_PARTICIPANTS = frozenset({"engineer", "gemini", "sol"})
 ALLOWED_OPERATIONS = frozenset({"analyze", "review", "challenge"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 
@@ -333,6 +340,41 @@ def _call_sol(request: Mapping[str, Any], client: Optional[OpenAI] = None):
     )
 
 
+def _call_engineer(request: Mapping[str, Any], client: Optional[OpenAI] = None):
+    if not ENGINEER_ENABLED:
+        raise MeetingPolicyError("engineer_meeting_lane_disabled")
+    if ENGINEER_MODEL != "nvidia/nemotron-3-ultra-550b-a55b:free":
+        raise MeetingPolicyError("engineer_model_lock_mismatch")
+    api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if client is None and not api_key:
+        raise MeetingBusError("engineer_api_not_configured")
+    client = client or OpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL)
+    try:
+        response = client.chat.completions.create(
+            model=ENGINEER_MODEL,
+            messages=[{"role": "user", "content": _participant_prompt(request)}],
+            temperature=0,
+            max_tokens=min(
+                int(request.get("max_output_tokens", 1800)),
+                ENGINEER_OUTPUT_TOKEN_CAP,
+            ),
+            extra_body={"provider": {"allow_fallbacks": False}},
+            timeout=float(os.environ.get("MEETING_ENGINEER_TIMEOUT_S", "90")),
+        )
+    except Exception as exc:
+        raise MeetingBusError("engineer_provider_error:" + type(exc).__name__) from exc
+    choices = getattr(response, "choices", None)
+    if not choices:
+        raise MeetingBusError("engineer_no_choices")
+    returned_model = getattr(response, "model", None)
+    if returned_model not in (None, ENGINEER_MODEL):
+        raise MeetingBusError("engineer_provider_model_mismatch")
+    return (
+        _normalize_output("engineer", ENGINEER_MODEL, choices[0].message.content or ""),
+        _usage(getattr(response, "usage", None)),
+    )
+
+
 def _call_gemini(request: Mapping[str, Any], client: Optional[OpenAI] = None):
     if not GEMINI_ENABLED:
         raise MeetingPolicyError("gemini_meeting_lane_disabled")
@@ -382,6 +424,7 @@ def dispatch_request(
     raw_request: Mapping[str, Any],
     *,
     registry: Optional[Any] = None,
+    engineer_client: Optional[OpenAI] = None,
     sol_client: Optional[OpenAI] = None,
     gemini_client: Optional[OpenAI] = None,
     enabled: Optional[bool] = None,
@@ -409,7 +452,9 @@ def dispatch_request(
         replay["idempotent_replay"] = True
         return replay
 
-    if request["participant"] == "sol":
+    if request["participant"] == "engineer":
+        specialist_result, usage = _call_engineer(request, client=engineer_client)
+    elif request["participant"] == "sol":
         specialist_result, usage = _call_sol(request, client=sol_client)
     else:
         specialist_result, usage = _call_gemini(request, client=gemini_client)
@@ -448,6 +493,14 @@ def status() -> dict[str, Any]:
         "expected_repository": EXPECTED_REPOSITORY,
         "expected_ref": EXPECTED_REF,
         "participants": {
+            "engineer": {
+                "model": ENGINEER_MODEL,
+                "enabled": ENGINEER_ENABLED,
+                "configured": bool(os.environ.get("OPENROUTER_API_KEY", "").strip()),
+                "cost_profile": "free_primary",
+                "output_token_cap": ENGINEER_OUTPUT_TOKEN_CAP,
+                "silent_fallback": False,
+            },
             "sol": {
                 "model": SOL_MODEL,
                 "enabled": SOL_ENABLED,

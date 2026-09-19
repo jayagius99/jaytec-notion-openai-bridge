@@ -20,7 +20,7 @@ PACKET_VERSION = "1.0"
 RETURN_SCHEMA_VERSION = "1.0"
 ALLOWED_SPECIALISTS = ("codex", "gemini")
 EXPECTED_MODELS = {
-    "codex": "gpt-5.6-sol",
+    "codex": "nvidia/nemotron-3-ultra-550b-a55b:free",
     "gemini": "google/gemini-3.1-pro-preview",
 }
 ALLOWED_STATUSES = {

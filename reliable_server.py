@@ -322,7 +322,7 @@ def create_mcp_app():
         )
         durable_registry.ensure_schema()
 
-        durable_openai = OpenAI(api_key=legacy_server.OPENAI_API_KEY)
+        durable_openai = OpenAI(api_key=legacy_server.OPENAI_API_KEY) if legacy_server.OPENAI_API_KEY else None
         durable_openrouter = (
             OpenAI(
                 api_key=legacy_server.OPENROUTER_API_KEY,
@@ -339,16 +339,23 @@ def create_mcp_app():
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
         )
-        durable_codex_dispatch = _retryable_single_attempt_dispatch(
-            build_codex_dispatch(
-                openai_client=durable_openai,
-                codex_model=legacy_server.CODEX_MODEL,
-                circuit=durable_codex_circuit,
-                codex_timeout_s=DURABLE_CODEX_TIMEOUT_S,
-                **legacy_server.engineering_dispatch_kwargs(),
-            ),
-            model=EXPECTED_CODEX_MODEL,
-        )
+        if durable_openrouter is not None:
+            durable_codex_dispatch = _retryable_single_attempt_dispatch(
+                build_codex_dispatch(
+                    openai_client=durable_openrouter,
+                    codex_model=legacy_server.CODEX_MODEL,
+                    circuit=durable_codex_circuit,
+                    codex_timeout_s=DURABLE_CODEX_TIMEOUT_S,
+                    **legacy_server.engineering_dispatch_kwargs(),
+                ),
+                model=EXPECTED_CODEX_MODEL,
+            )
+        else:
+            durable_codex_dispatch = durable_codex_circuit.guard(
+                lambda _packet: (_ for _ in ()).throw(
+                    RuntimeError("OPENROUTER_API_KEY is not configured on this bridge")
+                )
+            )
         if durable_openrouter is not None:
             durable_gemini_dispatch = _retryable_single_attempt_dispatch(
                 build_gemini_dispatch(

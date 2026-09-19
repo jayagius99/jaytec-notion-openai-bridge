@@ -103,7 +103,8 @@ jobs:
             -e RUNTIME_MODE=staging_candidate \
             -e MCP_AUTH_TOKEN=test \
             -e OPENAI_API_KEY=test \
-            -e CODEX_MODEL=gpt-5.6-sol \
+            -e OPENROUTER_API_KEY=test \
+            -e CODEX_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free \
             -e GEMINI_MODEL=google/gemini-3.1-pro-preview \
             -e DURABLE_WORKER_ENABLED=0 \
             -e GUARDIAN_LOOP_ENABLED=0 \

@@ -35,7 +35,7 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
 
     def test_new_meeting_participant_requires_explicit_registration_review(self):
         # Intentional tripwire for future meeting specialists.
-        self.assertEqual(meeting_bus.ALLOWED_PARTICIPANTS, {"gemini", "sol"})
+        self.assertEqual(meeting_bus.ALLOWED_PARTICIPANTS, {"engineer", "gemini", "sol"})
 
     def test_meeting_prompt_keeps_specialists_subordinate(self):
         request = {
@@ -54,7 +54,7 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
 
     def test_durable_governance_document_exists(self):
         text = Path("SPECIALIST_AUTHORITY_CONTRACT.md").read_text(encoding="utf-8")
-        self.assertIn("Applies to: Sol, Gemini, Manus, and every current or future", text)
+        self.assertIn("Applies to: Nemotron engineering, Sol reserve, Gemini, Manus, and every current or future", text)
         self.assertIn("Future specialist registration gate", text)
         self.assertIn("Missing any item = specialist registration fails closed", text)
 
@@ -64,9 +64,14 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
             Path("SPECIALIST_ROLE_REGISTRY_V1.json").read_text(encoding="utf-8")
         )
         specialists = registry["specialists"]
+        engineer = specialists["engineer"]
         sol = specialists["sol"]
         gemini = specialists["gemini"]
         manus = specialists["manus"]
+        self.assertEqual(engineer["provider_model"], "nvidia/nemotron-3-ultra-550b-a55b:free")
+        self.assertEqual(engineer["cost_profile"], "free_primary")
+        self.assertEqual(engineer["fallback_policy"], "fail_closed_no_silent_model_substitution")
+        self.assertIn("coding", engineer["allowed_task_classes"])
         self.assertIn("coding", sol["allowed_task_classes"])
         self.assertNotIn("coding", gemini["allowed_task_classes"])
         self.assertIn("engineering_write", gemini["prohibited_task_classes"])
