@@ -77,6 +77,34 @@ class FakeSolClient:
         self.responses = FakeSolResponses()
 
 
+class FakeEngineerCompletions:
+    def __init__(self):
+        self.calls = 0
+        self.last_kwargs = None
+
+    def create(self, **kwargs):
+        self.calls += 1
+        self.last_kwargs = kwargs
+        return SimpleNamespace(
+            model="nvidia/nemotron-3-ultra-550b-a55b:free",
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=json.dumps(meeting_output()))
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=50,
+                total_tokens=150,
+            ),
+        )
+
+
+class FakeEngineerClient:
+    def __init__(self):
+        self.chat = SimpleNamespace(completions=FakeEngineerCompletions())
+
+
 class FakeGeminiCompletions:
     def __init__(self):
         self.calls = 0
@@ -205,6 +233,40 @@ class MeetingBusTests(unittest.TestCase):
         finally:
             meeting_bus.SOL_ENABLED = original_enabled
             meeting_bus.SOL_RESERVE_MODE = original_mode
+
+
+    def test_engineer_dispatch_is_free_exact_and_no_fallback(self):
+        registry = FakeRegistry()
+        client = FakeEngineerClient()
+        result = meeting_bus.dispatch_request(
+            valid_request("engineer"),
+            registry=registry,
+            engineer_client=client,
+            enabled=True,
+        )
+        self.assertEqual(result["result"]["model"], "nvidia/nemotron-3-ultra-550b-a55b:free")
+        self.assertFalse(result["notion_used"])
+        self.assertFalse(result["chatgpt_work_used"])
+        self.assertEqual(client.chat.completions.calls, 1)
+        provider = client.chat.completions.last_kwargs["extra_body"]["provider"]
+        self.assertFalse(provider["allow_fallbacks"])
+
+    def test_engineer_and_gemini_are_distinct_meeting_roles(self):
+        engineer = meeting_bus.dispatch_request(
+            valid_request("engineer"),
+            registry=FakeRegistry(),
+            engineer_client=FakeEngineerClient(),
+            enabled=True,
+        )
+        gemini = meeting_bus.dispatch_request(
+            valid_request("gemini"),
+            registry=FakeRegistry(),
+            gemini_client=FakeGeminiClient(),
+            enabled=True,
+        )
+        self.assertNotEqual(engineer["result"]["model"], gemini["result"]["model"])
+        self.assertEqual(engineer["participant"], "engineer")
+        self.assertEqual(gemini["participant"], "gemini")
 
     def test_gemini_dispatch(self):
         registry = FakeRegistry()
