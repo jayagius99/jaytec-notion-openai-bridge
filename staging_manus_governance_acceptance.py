@@ -361,6 +361,17 @@ def main() -> int:
         }
     except (ManusProfilePolicyError, ManusError) as exc:
         output["error"] = str(exc)
+        if client is not None and str(exc).startswith(("MANUS_APPROVED_CONNECTOR_MISSING", "MANUS_APPROVED_CONNECTOR_AMBIGUOUS")):
+            try:
+                connector_body = client.list_connectors()
+                rows = connector_body.get("data") if isinstance(connector_body.get("data"), list) else []
+                output["available_connector_names"] = sorted({
+                    str(row.get("name") or "").strip()
+                    for row in rows
+                    if isinstance(row, Mapping) and str(row.get("name") or "").strip()
+                })
+            except Exception:
+                output["connector_inventory"] = "UNAVAILABLE"
     except Exception as exc:
         output["error"] = type(exc).__name__
 
