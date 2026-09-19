@@ -12,6 +12,9 @@ New in C4: optional Postgres-backed idempotency via DATABASE_URL.
 """
 from __future__ import annotations
 
+import base64
+import gzip
+import hashlib
 import json
 import os
 from typing import Any, Mapping
@@ -225,8 +228,113 @@ def _run_jaytec_read_bootstrap_probe() -> None:
     )
 
 
+def _run_god_project_review_probe() -> None:
+    """STAGING-ONLY independent review of the pinned GOD Project v2.0 packet."""
+    encoded = os.environ.get("JAYTEC_GOD_PROJECT_REVIEW_PACKET_GZ_B64", "").strip()
+    expected_sha = os.environ.get("JAYTEC_GOD_PROJECT_REVIEW_PACKET_SHA256", "").strip()
+    enabled = os.environ.get("JAYTEC_GOD_PROJECT_REVIEW_ENABLED", "").strip() == "1"
+    if not enabled:
+        return
+
+    result = {
+        "status": "FAILED_CLOSED",
+        "model": "deepseek/deepseek-v4-flash-0731:free",
+        "ready_to_activate": False,
+        "findings": [],
+        "blockers": [],
+        "required_changes": [],
+        "confidence": None,
+        "packet_sha256": None,
+    }
+
+    try:
+        if not encoded or not expected_sha:
+            raise RuntimeError("review_packet_missing")
+        packet = gzip.decompress(base64.b64decode(encoded)).decode("utf-8")
+        packet_sha = hashlib.sha256(packet.encode("utf-8")).hexdigest()
+        result["packet_sha256"] = packet_sha
+        if packet_sha != expected_sha:
+            raise RuntimeError("review_packet_hash_mismatch")
+        if OPENROUTER_CLIENT is None:
+            raise RuntimeError("openrouter_client_unavailable")
+
+        review_model = "deepseek/deepseek-v4-flash-0731:free"
+        prompt = """JAYTEC GOD PROJECT v2.0 — INDEPENDENT HOSTILE REVIEW
+
+You are JAYTEC's independent review specialist. You are subordinate and have no execution authority.
+
+Review the exact launch packet below. Challenge it aggressively for:
+1. authority hierarchy contradictions;
+2. any wording that could let ChatGPT/Project/specialists impersonate ROOT_OWNER;
+3. conflict with current V2 machine state;
+4. stale or unverifiable assumptions;
+5. duplicate/competing authority sources;
+6. missing migration/rollback/completion gates;
+7. fake or impossible background/autonomy claims;
+8. unsafe root-control activation;
+9. weak evidence/completion language;
+10. setup instructions likely to cause the new ChatGPT Project to mis-operate.
+
+Return ONLY JSON with exactly:
+{
+  "status": "PASS" | "PASS_WITH_CHANGES" | "FAIL",
+  "ready_to_activate": boolean,
+  "findings": [string],
+  "blockers": [string],
+  "required_changes": [string],
+  "confidence": string
+}
+
+Do not make changes. Do not use external tools. Do not broaden scope.
+
+EXACT REVIEW PACKET:
+""" + packet
+
+        response = OPENROUTER_CLIENT.chat.completions.create(
+            model=review_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=3000,
+            timeout=90,
+            stream=False,
+            response_format={"type": "json_object"},
+            extra_body={"provider": {"allow_fallbacks": False, "require_parameters": True}},
+        )
+        if not response.choices:
+            raise RuntimeError("reviewer_no_choices")
+        provider_model = getattr(response, "model", None)
+        if provider_model and provider_model != review_model:
+            raise RuntimeError("reviewer_model_mismatch")
+        raw = response.choices[0].message.content or ""
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("reviewer_output_not_object")
+        status = parsed.get("status")
+        if status not in {"PASS", "PASS_WITH_CHANGES", "FAIL"}:
+            raise RuntimeError("reviewer_status_invalid")
+        for key in ("findings", "blockers", "required_changes"):
+            if not isinstance(parsed.get(key), list) or not all(isinstance(x, str) for x in parsed[key]):
+                raise RuntimeError(f"reviewer_{key}_invalid")
+        if not isinstance(parsed.get("ready_to_activate"), bool):
+            raise RuntimeError("reviewer_ready_flag_invalid")
+        confidence = parsed.get("confidence")
+        if not isinstance(confidence, str):
+            raise RuntimeError("reviewer_confidence_invalid")
+        result.update(parsed)
+        result["model"] = review_model
+        result["packet_sha256"] = packet_sha
+    except Exception as exc:
+        result["blockers"] = [f"review_probe_error:{type(exc).__name__}:{str(exc)}"]
+
+    print(
+        "JAYTEC_GOD_PROJECT_REVIEW_RESULT="
+        + json.dumps(result, ensure_ascii=False, sort_keys=True),
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
-    _run_jaytec_read_bootstrap_probe()
+    _run_jaytec_read_bootstrap_probe()\n    _run_god_project_review_probe()
     mcp.run(
         transport="http",
         host="0.0.0.0",
