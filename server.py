@@ -33,6 +33,8 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol").strip()
 # Exact model locks (must match orchestration.EXPECTED_MODELS)
 CODEX_MODEL = os.environ.get("CODEX_MODEL", EXPECTED_CODEX_MODEL).strip()
 ENGINEERING_PROVIDER_MODE = os.environ.get("ENGINEERING_PROVIDER_MODE", "LOCKED_RESERVE").strip().upper()
+ENGINEERING_SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("ENGINEERING_SOL_OUTPUT_TOKEN_CAP", "2000"))
+ENGINEERING_SOL_MAX_PACKET_RETRIES = int(os.environ.get("ENGINEERING_SOL_MAX_PACKET_RETRIES", "1"))
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 
 # OpenRouter route for Gemini research (optional; disabled unless configured).
