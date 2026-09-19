@@ -35,7 +35,7 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
 
     def test_new_meeting_participant_requires_explicit_registration_review(self):
         # Intentional tripwire for future meeting specialists.
-        self.assertEqual(meeting_bus.ALLOWED_PARTICIPANTS, {"gemini", "sol"})
+        self.assertEqual(meeting_bus.ALLOWED_PARTICIPANTS, {"engineer", "gemini", "sol"})
 
     def test_meeting_prompt_keeps_specialists_subordinate(self):
         request = {
