@@ -17,7 +17,8 @@ class Actor(StrEnum):
     MANUS = "manus"
     GEMINI = "gemini"
     ENGINEERING = "engineering_specialist"
-    # NOTION always means the Notion Agent. It is never an alias for JAYTEC.\n    NOTION = "notion_agent"
+    # NOTION always means the Notion Agent. It is never an alias for JAYTEC.
+    NOTION = "notion_agent"
     GITHUB = "github"
     NEON = "neon"
     RENDER = "render"
