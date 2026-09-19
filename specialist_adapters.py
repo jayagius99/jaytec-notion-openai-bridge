@@ -101,6 +101,7 @@ def _safe_transport_diagnostics(*, content: str, finish_reason: str | None, prov
         "provider_model": provider_model,
         "extracted_balanced_object": bool(extracted_object),
         "max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS,
+        "reasoning_effort": "low",
         "provider_fallbacks": False,
     }
 
@@ -311,7 +312,10 @@ def build_gemini_dispatch(
                     "provider": {
                         "sort": "price",
                         "allow_fallbacks": False,
-                    }
+                    },
+                    "reasoning": {
+                        "effort": "low",
+                    },
                 },
             )
         except Exception as exc:
