@@ -30,7 +30,7 @@ from manus_dispatch_contract import (
 from manus_governance import AuthoritySource, ManusScope, render_directive
 from manus_policy import ManusProfilePolicyError, verify_manus_profile
 from participant_contracts import render_actor_contract
-from relationship_policy import Actor
+from relationship_policy import Actor, Purpose, authorize_relationship
 
 MANUS_BASE_URL = os.environ.get("MANUS_BASE_URL", "https://api.manus.ai/v2").rstrip("/")
 MANUS_API_KEY = os.environ.get("MANUS_API_KEY", "").strip()
@@ -72,6 +72,7 @@ class ManusResponse:
 class BoundManusRoute:
     authorization: ManusDispatchAuthorization
     connector_ids: tuple[str, ...]
+    connector_permissions: tuple[tuple[str, str], ...] = ()
 
 
 def _error_code(parsed: Mapping[str, Any]) -> str | None:
@@ -243,12 +244,26 @@ class ManusClient:
             raise ManusError("MANUS_PROJECT_ID_MISMATCH")
         return project_id, str(matches[0].get("name") or "")
 
-    def resolve_approved_connector_ids(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        by_key: dict[str, list[str]] = {key: [] for key in APPROVED_CONNECTOR_KEYS}
+    def resolve_approved_connector_ids(
+        self,
+        requested_keys: Sequence[str],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        canonical: list[str] = []
+        for raw in requested_keys:
+            key = _CONNECTOR_ALIASES.get(_normalize_connector_name(raw))
+            if key is None or key not in APPROVED_CONNECTOR_KEYS:
+                raise ManusError("MANUS_CONNECTOR_NOT_ALLOWLISTED")
+            if key not in canonical:
+                canonical.append(key)
+
+        if not canonical:
+            return (), ()
+
+        by_key: dict[str, list[str]] = {key: [] for key in canonical}
         for row in _rows(self.list_connectors()):
             normalized = _normalize_connector_name(row.get("name"))
             key = _CONNECTOR_ALIASES.get(normalized)
-            if key is None:
+            if key not in by_key:
                 continue
             connector_id = str(row.get("id") or "").strip()
             if connector_id:
@@ -261,7 +276,7 @@ class ManusClient:
         if ambiguous:
             raise ManusError("MANUS_APPROVED_CONNECTOR_AMBIGUOUS:" + ",".join(ambiguous))
 
-        names = tuple(APPROVED_CONNECTOR_KEYS)
+        names = tuple(canonical)
         ids = tuple(by_key[key][0] for key in names)
         return names, ids
 
@@ -272,10 +287,36 @@ class ManusClient:
         authority_source: str | AuthoritySource,
         current_task_authorized: bool,
         requested_profile: str = "lite",
+        requested_connector_purposes: Mapping[str, str | Purpose] | None = None,
         notion_authorized_by_jay_via_chatgpt: bool = False,
     ) -> BoundManusRoute:
         project_id, project_name = self.resolve_manus_project()
-        connector_names, connector_ids = self.resolve_approved_connector_ids()
+        requested = dict(requested_connector_purposes or {})
+        canonical_purposes: list[tuple[str, str]] = []
+        actor_for = {
+            "github": Actor.GITHUB,
+            "neon": Actor.NEON,
+            "render": Actor.RENDER,
+        }
+        for raw_name, raw_purpose in requested.items():
+            key = _CONNECTOR_ALIASES.get(_normalize_connector_name(raw_name))
+            if key is None or key not in actor_for:
+                raise ManusError("MANUS_CONNECTOR_NOT_ALLOWLISTED")
+            try:
+                purpose = raw_purpose if isinstance(raw_purpose, Purpose) else Purpose(str(raw_purpose).strip().casefold())
+            except ValueError as exc:
+                raise ManusError("MANUS_CONNECTOR_PURPOSE_INVALID") from exc
+            authorize_relationship(
+                source=Actor.MANUS,
+                destination=actor_for[key],
+                purpose=purpose,
+                current_task_authorized=current_task_authorized,
+            )
+            canonical_purposes.append((key, purpose.value))
+
+        connector_names, connector_ids = self.resolve_approved_connector_ids(
+            [name for name, _ in canonical_purposes]
+        )
         expected_project_id = JAYTEC_MANUS_PROJECT_ID or project_id
 
         authorization = authorize_manus_dispatch(
@@ -291,20 +332,33 @@ class ManusClient:
             route_supports_profile_selector=True,
             notion_authorized_by_jay_via_chatgpt=notion_authorized_by_jay_via_chatgpt,
         )
-        return BoundManusRoute(authorization=authorization, connector_ids=connector_ids)
+        return BoundManusRoute(
+            authorization=authorization,
+            connector_ids=connector_ids,
+            connector_permissions=tuple(canonical_purposes),
+        )
 
     @staticmethod
-    def _governed_message(content: str) -> str:
+    def _governed_message(route: BoundManusRoute, content: str) -> str:
         raw = content.strip()
         if not raw:
             raise ManusError("EMPTY_MESSAGE")
         if len(raw) > MANUS_MAX_MESSAGE_CHARS:
             raise ManusError("MESSAGE_TOO_LARGE")
+        connector_scope = (
+            ", ".join(f"{name}:{purpose}" for name, purpose in route.connector_permissions)
+            if route.connector_permissions
+            else "NONE — no connector use is authorized for this task"
+        )
         return (
             render_actor_contract(Actor.MANUS)
             + "\n\nCANONICAL MANUS DIRECTIVE\n"
             + render_directive()
-            + "\n\nCURRENT DELEGATED TASK\n"
+            + "\n\nCURRENT TASK CONNECTOR SCOPE\n"
+            + connector_scope
+            + "\nUse no connector or connector operation outside that exact scope. "
+              "Connector availability never expands authority.\n"
+            + "\nCURRENT DELEGATED TASK\n"
             + raw
         )
 
@@ -316,7 +370,7 @@ class ManusClient:
         title: str | None = None,
         structured_output_schema: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        message = self._governed_message(content)
+        message = self._governed_message(route, content)
 
         payload: dict[str, Any] = {
             "message": {
@@ -356,22 +410,22 @@ class ManusClient:
         *,
         structured_output_schema: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        message = self._governed_message(content)
+        message = self._governed_message(route, content)
 
         # Old tasks that are not observably Lite are not continued.
         self.verify_task_profile(route, task_id)
 
         payload: dict[str, Any] = {
             "task_id": task_id,
-            "message": {
-                "content": message,
-                # Non-empty sendMessage connector list explicitly replaces the
-                # task connector set, preventing hidden connector drift.
-                "connectors": list(route.connector_ids),
-            },
+            "message": {"content": message},
             # sendMessage explicitly supports a per-turn profile override.
             "agent_profile": route.authorization.profile.requested_profile.value,
         }
+        if route.connector_ids:
+            payload["message"]["connectors"] = list(route.connector_ids)
+        else:
+            # Empty sendMessage connectors would reuse old connectors.
+            payload["clear_connectors"] = True
         if structured_output_schema is not None:
             payload["structured_output_schema"] = dict(structured_output_schema)
 
