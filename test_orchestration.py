@@ -179,7 +179,7 @@ class TestOrchestration(unittest.TestCase):
 
     def test_model_mismatch_fails_closed(self):
         p = base_packet(); p["specialist_plan"] = ["codex"]; p["max_fanout"] = 1
-        out = execute_task_packet_core(p, {"codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []}}, ExecutionRegistry(), sleep_fn=lambda _: None)
+        out = execute_task_packet_core(p, {"codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.3-codex", "findings": [], "evidence": []}}, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("FAILED_CLOSED", out["overall_status"])
         self.assertTrue(any("model_mismatch" in x for x in out["unresolved_items"]))
 
