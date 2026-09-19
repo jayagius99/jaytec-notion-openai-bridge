@@ -410,4 +410,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    code = main()
+    if code == 0 and os.environ.get("RUN_LIVE_MANUS_USABILITY_EVAL", "0").strip() == "1":
+        from staging_manus_usability_eval import main as usability_main
+        code = usability_main()
+    raise SystemExit(code)
