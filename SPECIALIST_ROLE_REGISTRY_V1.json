@@ -31,9 +31,9 @@
       "activation_policy": "explicitly_funded_or_owner_requested"
     },
     "gemini": {
-      "display_name": "JAYTEC Research / Architecture Reviewer",
+      "display_name": "JAYTEC Premium Gemini Review Reserve",
       "provider_model": "google/gemini-3.1-pro-preview",
-      "primary_role": "research_architecture_review",
+      "primary_role": "premium_research_review_reserve",
       "allowed_task_classes": [
         "research",
         "architecture_analysis",
@@ -49,9 +49,11 @@
         "self_approval",
         "authority_change"
       ],
-      "meeting_participant": true,
+      "meeting_participant": false,
       "can_authorize_jaytec_change": false,
-      "can_self_initiate": false
+      "can_self_initiate": false,
+      "cost_profile": "paid_reserve",
+      "activation_policy": "explicitly_funded_or_owner_requested"
     },
     "manus": {
       "display_name": "JAYTEC Automation / Orchestration Specialist",
@@ -94,6 +96,31 @@
         "self_approval",
         "authority_change",
         "unscoped_research"
+      ],
+      "meeting_participant": true,
+      "can_authorize_jaytec_change": false,
+      "can_self_initiate": false,
+      "cost_profile": "free_primary",
+      "fallback_policy": "fail_closed_no_silent_model_substitution"
+    },
+    "reviewer": {
+      "display_name": "JAYTEC Independent Reviewer",
+      "provider_model": "deepseek/deepseek-v4-flash-0731:free",
+      "provider": "openrouter",
+      "primary_role": "research_architecture_adversarial_review",
+      "allowed_task_classes": [
+        "research",
+        "architecture_analysis",
+        "adversarial_review",
+        "evidence_synthesis",
+        "challenge_verification",
+        "meeting_participation"
+      ],
+      "prohibited_task_classes": [
+        "engineering_write",
+        "self_initiated_change",
+        "self_approval",
+        "authority_change"
       ],
       "meeting_participant": true,
       "can_authorize_jaytec_change": false,
