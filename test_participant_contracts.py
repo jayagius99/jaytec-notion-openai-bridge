@@ -45,6 +45,19 @@ class ParticipantContractTests(unittest.TestCase):
         self.assertIn("JAYTEC ALWAYS means the JAYTEC system/control plane", text)
         self.assertIn("Never substitute Notion Agent", text)
 
+    def test_chatgpt_retains_final_coordination_authority(self):
+        text = render_actor_contract(Actor.CHATGPT)
+        self.assertIn("ChatGPT alone accepts/rejects", text)
+        self.assertIn("assigns resulting work", text)
+
+    def test_specialist_planning_input_is_advisory_only(self):
+        gemini = render_actor_contract(Actor.GEMINI)
+        engineering = render_actor_contract(Actor.ENGINEERING)
+        self.assertIn("advisory only", gemini)
+        self.assertIn("do not create/assign tasks", gemini)
+        self.assertIn("ChatGPT remains final coordinator", engineering)
+        self.assertIn("Do not self-assign", engineering)
+
     def test_specialists_cannot_delegate(self):
         for actor in (Actor.GEMINI, Actor.ENGINEERING):
             text = render_actor_contract(actor)
