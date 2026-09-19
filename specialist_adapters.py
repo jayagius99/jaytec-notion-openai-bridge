@@ -20,6 +20,8 @@ from openai import OpenAI, RateLimitError as OpenAIRateLimitError
 from orchestration import RateLimitError as OrchestrationRateLimitError
 
 from circuit_breaker import CircuitBreaker
+from participant_contracts import render_actor_contract
+from relationship_policy import Actor
 from worker_json import json_object
 
 EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
@@ -148,7 +150,8 @@ def build_codex_dispatch(
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         prompt = (
-            "ROLE: JAYTEC ENGINEERING SPECIALIST — GPT-5.6 SOL\n"
+            render_actor_contract(Actor.ENGINEERING)
+            + "\nROLE: JAYTEC ENGINEERING SPECIALIST — GPT-5.6 SOL\n"
             + ENGINEERING_CONTRACT
             + "\nTASK_PACKET_JSON:\n"
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
@@ -203,7 +206,9 @@ def build_gemini_dispatch(
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         prompt = (
-            GEMINI_RESEARCH_MODE_V1_1
+            render_actor_contract(Actor.GEMINI)
+            + "\n"
+            + GEMINI_RESEARCH_MODE_V1_1
             + "\nTASK_ID: "
             + str(packet.get("task_id", ""))
             + "\nSUBTASK_ID: "
