@@ -45,6 +45,7 @@ on:
       - 'test_participant_prompt_injection.py'
       - 'test_manus_policy_integration_guard.py'
       - 'test_manus_adversarial_matrix.py'
+      - 'test_provider_credit_topup.py'
       - 'staging_gemini_manus_governance_review.py'
       - 'staging_manus_governance_acceptance.py'
       - 'requirements.txt'
@@ -78,7 +79,7 @@ jobs:
             test_contract_equivalence.py test_server_candidate_probe.py test_engineering_migration_guard.py \
             test_manus_adapter.py test_manus_policy.py test_manus_governance.py test_manus_dispatch_contract.py \
             test_relationship_policy.py test_participant_contracts.py test_participant_prompt_injection.py test_manus_policy_integration_guard.py \
-            test_manus_adversarial_matrix.py test_manus_governance_acceptance.py test_gemini_manus_governance_review.py
+            test_manus_adversarial_matrix.py test_provider_credit_topup.py test_manus_governance_acceptance.py test_gemini_manus_governance_review.py
       - name: Import guard (server.py must be importable without secrets)
         run: python -c "import server; print('server_import_ok')"
       - name: Run unit tests
