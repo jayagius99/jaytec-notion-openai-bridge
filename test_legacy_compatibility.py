@@ -82,7 +82,7 @@ class TestLegacyCompatibility(unittest.TestCase):
             calls["count"] += 1
             return {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
             }

@@ -22,7 +22,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
         out = self._run_codex(
             p,
             lambda _: {
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
             },
@@ -36,7 +36,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "evidence": [],
             },
         )
@@ -49,7 +49,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
             },
         )
@@ -62,7 +62,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": 123,
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
             },
@@ -76,7 +76,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "WAT",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
             },
@@ -90,7 +90,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": "nope",
                 "evidence": [],
             },
@@ -104,7 +104,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": "nope",
             },
@@ -118,7 +118,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "FAILED_CLOSED",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
                 "unresolved_items": "oops",
@@ -133,7 +133,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
                 "requested_operations": {"performed": ["read"]},
@@ -150,7 +150,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
                 "requested_operations": ["read"],
@@ -166,7 +166,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
                 "requested_operations": ["validate"],
@@ -182,7 +182,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
                 "requested_operations": [],
@@ -199,7 +199,7 @@ class TestWorkerPolicyHardening(unittest.TestCase):
             p,
             lambda _: {
                 "status": "SUCCESS",
-                "model": "gpt-5.3-codex",
+                "model": "gpt-5.6-sol",
                 "findings": [],
                 "evidence": [],
                 "extra": huge,

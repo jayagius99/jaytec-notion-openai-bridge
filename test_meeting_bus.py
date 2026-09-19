@@ -146,8 +146,10 @@ class MeetingBusTests(unittest.TestCase):
             meeting_bus.SOL_ENABLED = original
 
     def test_sol_dispatch_and_idempotent_replay(self):
-        original = meeting_bus.SOL_ENABLED
+        original_enabled = meeting_bus.SOL_ENABLED
+        original_mode = meeting_bus.SOL_RESERVE_MODE
         meeting_bus.SOL_ENABLED = True
+        meeting_bus.SOL_RESERVE_MODE = "BOUNDED_SOL_ONLY"
         try:
             registry = FakeRegistry()
             client = FakeSolClient()
@@ -172,11 +174,14 @@ class MeetingBusTests(unittest.TestCase):
             self.assertTrue(second["idempotent_replay"])
             self.assertEqual(client.responses.calls, 1)
         finally:
-            meeting_bus.SOL_ENABLED = original
+            meeting_bus.SOL_ENABLED = original_enabled
+            meeting_bus.SOL_RESERVE_MODE = original_mode
 
     def test_conflicting_second_request_same_meeting_fails(self):
-        original = meeting_bus.SOL_ENABLED
+        original_enabled = meeting_bus.SOL_ENABLED
+        original_mode = meeting_bus.SOL_RESERVE_MODE
         meeting_bus.SOL_ENABLED = True
+        meeting_bus.SOL_RESERVE_MODE = "BOUNDED_SOL_ONLY"
         try:
             registry = FakeRegistry()
             client = FakeSolClient()
@@ -198,7 +203,8 @@ class MeetingBusTests(unittest.TestCase):
                 )
             self.assertEqual(client.responses.calls, 1)
         finally:
-            meeting_bus.SOL_ENABLED = original
+            meeting_bus.SOL_ENABLED = original_enabled
+            meeting_bus.SOL_RESERVE_MODE = original_mode
 
     def test_gemini_dispatch(self):
         registry = FakeRegistry()
@@ -225,8 +231,10 @@ class MeetingBusTests(unittest.TestCase):
             output_text=json.dumps(bad),
             usage=None,
         )
-        original = meeting_bus.SOL_ENABLED
+        original_enabled = meeting_bus.SOL_ENABLED
+        original_mode = meeting_bus.SOL_RESERVE_MODE
         meeting_bus.SOL_ENABLED = True
+        meeting_bus.SOL_RESERVE_MODE = "BOUNDED_SOL_ONLY"
         try:
             with self.assertRaises(meeting_bus.MeetingPolicyError):
                 meeting_bus.dispatch_request(
@@ -236,7 +244,8 @@ class MeetingBusTests(unittest.TestCase):
                     enabled=True,
                 )
         finally:
-            meeting_bus.SOL_ENABLED = original
+            meeting_bus.SOL_ENABLED = original_enabled
+            meeting_bus.SOL_RESERVE_MODE = original_mode
 
 
     def test_oidc_rejects_wrong_repository(self):

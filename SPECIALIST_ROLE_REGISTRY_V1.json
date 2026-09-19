@@ -1,0 +1,86 @@
+{
+  "schema_version": "1.0",
+  "authority_controller": "CHATGPT_OPENAI_LEAD",
+  "default_specialist_authority": "SUBORDINATE",
+  "registration_policy": "FAIL_CLOSED",
+  "specialists": {
+    "sol": {
+      "display_name": "JAYTEC Engineering Specialist",
+      "provider_model": "gpt-5.6-sol",
+      "primary_role": "coding_engineering",
+      "allowed_task_classes": [
+        "coding",
+        "engineering",
+        "implementation_analysis",
+        "code_review",
+        "technical_validation",
+        "meeting_participation",
+        "owner_explicit_sol_task"
+      ],
+      "prohibited_task_classes": [
+        "independent_jaytec_governance",
+        "self_initiated_change",
+        "self_approval",
+        "authority_change",
+        "unscoped_research"
+      ],
+      "meeting_participant": true,
+      "can_authorize_jaytec_change": false,
+      "can_self_initiate": false
+    },
+    "gemini": {
+      "display_name": "JAYTEC Research / Architecture Reviewer",
+      "provider_model": "google/gemini-3.1-pro-preview",
+      "primary_role": "research_architecture_review",
+      "allowed_task_classes": [
+        "research",
+        "architecture_analysis",
+        "adversarial_review",
+        "evidence_synthesis",
+        "challenge_verification",
+        "meeting_participation"
+      ],
+      "prohibited_task_classes": [
+        "engineering_write",
+        "independent_jaytec_governance",
+        "self_initiated_change",
+        "self_approval",
+        "authority_change"
+      ],
+      "meeting_participant": true,
+      "can_authorize_jaytec_change": false,
+      "can_self_initiate": false
+    },
+    "manus": {
+      "display_name": "JAYTEC Automation / Orchestration Specialist",
+      "provider_model": "manus-connected-specialist",
+      "primary_role": "automation_orchestration",
+      "allowed_task_classes": [
+        "automation",
+        "orchestration",
+        "manus_internal_improvement",
+        "execution_support",
+        "meeting_participation"
+      ],
+      "prohibited_task_classes": [
+        "independent_jaytec_governance",
+        "jaytec_core_self_modification",
+        "self_approval",
+        "authority_change"
+      ],
+      "meeting_participant": true,
+      "can_authorize_jaytec_change": false,
+      "can_self_initiate": false
+    }
+  },
+  "future_specialist_requirements": {
+    "must_define_primary_role": true,
+    "must_define_allowed_task_classes": true,
+    "must_define_prohibited_task_classes": true,
+    "must_be_subordinate_to_chatgpt": true,
+    "must_define_cost_policy": true,
+    "must_define_side_effect_policy": true,
+    "must_have_registration_tests": true,
+    "may_inherit_other_specialist_capabilities": false
+  }
+}

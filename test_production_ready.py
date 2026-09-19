@@ -15,7 +15,7 @@ class TestProductionReady(unittest.TestCase):
         os.environ["MCP_AUTH_TOKEN"] = "test"
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ["OPENROUTER_API_KEY"] = "test"
-        os.environ["CODEX_MODEL"] = "gpt-5.3-codex"
+        os.environ["CODEX_MODEL"] = "gpt-5.6-sol"
         os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         server = self._reload()
@@ -38,7 +38,7 @@ class TestProductionReady(unittest.TestCase):
         os.environ["MCP_AUTH_TOKEN"] = "test"
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ.pop("OPENROUTER_API_KEY", None)
-        os.environ["CODEX_MODEL"] = "gpt-5.3-codex"
+        os.environ["CODEX_MODEL"] = "gpt-5.6-sol"
         os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         server = self._reload()
@@ -61,7 +61,7 @@ class TestProductionReady(unittest.TestCase):
         os.environ["MCP_AUTH_TOKEN"] = "test"
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ.pop("OPENROUTER_API_KEY", None)
-        os.environ["CODEX_MODEL"] = "gpt-5.3-codex"
+        os.environ["CODEX_MODEL"] = "gpt-5.6-sol"
         os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         server = self._reload()

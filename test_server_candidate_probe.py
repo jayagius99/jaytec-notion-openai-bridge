@@ -35,7 +35,7 @@ class TestServerCandidateProbe(unittest.TestCase):
         os.environ.pop("DATABASE_URL", None)
         os.environ["MCP_AUTH_TOKEN"] = "test"
         os.environ["OPENAI_API_KEY"] = "test"
-        os.environ["CODEX_MODEL"] = "gpt-5.3-codex"
+        os.environ["CODEX_MODEL"] = "gpt-5.6-sol"
         os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         import server

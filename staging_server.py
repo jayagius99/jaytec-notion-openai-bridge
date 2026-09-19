@@ -33,6 +33,9 @@ PORT = int(os.environ.get("PORT", "8000"))
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 CODEX_MODEL = os.environ.get("CODEX_MODEL", EXPECTED_CODEX_MODEL).strip()
+ENGINEERING_PROVIDER_MODE = os.environ.get("ENGINEERING_PROVIDER_MODE", "LOCKED_RESERVE").strip().upper()
+ENGINEERING_SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("ENGINEERING_SOL_OUTPUT_TOKEN_CAP", "2000"))
+ENGINEERING_SOL_MAX_PACKET_RETRIES = int(os.environ.get("ENGINEERING_SOL_MAX_PACKET_RETRIES", "1"))
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
@@ -79,7 +82,7 @@ OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_
 
 # Build dispatchers ONCE to avoid runtime drift and repeated guards.
 CODEX_DISPATCH = (
-    build_codex_dispatch(openai_client=OPENAI_CLIENT, codex_model=CODEX_MODEL, circuit=CODEX_CIRCUIT)
+    build_codex_dispatch(openai_client=OPENAI_CLIENT, codex_model=CODEX_MODEL, circuit=CODEX_CIRCUIT, provider_mode=ENGINEERING_PROVIDER_MODE, max_output_tokens=ENGINEERING_SOL_OUTPUT_TOKEN_CAP, max_packet_retries=ENGINEERING_SOL_MAX_PACKET_RETRIES)
     if OPENAI_CLIENT
     else CODEX_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENAI_API_KEY is not configured on the staging bridge")))
 )

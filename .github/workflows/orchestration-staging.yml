@@ -14,6 +14,8 @@ on:
       - 'jaytec_read.py'
       - 'meeting_bus.py'
       - 'test_meeting_bus.py'
+      - 'test_sol_authority_policy.py'
+      - 'test_specialist_authority_registration.py'
       - 'jaytec_read_startup_selftest.py'
       - 'job_runtime.py'
       - 'job_runtime_schema.sql'
@@ -82,7 +84,7 @@ jobs:
             server.py reliable_server.py compat_server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
-            test_worker_output_parsing.py test_gemini_transport_hardening.py test_jaytec_read.py test_meeting_bus.py test_specialist_timeout_hardening.py test_manus_policy.py test_manus_policy_integration_guard.py \
+            test_worker_output_parsing.py test_gemini_transport_hardening.py test_jaytec_read.py test_meeting_bus.py test_sol_authority_policy.py test_specialist_authority_registration.py test_specialist_timeout_hardening.py test_manus_policy.py test_manus_policy_integration_guard.py \
             test_job_runtime.py test_concurrency.py test_guardian.py test_durable_tasks.py \
             test_reliable_runtime_hardening.py test_compat_server.py test_compat_native_validation.py \
             test_compat_transport_hardening.py test_idempotency_postgres.py test_dockerfile_packaging.py \
@@ -101,7 +103,7 @@ jobs:
             -e RUNTIME_MODE=staging_candidate \
             -e MCP_AUTH_TOKEN=test \
             -e OPENAI_API_KEY=test \
-            -e CODEX_MODEL=gpt-5.3-codex \
+            -e CODEX_MODEL=gpt-5.6-sol \
             -e GEMINI_MODEL=google/gemini-3.1-pro-preview \
             -e DURABLE_WORKER_ENABLED=0 \
             -e GUARDIAN_LOOP_ENABLED=0 \

@@ -113,7 +113,7 @@ class TestOrchestration(unittest.TestCase):
 
     def test_successful_fan_in_and_deterministic_order(self):
         p = base_packet()
-        def codex(_): return {"status": "SUCCESS", "model": "gpt-5.3-codex", "findings": ["c"], "evidence": [], "conclusion": {"ok": True}}
+        def codex(_): return {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": ["c"], "evidence": [], "conclusion": {"ok": True}}
         def gemini(_): return {"status": "SUCCESS", "model": "google/gemini-3.1-pro-preview", "findings": ["g"], "evidence": [], "conclusion": {"ok": True}}
         out = execute_task_packet_core(p, {"codex": codex, "gemini": gemini}, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("SUCCESS", out["overall_status"])
@@ -122,7 +122,7 @@ class TestOrchestration(unittest.TestCase):
     def test_one_specialist_failure(self):
         p = base_packet()
         out = execute_task_packet_core(p, {
-            "codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.3-codex", "findings": [], "evidence": []},
+            "codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []},
             "gemini": lambda _: {"status": "FAILED_CLOSED", "model": "google/gemini-3.1-pro-preview", "findings": [], "evidence": []},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("PARTIAL_SUCCESS", out["overall_status"])
@@ -130,7 +130,7 @@ class TestOrchestration(unittest.TestCase):
     def test_both_fail(self):
         p = base_packet()
         out = execute_task_packet_core(p, {
-            "codex": lambda _: {"status": "FAILED_CLOSED", "model": "gpt-5.3-codex", "findings": [], "evidence": []},
+            "codex": lambda _: {"status": "FAILED_CLOSED", "model": "gpt-5.6-sol", "findings": [], "evidence": []},
             "gemini": lambda _: {"status": "FAILED_CLOSED", "model": "google/gemini-3.1-pro-preview", "findings": [], "evidence": []},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("FAILED_CLOSED", out["overall_status"])
@@ -138,7 +138,7 @@ class TestOrchestration(unittest.TestCase):
     def test_conflicting_conclusions(self):
         p = base_packet()
         out = execute_task_packet_core(p, {
-            "codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.3-codex", "findings": [], "evidence": [], "conclusion": "A"},
+            "codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": [], "conclusion": "A"},
             "gemini": lambda _: {"status": "SUCCESS", "model": "google/gemini-3.1-pro-preview", "findings": [], "evidence": [], "conclusion": "B"},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("NEEDS_VALIDATION", out["overall_status"])
@@ -146,7 +146,7 @@ class TestOrchestration(unittest.TestCase):
 
     def test_idempotent_replay(self):
         p = base_packet(); reg = ExecutionRegistry(); calls = {"n": 0}
-        def codex(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "gpt-5.3-codex", "findings": [], "evidence": []}
+        def codex(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []}
         def gemini(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "google/gemini-3.1-pro-preview", "findings": [], "evidence": []}
         dispatch = {"codex": codex, "gemini": gemini}
         first = execute_task_packet_core(p, dispatch, reg, sleep_fn=lambda _: None)
@@ -159,7 +159,7 @@ class TestOrchestration(unittest.TestCase):
         now = datetime(2026, 9, 15, tzinfo=timezone.utc)
         p = base_packet(now); p["deadline"] = (now + timedelta(days=3)).isoformat()
         reg = ExecutionRegistry(ttl_seconds=10); calls = {"n": 0}
-        def codex(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "gpt-5.3-codex", "findings": [], "evidence": []}
+        def codex(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []}
         def gemini(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "google/gemini-3.1-pro-preview", "findings": [], "evidence": []}
         execute_task_packet_core(p, {"codex": codex, "gemini": gemini}, reg, now=now, sleep_fn=lambda _: None)
         execute_task_packet_core(p, {"codex": codex, "gemini": gemini}, reg, now=now + timedelta(seconds=11), sleep_fn=lambda _: None)
@@ -168,7 +168,7 @@ class TestOrchestration(unittest.TestCase):
     def test_conflicting_duplicate_fails_closed(self):
         p = base_packet(); reg = ExecutionRegistry()
         dispatch = {
-            "codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.3-codex", "findings": [], "evidence": []},
+            "codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []},
             "gemini": lambda _: {"status": "SUCCESS", "model": "google/gemini-3.1-pro-preview", "findings": [], "evidence": []},
         }
         execute_task_packet_core(p, dispatch, reg, sleep_fn=lambda _: None)
@@ -179,7 +179,7 @@ class TestOrchestration(unittest.TestCase):
 
     def test_model_mismatch_fails_closed(self):
         p = base_packet(); p["specialist_plan"] = ["codex"]; p["max_fanout"] = 1
-        out = execute_task_packet_core(p, {"codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []}}, ExecutionRegistry(), sleep_fn=lambda _: None)
+        out = execute_task_packet_core(p, {"codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.3-codex", "findings": [], "evidence": []}}, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("FAILED_CLOSED", out["overall_status"])
         self.assertTrue(any("model_mismatch" in x for x in out["unresolved_items"]))
 

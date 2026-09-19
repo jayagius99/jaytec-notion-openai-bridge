@@ -51,6 +51,19 @@ class FakeGeminiClient:
         self.chat = FakeChat(exc)
 
 
+def sol_packet():
+    return {
+        "task_id": "t",
+        "subtask_id": "s",
+        "workflow_id": "JAYTEC_ENGINEERING_TEST",
+        "required_context": {
+            "authority_controller": "CHATGPT_OPENAI_LEAD",
+            "specialist_authority": "SUBORDINATE",
+        },
+        "allowed_operations": [],
+    }
+
+
 class TestSpecialistTimeoutHardening(unittest.TestCase):
     def test_codex_timeout_is_bounded_and_normalized(self):
         client = FakeCodexClient()
@@ -59,9 +72,10 @@ class TestSpecialistTimeoutHardening(unittest.TestCase):
             codex_model=EXPECTED_CODEX_MODEL,
             circuit=CircuitBreaker(failure_threshold=3, reset_after_seconds=60),
             codex_timeout_s=7.5,
+            provider_mode="BOUNDED_SOL_ONLY",
         )
         with self.assertRaises(TimeoutError):
-            dispatch({"task_id": "t", "subtask_id": "s", "allowed_operations": []})
+            dispatch(sol_packet())
         self.assertEqual(client.responses.timeout, 7.5)
 
     def test_gemini_timeout_is_bounded_and_normalized(self):
@@ -90,9 +104,10 @@ class TestSpecialistTimeoutHardening(unittest.TestCase):
             codex_model=EXPECTED_CODEX_MODEL,
             circuit=CircuitBreaker(failure_threshold=3, reset_after_seconds=60),
             codex_timeout_s=5,
+            provider_mode="BOUNDED_SOL_ONLY",
         )
         with self.assertRaises(RateLimitError):
-            dispatch({"task_id": "t", "subtask_id": "s", "allowed_operations": []})
+            dispatch(sol_packet())
 
     def test_5xx_is_normalized_to_provider_unavailable(self):
         client = FakeGeminiClient(FakeProviderError("upstream unavailable", status_code=503))
