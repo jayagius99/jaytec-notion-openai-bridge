@@ -28,9 +28,10 @@ class ParticipantContractTests(unittest.TestCase):
 
     def test_manus_understands_boundary(self):
         text = render_actor_contract(Actor.MANUS)
-        self.assertIn("Improve Manus-side workflows", text)
-        self.assertIn("Never independently change JAYTEC", text)
-        self.assertIn("inherit implicit connectors", text)
+        normalized = " ".join(text.split())
+        self.assertIn("Improve Manus-side workflows", normalized)
+        self.assertIn("Never independently change JAYTEC", normalized)
+        self.assertIn("inherit implicit connectors", normalized)
 
     def test_notion_is_transfer_only(self):
         text = render_actor_contract(Actor.NOTION)
