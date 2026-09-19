@@ -60,7 +60,7 @@ Do not begin that connector work unless Jay explicitly resumes/authorizes it.
 ## FUTURE V3 RESEARCH ITEM — CONTROLLED TOR NETWORK ROUTE
 
 Recorded: 2026-09-20 (Australia/Adelaide)  
-Status: RESEARCH CAPTURED / NOT AUTHORIZED FOR IMPLEMENTATION
+Status: SECURITY ARCHITECTURE DECISION COMPLETE / IMPLEMENTATION NOT AUTHORIZED
 
 Jay requested that Tor capability be researched for JAYTEC V3 and preserved so it is not forgotten during future V3 design or implementation.
 
@@ -82,10 +82,13 @@ Research direction:
 - Keep audit evidence without unnecessarily recording sensitive URL query strings, credentials, cookies or secrets. Logs should identify the initiating JAYTEC request, route choice, policy result, timing, destination class, status and bounded transfer metadata.
 - Use a separate Tor Browser/human-interactive lane for true browser activity rather than pointing an ordinary browser at a Tor SOCKS port.
 
-Backend decision remains OPEN:
-- Arti is the Tor Project's Rust implementation and is currently suitable for Tor client/proxy use and embedding experiments; its modular/memory-safe design is attractive for V3.
-- C Tor remains relevant where mature control-port behavior or features not yet equivalent in Arti are required.
-- Keep the Tor backend behind a JAYTEC adapter/contract instead of hard-coding one implementation before the future design gate.
+Backend decision is RESOLVED at architecture level:
+- V3 uses a backend-neutral TorEngine contract.
+- C Tor and the current supported Arti release are candidates, not hard-coded architectural dependencies.
+- Both must be tested against the same release-blocking leak/isolation/failure harness on the exact versions proposed for V3.
+- Only an engine that passes every mandatory invariant may ship.
+- The Tor engine remains in a separate compartment from the untrusted fetch worker so the kernel/network leak boundary does not depend on proxy correctness or engine choice.
+- Full security decision: JAYTEC_V3_TOR_SECURITY_DECISION.md.
 
 Mandatory pre-implementation gate:
 1. explicit V3 implementation authorization from Jay;
@@ -106,6 +109,16 @@ Official research basis captured for later design review:
 - Tor Specifications: SOCKS extensions — https://spec.torproject.org/socks-extensions
 - Arti documentation — https://arti.torproject.org/
 - Arti capability/status documentation — https://arti.torproject.org/FAQs/
+
+Security-hardening review completed 2026-09-20:
+- GPT-5.6 Sol independent architecture/security audit completed.
+- JAYTEC Gemini hostile review pass 1 completed.
+- JAYTEC Gemini adversarial pass 2 falsified the premature readiness result and identified DNS-rebinding and retry/fail-open gaps.
+- JAYTEC Gemini backend challenge pass 3 completed after current Arti/Tor stream-isolation evidence was added.
+- ChatGPT/JAYTEC final audit resolved the architecture: network compartment is the leak-prevention boundary; Tor is the privacy transport inside it.
+- Architecture decision: GO.
+- Implementation/production decision: NO-GO until the complete acceptance harness is implemented and passes.
+- Authoritative detailed decision: JAYTEC_V3_TOR_SECURITY_DECISION.md.
 
 This entry is continuity only. It does not resume V2, alter the current JAYTEC:READ route, install Tor, create a service, expose a proxy, spend money, or authorize implementation.
 
