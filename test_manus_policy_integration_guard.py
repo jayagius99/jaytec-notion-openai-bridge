@@ -7,15 +7,22 @@ ROOT = Path(__file__).resolve().parent
 EXCLUDED = {
     "manus_policy.py",
     "manus_governance.py",
+    "manus_dispatch_contract.py",
+    "relationship_policy.py",
     "test_manus_policy.py",
     "test_manus_governance.py",
+    "test_manus_dispatch_contract.py",
+    "test_relationship_policy.py",
     "test_manus_policy_integration_guard.py",
 }
-ROUTING_MARKERS = re.compile(r"\b(dispatch|adapter|client|provider|profile|task\.create|task\.sendMessage)\b", re.I)
+ROUTING_MARKERS = re.compile(
+    r"\b(dispatch|adapter|client|provider|profile|task\.create|task\.sendMessage)\b",
+    re.I,
+)
 
 
 class ManusPolicyIntegrationGuardTests(unittest.TestCase):
-    def test_any_manus_routing_code_must_use_profile_and_governance_guards(self):
+    def test_any_manus_routing_code_must_use_composed_dispatch_contract(self):
         violations = []
         for path in sorted(ROOT.glob("*.py")):
             if path.name in EXCLUDED or path.name.startswith("test_"):
@@ -25,24 +32,24 @@ class ManusPolicyIntegrationGuardTests(unittest.TestCase):
             if "manus" not in lowered or not ROUTING_MARKERS.search(source):
                 continue
 
-            if "manus_policy" not in lowered:
-                violations.append(f"{path.name}:missing_manus_policy_import")
-            if "authorize_manus_route" not in source:
-                violations.append(f"{path.name}:missing_pre_dispatch_profile_authorization")
-            if "verify_manus_profile" not in source:
-                violations.append(f"{path.name}:missing_post_dispatch_profile_verification")
-
-            if "manus_governance" not in lowered:
-                violations.append(f"{path.name}:missing_manus_governance_import")
-            if "authorize_manus_action" not in source:
-                violations.append(f"{path.name}:missing_behaviour_authorization")
-            if "assert_approved_manus_connectors" not in source:
-                violations.append(f"{path.name}:missing_connector_allowlist_guard")
+            if "manus_dispatch_contract" not in lowered:
+                violations.append(
+                    f"{path.name}:missing_manus_dispatch_contract_import"
+                )
+                continue
+            if "authorize_manus_dispatch" not in source:
+                violations.append(
+                    f"{path.name}:missing_composed_pre_dispatch_authorization"
+                )
+            if "verify_manus_dispatch_result" not in source:
+                violations.append(
+                    f"{path.name}:missing_composed_post_dispatch_verification"
+                )
 
         self.assertEqual(
             violations,
             [],
-            "Manus routing bypasses fail-closed profile/governance policy: "
+            "Manus routing bypasses composed JAYTEC dispatch contract: "
             + ", ".join(violations),
         )
 
