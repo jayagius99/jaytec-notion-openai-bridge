@@ -34,6 +34,10 @@ _PROFILE_ALIASES = {
 }
 
 
+class PaidOverrideAuthority(StrEnum):
+    CURRENT_USER_MESSAGE = "current_user_message"
+
+
 class ManusProfilePolicyError(RuntimeError):
     """Raised when a Manus route would violate the standing profile policy."""
 
@@ -71,6 +75,7 @@ def authorize_manus_route(
     requested_profile: str | ManusProfile | None = None,
     route_supports_profile_selector: bool,
     explicit_paid_override: bool = False,
+    paid_override_authority: str | PaidOverrideAuthority | None = None,
 ) -> ManusRouteDecision:
     """Authorize a Manus dispatch before any provider call is made.
 
@@ -80,15 +85,34 @@ def authorize_manus_route(
 
     profile = canonicalize_manus_profile(requested_profile)
 
+    if type(route_supports_profile_selector) is not bool:
+        raise ManusProfilePolicyError("MANUS_SELECTOR_CAPABILITY_INVALID")
+    if type(explicit_paid_override) is not bool:
+        raise ManusProfilePolicyError("MANUS_OVERRIDE_FLAG_INVALID")
+
     if not route_supports_profile_selector:
         raise ManusProfilePolicyError("MANUS_PROFILE_SELECTOR_UNAVAILABLE")
 
-    if profile is not ManusProfile.LITE and not explicit_paid_override:
-        raise ManusProfilePolicyError("MANUS_PAID_PROFILE_BLOCKED")
+    authority: PaidOverrideAuthority | None = None
+    if paid_override_authority is not None:
+        try:
+            authority = (
+                paid_override_authority
+                if isinstance(paid_override_authority, PaidOverrideAuthority)
+                else PaidOverrideAuthority(str(paid_override_authority).strip().casefold())
+            )
+        except ValueError as exc:
+            raise ManusProfilePolicyError("MANUS_OVERRIDE_AUTHORITY_INVALID") from exc
+
+    if profile is not ManusProfile.LITE:
+        if not explicit_paid_override:
+            raise ManusProfilePolicyError("MANUS_PAID_PROFILE_BLOCKED")
+        if authority is not PaidOverrideAuthority.CURRENT_USER_MESSAGE:
+            raise ManusProfilePolicyError("MANUS_PAID_OVERRIDE_NOT_CURRENT")
 
     return ManusRouteDecision(
         requested_profile=profile,
-        explicit_paid_override=bool(explicit_paid_override),
+        explicit_paid_override=explicit_paid_override,
     )
 
 
