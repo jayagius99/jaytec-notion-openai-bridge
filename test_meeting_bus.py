@@ -1,6 +1,7 @@
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import meeting_bus
 
@@ -237,6 +238,88 @@ class MeetingBusTests(unittest.TestCase):
         finally:
             meeting_bus.SOL_ENABLED = original
 
+
+    def test_oidc_rejects_wrong_repository(self):
+        claims = {
+            "repository": "someone/else",
+            "ref": "refs/heads/ops/meeting-ledger-v1",
+            "sha": "abc123",
+            "workflow_ref": "someone/else/.github/workflows/meeting-specialist-bus.yml@refs/heads/ops/meeting-ledger-v1",
+            "event_name": "push",
+            "exp": 9999999999,
+            "iat": 1,
+            "iss": meeting_bus.OIDC_ISSUER,
+            "aud": meeting_bus.OIDC_AUDIENCE,
+        }
+        with patch.object(
+            meeting_bus._jwk_client,
+            "get_signing_key_from_jwt",
+            return_value=SimpleNamespace(key="dummy"),
+        ), patch.object(meeting_bus.jwt, "decode", return_value=claims):
+            with self.assertRaises(meeting_bus.MeetingAuthError):
+                meeting_bus.verify_github_oidc(
+                    "token", {"commit_sha": "abc123", "run_id": "1"}
+                )
+
+    def test_oidc_accepts_only_exact_meeting_workflow(self):
+        workflow_ref = (
+            meeting_bus.EXPECTED_REPOSITORY
+            + "/"
+            + meeting_bus.EXPECTED_WORKFLOW_PATH
+            + "@"
+            + meeting_bus.EXPECTED_REF
+        )
+        claims = {
+            "repository": meeting_bus.EXPECTED_REPOSITORY,
+            "ref": meeting_bus.EXPECTED_REF,
+            "sha": "abc123",
+            "workflow_ref": workflow_ref,
+            "event_name": "push",
+            "exp": 9999999999,
+            "iat": 1,
+            "iss": meeting_bus.OIDC_ISSUER,
+            "aud": meeting_bus.OIDC_AUDIENCE,
+        }
+        with patch.object(
+            meeting_bus._jwk_client,
+            "get_signing_key_from_jwt",
+            return_value=SimpleNamespace(key="dummy"),
+        ), patch.object(meeting_bus.jwt, "decode", return_value=claims):
+            caller = meeting_bus.verify_github_oidc(
+                "token", {"commit_sha": "abc123", "run_id": "42"}
+            )
+        self.assertEqual(caller["repository"], meeting_bus.EXPECTED_REPOSITORY)
+        self.assertEqual(caller["ref"], meeting_bus.EXPECTED_REF)
+        self.assertEqual(caller["run_id"], "42")
+
+    def test_oidc_rejects_transport_sha_mismatch(self):
+        workflow_ref = (
+            meeting_bus.EXPECTED_REPOSITORY
+            + "/"
+            + meeting_bus.EXPECTED_WORKFLOW_PATH
+            + "@"
+            + meeting_bus.EXPECTED_REF
+        )
+        claims = {
+            "repository": meeting_bus.EXPECTED_REPOSITORY,
+            "ref": meeting_bus.EXPECTED_REF,
+            "sha": "expected-sha",
+            "workflow_ref": workflow_ref,
+            "event_name": "push",
+            "exp": 9999999999,
+            "iat": 1,
+            "iss": meeting_bus.OIDC_ISSUER,
+            "aud": meeting_bus.OIDC_AUDIENCE,
+        }
+        with patch.object(
+            meeting_bus._jwk_client,
+            "get_signing_key_from_jwt",
+            return_value=SimpleNamespace(key="dummy"),
+        ), patch.object(meeting_bus.jwt, "decode", return_value=claims):
+            with self.assertRaises(meeting_bus.MeetingAuthError):
+                meeting_bus.verify_github_oidc(
+                    "token", {"commit_sha": "different-sha", "run_id": "1"}
+                )
 
 if __name__ == "__main__":
     unittest.main()
