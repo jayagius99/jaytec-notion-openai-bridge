@@ -2,7 +2,7 @@
 
 Every Manus execution must pass the composed JAYTEC dispatch contract:
 - exact MANUS project identity;
-- explicit GitHub/Neon/Render connector binding;
+- explicit task-scoped connector binding from the GitHub/Neon/Render allowlist;
 - explicit Lite profile selection;
 - current-task authority;
 - post-dispatch observed-profile verification.
