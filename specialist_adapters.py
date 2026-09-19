@@ -18,7 +18,11 @@ from typing import Any, Callable, Mapping
 
 from openai import OpenAI, RateLimitError as OpenAIRateLimitError
 
-from orchestration import ProviderUnavailableError, RateLimitError as OrchestrationRateLimitError
+from orchestration import (
+    CreditTopupRequiredError,
+    ProviderUnavailableError,
+    RateLimitError as OrchestrationRateLimitError,
+)
 
 from circuit_breaker import CircuitBreaker
 from participant_contracts import render_actor_contract
@@ -116,6 +120,41 @@ def _status_code(exc: Exception) -> int | None:
     return value if isinstance(value, int) else None
 
 
+def _credit_exhaustion_details(exc: Exception) -> dict[str, Any] | None:
+    """Return safe diagnostics when a provider is blocked on account credits."""
+    status = _status_code(exc)
+    body = getattr(exc, "body", None)
+    error = body.get("error", {}) if isinstance(body, Mapping) else {}
+    if not isinstance(error, Mapping):
+        error = {}
+    code = str(error.get("code") or "").strip().casefold()
+    err_type = str(error.get("type") or "").strip().casefold()
+    text = " ".join(
+        [
+            type(exc).__name__,
+            str(exc),
+            str(error.get("message") or ""),
+            code,
+            err_type,
+        ]
+    ).casefold()
+    markers = (
+        "insufficient credits",
+        "not enough credits",
+        "insufficient_quota",
+        "billing_hard_limit",
+        "billing hard limit",
+        "credit balance",
+        "requires more credits",
+        "can only afford",
+        "payment required",
+    )
+    if status == 402 or code in {"insufficient_quota", "billing_hard_limit_reached"} or any(m in text for m in markers):
+        out = {"status_code": status, "error_code": code or None, "error_type": err_type or None}
+        return {k: v for k, v in out.items() if v is not None}
+    return None
+
+
 def _retry_after(exc: Exception) -> Any:
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", None)
@@ -133,6 +172,13 @@ def _normalize_provider_exception(exc: Exception, *, context: str) -> None:
     name = type(exc).__name__.lower()
     text = str(exc).lower()
     status = _status_code(exc)
+    credit = _credit_exhaustion_details(exc)
+    if credit is not None:
+        raise CreditTopupRequiredError(
+            "OpenRouter",
+            blocked_work=context,
+            details=credit,
+        ) from exc
     if "timeout" in name or "timedout" in name or "timeout" in text or "timed out" in text:
         raise TimeoutError(f"{context}_timeout") from exc
     if status == 429 or "ratelimit" in name or "rate limit" in text or "rate_limit" in text:
@@ -238,6 +284,14 @@ def build_codex_dispatch(
             )
         except OpenAIRateLimitError as exc:
             details = _safe_openai_rate_limit_details(exc)
+            code = str(details.get("error_code") or "").strip().casefold()
+            err_type = str(details.get("error_type") or "").strip().casefold()
+            if code in {"insufficient_quota", "billing_hard_limit_reached"} or err_type in {"insufficient_quota", "billing_hard_limit_reached"}:
+                raise CreditTopupRequiredError(
+                    "OpenAI",
+                    blocked_work="JAYTEC engineering specialist work",
+                    details=details,
+                ) from exc
             raise OrchestrationRateLimitError(
                 "OpenAI rate limited",
                 retry_after=details.get("retry_after"),
