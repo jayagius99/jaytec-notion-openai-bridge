@@ -32,9 +32,9 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-sol").strip()
 
 # Exact model locks (must match orchestration.EXPECTED_MODELS)
 CODEX_MODEL = os.environ.get("CODEX_MODEL", EXPECTED_CODEX_MODEL).strip()
-ENGINEERING_PROVIDER_MODE = os.environ.get("ENGINEERING_PROVIDER_MODE", "LOCKED_RESERVE").strip().upper()
-ENGINEERING_SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("ENGINEERING_SOL_OUTPUT_TOKEN_CAP", "2000"))
-ENGINEERING_SOL_MAX_PACKET_RETRIES = int(os.environ.get("ENGINEERING_SOL_MAX_PACKET_RETRIES", "1"))
+ENGINEERING_PROVIDER_MODE = os.environ.get("ENGINEERING_PROVIDER_MODE", "OPENROUTER_FREE_PRIMARY").strip().upper()
+ENGINEERING_OUTPUT_TOKEN_CAP = int(os.environ.get("ENGINEERING_OUTPUT_TOKEN_CAP", os.environ.get("ENGINEERING_SOL_OUTPUT_TOKEN_CAP", "2000")))
+ENGINEERING_MAX_PACKET_RETRIES = int(os.environ.get("ENGINEERING_MAX_PACKET_RETRIES", os.environ.get("ENGINEERING_SOL_MAX_PACKET_RETRIES", "1")))
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 
 # OpenRouter route for Gemini research (optional; disabled unless configured).
@@ -64,11 +64,11 @@ LEGACY_ORCHESTRATION_STATUS_TASK = "JAYTEC_ORCHESTRATION_STATUS"
 LEGACY_EXECUTE_TASK_PACKET_PREFIX = "JAYTEC_EXECUTE_TASK_PACKET_JSON:"
 
 def engineering_dispatch_kwargs() -> Dict[str, Any]:
-    """Single source of truth for bounded Sol adapter construction."""
+    """Single source of truth for the zero-cost primary engineering adapter."""
     return {
         "provider_mode": ENGINEERING_PROVIDER_MODE,
-        "max_output_tokens": ENGINEERING_SOL_OUTPUT_TOKEN_CAP,
-        "max_packet_retries": ENGINEERING_SOL_MAX_PACKET_RETRIES,
+        "max_output_tokens": ENGINEERING_OUTPUT_TOKEN_CAP,
+        "max_packet_retries": ENGINEERING_MAX_PACKET_RETRIES,
     }
 
 
@@ -78,8 +78,8 @@ def _require_startup_prereqs() -> None:
         raise RuntimeError(
             "MCP_AUTH_TOKEN is not set. Refusing to start an unauthenticated remote MCP server."
         )
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY is not set.")
+    if not OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY is not set; primary engineering and Gemini routes are unavailable.")
 
     # Fail closed: production requires durable idempotency.
     if RUNTIME_MODE == "production":
@@ -109,7 +109,8 @@ def compute_production_ready(
     - durable idempotency store is 'postgres'
     - exact specialist model identities match the required locks
     - MCP auth + provider startup prerequisites are satisfied
-    - Gemini production adapter is actually configured (OPENROUTER_API_KEY present)
+    - OpenRouter is configured for both primary engineering and Gemini
+    - OpenAI API is optional premium reserve only
 
     NOTE: Startup may still be allowed in some partially-configured states; this flag
     is strictly about readiness, not liveness.
@@ -123,8 +124,6 @@ def compute_production_ready(
     if gemini_model != EXPECTED_GEMINI_MODEL:
         return False
     if not mcp_auth_token_present:
-        return False
-    if not openai_api_key_present:
         return False
     if not openrouter_api_key_present:
         return False
@@ -331,7 +330,9 @@ Rules:
 
 
 
-def _call_openai(client: OpenAI, model: str, task: str) -> str:
+def _call_openai(client: Optional[OpenAI], model: str, task: str) -> str:
+    if client is None:
+        raise RuntimeError("OPENAI_API_KEY is not configured; premium OpenAI reserve is unavailable.")
     last_exc: Optional[Exception] = None
     for attempt in range(0, max(1, OPENAI_MAX_RETRIES + 1)):
         try:
@@ -368,7 +369,7 @@ def create_mcp_app() -> FastMCP:
     )
     mcp = FastMCP("JAYTEC OpenAI Engineering Bridge", auth=auth)
 
-    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
     openrouter_client = (
         OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
         if OPENROUTER_API_KEY
@@ -408,12 +409,17 @@ def create_mcp_app() -> FastMCP:
         reset_after_seconds=CIRCUIT_RESET_SECONDS,
     )
 
-    codex_dispatch = build_codex_dispatch(
-        openai_client=openai_client,
-        codex_model=CODEX_MODEL,
-        circuit=codex_circuit,
-        **engineering_dispatch_kwargs(),
-    )
+    if openrouter_client is not None:
+        codex_dispatch = build_codex_dispatch(
+            openai_client=openrouter_client,
+            codex_model=CODEX_MODEL,
+            circuit=codex_circuit,
+            **engineering_dispatch_kwargs(),
+        )
+    else:
+        codex_dispatch = codex_circuit.guard(
+            lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
+        )
 
     if openrouter_client is not None:
         gemini_dispatch = build_gemini_dispatch(
@@ -469,7 +475,12 @@ def create_mcp_app() -> FastMCP:
 
     @mcp.tool
     def bridge_status() -> str:
-        return f"JAYTEC Notion/OpenAI bridge is online. OpenAI model: {OPENAI_MODEL}"
+        return (
+            "JAYTEC bridge is online. "
+            f"Primary engineering model: {CODEX_MODEL} via OpenRouter. "
+            f"Gemini reviewer: {GEMINI_MODEL}. "
+            f"OpenAI premium reserve configured: {bool(OPENAI_API_KEY)}"
+        )
 
     # ---------------- Unified orchestration surface ----------------
 
