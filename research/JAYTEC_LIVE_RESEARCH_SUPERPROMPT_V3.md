@@ -238,6 +238,21 @@ Every classification requires:
 - last-known verification state;
 - whether evidence is code-only, test-only, staging-live, or production-live.
 
+MANDATORY VERIFIED-STATE CITATION RULE:
+
+Every ALREADY_EXISTS_VERIFIED claim MUST identify the exact current source that
+supports it:
+- repository/file path;
+- class/function/constant/heading or other precise symbol/reference;
+- evidence tier;
+- runtime/test/deploy reference where applicable;
+- source digest or version/commit when available;
+- line/range when the retrieval system exposes reliable line numbers.
+
+"JAYTEC already has this" without a precise current reference is NOT a verified
+classification. If the evidence cannot be located, classify
+UNKNOWN_EVIDENCE_REQUIRED rather than filling the gap from memory.
+
 ======================================================================
 4. CURRENT RESEARCH NOTES TO VERIFY
 ======================================================================
@@ -391,6 +406,21 @@ Manus may NOT:
 Manus owns/evolves Manus-specific workflows, prompts, automation methods,
 procedures, evaluations and organization that exposed tools legitimately allow.
 
+THE INJECTED JAYTEC GOVERNANCE PACKET IS NOT PART OF MANUS'S SELF-MODIFIABLE
+HOUSE.
+
+Manus may not rewrite, bypass, weaken, replace, reinterpret, shadow, locally
+override, or persist a competing version of:
+- its injected JAYTEC role contract;
+- JAYTEC_MANUS_GOVERNANCE;
+- the relationship/authority policy;
+- profile/cost policy;
+- current task authority envelope;
+- connector restrictions.
+
+Manus may PROPOSE governance changes back to JAYTEC. It may not make the
+proposal effective itself.
+
 Manus does NOT own/evolve JAYTEC core, JAYTEC policy, global routing, authority,
 checkpoints, provider rules or shared canonical state.
 
@@ -448,6 +478,18 @@ Research whether authority envelopes should contain:
 
 Define how revocation propagates to already-running workers.
 
+POLICY-GATE CROSS-MAPPING REQUIREMENT:
+
+For every proposed authority/routing rule, map it against BOTH:
+1. the relationship topology (currently represented by
+   relationship_policy.py Actor/Purpose edges); AND
+2. the composed dispatch/provider gate (currently represented by
+   manus_dispatch_contract.py plus provider/profile/governance checks).
+
+A rule is not considered enforced merely because one layer documents it.
+Research where the same invariant must be checked pre-dispatch, at the
+side-effect gateway, and post-execution.
+
 ======================================================================
 8. MANUS PROFILE / COST RULE
 ======================================================================
@@ -478,6 +520,16 @@ Research a unified COST / USAGE contract that distinguishes:
 - hard billing ceiling;
 - soft budget;
 - provider availability.
+
+ERROR-TO-COST CLASSIFICATION MUST BE PROVIDER/PROFILE AWARE.
+
+Do not map every provider word such as "credits" to CREDIT_TOPUP_REQUIRED.
+Specifically research how:
+- a paid-service insufficient-balance error maps to the explicit
+  CREDIT_TOPUP_REQUIRED path;
+- a verified Manus Lite quota/availability error remains a free-profile
+  availability/quota blocker unless billing evidence proves otherwise;
+- ambiguous billing state fails closed without instructing Jay to spend money.
 
 ======================================================================
 9. OWNERSHIP CLASSIFICATION
@@ -572,6 +624,11 @@ Maintain a DO-NOT-DUPLICATE REGISTER with:
 - aliases/old names;
 - forbidden duplicate form.
 
+For relationship/routing proposals specifically, compare the proposal against
+the current Actor/Purpose relationship graph and current dispatch gates before
+creating a new abstraction. Do not create a second policy engine merely to
+express an invariant that the existing graph/dispatch contract should own.
+
 ======================================================================
 11. DURABLE EXECUTION / DISTRIBUTED-SYSTEMS RESEARCH
 ======================================================================
@@ -607,6 +664,25 @@ COMPLETED
 FAILED_CLOSED
 
 Determine whether this or another state model is preferable.
+
+CURRENT IDEMPOTENCY IMPLEMENTATION RESEARCH NOTE:
+
+The current Postgres idempotency implementation uses a deterministic CRC32-based
+transaction advisory-lock identifier. Research whether the effective lock
+collision domain is acceptable for JAYTEC's expected scale and failure model,
+or whether a wider lock key, row-lock strategy, namespaced key, or alternative
+serialization primitive is preferable.
+
+Explicitly test:
+- two identical concurrent requests;
+- same idempotency key + different packet hash;
+- advisory-lock hash collision between unrelated keys;
+- process death while holding a transaction lock;
+- TTL expiry during concurrent replay;
+- retry after unknown side effect;
+- database reconnect/retry behavior.
+
+Do not change the implementation during this research assignment.
 
 ======================================================================
 12. EXECUTION OWNERSHIP / LEASE / FENCING RESEARCH
@@ -1136,6 +1212,25 @@ Background runtime continues separately.
 Every new JAYTEC-related ChatGPT execution should recover current canonical
 JAYTEC state before making structural decisions.
 
+DEFINE THE RECOVERY PROTOCOL PRECISELY.
+
+Do not rely on "ChatGPT remembers." Research a machine-readable state-recovery
+contract that can answer at minimum:
+- canonical_state_version;
+- latest authoritative checkpoint/reference;
+- active assignment IDs;
+- active ownership/lease holders;
+- fencing/ownership epochs;
+- unresolved blockers;
+- cost/top-up blockers;
+- pending owner/ChatGPT escalations;
+- current provider/policy versions;
+- latest validated evidence;
+- resumable work cursor.
+
+Specify freshness/version checks and what happens if recovery data is stale,
+partial, contradictory, or unavailable.
+
 Multiple chats are clients of JAYTEC state, not independent JAYTEC instances.
 
 A chat encountering active ownership of the same scope should fail closed,
@@ -1477,9 +1572,43 @@ Return one integrated architecture package containing:
 47. FUTURE IMPLEMENTATION RELEASE CHECKLIST
 48. OPEN QUESTIONS / EVIDENCE NEEDED
 
+OUTPUT PACKAGING / CONTINUATION PROTOCOL:
+
+The 48-item package MUST NOT be silently compressed, dropped, or marked complete
+because of an output-window limit.
+
+The coordinator may split the package into ordered research volumes, for
+example:
+VOLUME A — current state / evidence / ownership
+VOLUME B — durable runtime / authority / recovery
+VOLUME C — specialists / security / cost / observability
+VOLUME D — certification / roadmap / release checklist
+
+Every volume must include:
+- PACKAGE_ID;
+- PACKAGE_VERSION;
+- completed section numbers;
+- omitted/not-yet-produced section numbers;
+- unresolved evidence requests;
+- continuation cursor / NEXT_SECTION;
+- statement COMPLETE=false until all required sections are delivered.
+
+If space is insufficient:
+return PARTIAL_PACKAGE and continue later.
+Never fabricate consensus or mark the package complete to fit the response.
+
 ======================================================================
-37. PHASED PLAN REQUIREMENT
+37. PHASED IMPLEMENTATION ROADMAP — FOR FUTURE EXECUTION ONLY
 ======================================================================
+
+WARNING: PRODUCING THIS ROADMAP DOES NOT AUTHORIZE STARTING PHASE 1.
+
+Do not use tools, write code, create branches, modify files, deploy, merge,
+schedule, spend, or mutate any system merely because the roadmap contains an
+ordered first step.
+
+The roadmap is a design artifact only and becomes executable only after a later
+separate current JAYTEC:EXECUTE authority passes all applicable gates.
 
 Work forward from CURRENT JAYTEC state.
 
@@ -1561,7 +1690,14 @@ ask Notion Agent to research/solve
 claim MANUS HOME is globally authoritative
 claim JAYTEC is LIVE
 claim a capability exists without evidence
-convert research consensus into execution authority.
+convert research consensus into execution authority
+use the phased roadmap as implied permission to start Phase 1
+use a tool call to "validate by implementing"
+create commits/branches/files as part of target implementation
+treat generated pseudocode/schema examples as deployed implementation.
+
+Design-only pseudocode, schemas and test-case examples are permitted when they
+clarify the research output, but they must remain inert text/artifacts.
 
 Research/review/compare/model/classify/plan only.
 
@@ -1571,6 +1707,8 @@ Research/review/compare/model/classify/plan only.
 
 This assignment is complete only when:
 
+- all required package sections were delivered or explicitly marked pending;
+- COMPLETE=true is not emitted while any required section is silently omitted;
 - current authoritative JAYTEC state was inspected;
 - evidence quality/staleness was recorded;
 - existing work was protected from duplication;
@@ -1625,3 +1763,20 @@ SPECIALISTS / RESOURCES
 If a proposed architecture weakens this hierarchy, creates a competing source
 of truth, relies on conversational claims instead of durable evidence, or makes
 a provider/tool into an authority merely because it is capable, reject it.
+
+FINAL ENFORCEMENT CHECK BEFORE RETURNING THE RESEARCH PACKAGE:
+
+Verify and explicitly state:
+- hierarchy_preserved = true;
+- research_only_boundary_preserved = true;
+- no_target_implementation_performed = true;
+- no_provider_change_performed = true;
+- no_billing_or_permission_change_performed = true;
+- every ALREADY_EXISTS_VERIFIED item has a precise source reference;
+- relationship/dispatch rules were cross-mapped;
+- Manus governance remained outside Manus self-modification authority;
+- package completeness/continuation status is explicit;
+- roadmap_not_execution_authority = true.
+
+If any field cannot truthfully be true, return NEEDS_VALIDATION / PARTIAL_PACKAGE
+with the exact unresolved item instead of claiming completion.
