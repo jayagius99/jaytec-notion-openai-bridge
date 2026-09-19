@@ -1,3 +1,4 @@
+import json
 import re
 import unittest
 from pathlib import Path
@@ -56,6 +57,54 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
         self.assertIn("Future specialist registration gate", text)
         self.assertIn("Missing any item = specialist registration fails closed", text)
 
+
+    def test_role_registry_keeps_capabilities_distinct(self):
+        registry = json.loads(
+            Path("SPECIALIST_ROLE_REGISTRY_V1.json").read_text(encoding="utf-8")
+        )
+        specialists = registry["specialists"]
+        sol = specialists["sol"]
+        gemini = specialists["gemini"]
+        manus = specialists["manus"]
+        self.assertIn("coding", sol["allowed_task_classes"])
+        self.assertNotIn("coding", gemini["allowed_task_classes"])
+        self.assertIn("engineering_write", gemini["prohibited_task_classes"])
+        self.assertNotIn("coding", manus["allowed_task_classes"])
+        self.assertFalse(
+            registry["future_specialist_requirements"][
+                "may_inherit_other_specialist_capabilities"
+            ]
+        )
+        for specialist in specialists.values():
+            self.assertFalse(specialist["can_authorize_jaytec_change"])
+            self.assertFalse(specialist["can_self_initiate"])
+
+    def test_gemini_runtime_rejects_engineering_write_role(self):
+        class NoCallCompletions:
+            def create(self, **kwargs):
+                raise AssertionError("Gemini provider must not be called")
+
+        fake_client = type(
+            "FakeClient",
+            (),
+            {"chat": type("FakeChat", (), {"completions": NoCallCompletions()})()},
+        )()
+        from circuit_breaker import CircuitBreaker
+        dispatch = specialist_adapters.build_gemini_dispatch(
+            openrouter_client=fake_client,
+            gemini_model=specialist_adapters.EXPECTED_GEMINI_MODEL,
+            gemini_timeout_s=5,
+            circuit=CircuitBreaker(failure_threshold=3, reset_after_seconds=60),
+        )
+        with self.assertRaisesRegex(RuntimeError, "gemini_role_task_not_authorized"):
+            dispatch(
+                {
+                    "task_id": "t",
+                    "subtask_id": "s",
+                    "allowed_operations": ["code_staging"],
+                    "max_retries": 0,
+                }
+            )
 
 if __name__ == "__main__":
     unittest.main()
