@@ -29,6 +29,7 @@ EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
 # Semantically it now means the JAYTEC engineering specialist role.
 EXPECTED_CODEX_MODEL = EXPECTED_ENGINEERING_MODEL
 EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
+GEMINI_MAX_OUTPUT_TOKENS = 4096
 ENGINEERING_PROVIDER_ACTIVE = "ACTIVE"
 ENGINEERING_PROVIDER_LOCKED_RESERVE = "LOCKED_RESERVE"
 
@@ -220,6 +221,7 @@ def build_gemini_dispatch(
             model=gemini_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
+            max_tokens=GEMINI_MAX_OUTPUT_TOKENS,
             timeout=gemini_timeout_s,
             stream=False,
             extra_body={
