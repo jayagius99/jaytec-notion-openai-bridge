@@ -9,6 +9,7 @@ from starlette.middleware import Middleware
 
 import reliable_server
 import server as legacy_server
+from meeting_bus import MeetingBusMiddleware
 
 
 COMPAT_RUNTIME_ID = "JAYTEC_RELIABILITY_LEGACY_CATALOG_COMPAT_V2"
@@ -334,7 +335,10 @@ def create_http_app(mcp=None):
     """Wrap the reliable HTTP app while preserving production transport settings."""
     server = mcp or create_mcp_app()
     return server.http_app(
-        middleware=[Middleware(LegacyCatalogCompatMiddleware)],
+        middleware=[
+            Middleware(MeetingBusMiddleware),
+            Middleware(LegacyCatalogCompatMiddleware),
+        ],
         stateless_http=True,
         host_origin_protection=False,
     )
