@@ -109,10 +109,13 @@ def authorize_relationship(
     destination: str | Actor,
     purpose: str | Purpose,
     current_task_authorized: bool = False,
+    connector_mutation_authorized: bool = False,
     jay_authorized_notion_via_chatgpt: bool = False,
 ) -> EdgeRule:
     if type(current_task_authorized) is not bool:
         raise RelationshipPolicyError("RELATIONSHIP_CURRENT_AUTH_INVALID")
+    if type(connector_mutation_authorized) is not bool:
+        raise RelationshipPolicyError("RELATIONSHIP_MUTATION_AUTH_INVALID")
     if type(jay_authorized_notion_via_chatgpt) is not bool:
         raise RelationshipPolicyError("RELATIONSHIP_NOTION_AUTH_INVALID")
 
@@ -131,12 +134,20 @@ def authorize_relationship(
             f"RELATIONSHIP_PURPOSE_BLOCKED:{src}->{dst}:{use}"
         )
 
-    # Connector reads are part of the delegated task, but mutations are never
-    # implied by connector presence and always require fresh current authority.
-    needs_current = rule.requires_current_authority or (
-        src is Actor.MANUS and dst in {Actor.GITHUB, Actor.NEON, Actor.RENDER} and use in MUTATING
+    # Connector reads are part of a delegated task. Mutations are a separate
+    # authority class and are never implied by connector presence or ordinary
+    # task authorization.
+    is_connector_mutation = (
+        src is Actor.MANUS
+        and dst in {Actor.GITHUB, Actor.NEON, Actor.RENDER}
+        and use in MUTATING
     )
-    if needs_current and not current_task_authorized:
+    if is_connector_mutation:
+        if not current_task_authorized or not connector_mutation_authorized:
+            raise RelationshipPolicyError(
+                "RELATIONSHIP_CONNECTOR_MUTATION_AUTH_REQUIRED"
+            )
+    elif rule.requires_current_authority and not current_task_authorized:
         raise RelationshipPolicyError("RELATIONSHIP_CURRENT_AUTH_REQUIRED")
 
     if rule.requires_jay_via_chatgpt_for_notion and not jay_authorized_notion_via_chatgpt:
