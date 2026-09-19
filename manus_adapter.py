@@ -30,7 +30,7 @@ from manus_dispatch_contract import (
 from manus_governance import AuthoritySource, ManusScope, render_directive
 from manus_policy import ManusProfilePolicyError, verify_manus_profile
 from participant_contracts import render_actor_contract
-from relationship_policy import Actor, Purpose, authorize_relationship
+from relationship_policy import Actor, MUTATING, Purpose, authorize_relationship
 
 MANUS_BASE_URL = os.environ.get("MANUS_BASE_URL", "https://api.manus.ai/v2").rstrip("/")
 MANUS_API_KEY = os.environ.get("MANUS_API_KEY", "").strip()
@@ -56,7 +56,11 @@ class ManusError(RuntimeError):
 
 
 class ManusInsufficientCredits(ManusError):
-    """Fail-closed signal: stop Manus work/mutation calls until credits recover."""
+    """Vendor quota/usage signal.
+
+    Manus Lite is treated by JAYTEC as a free profile. Callers must not convert
+    this API signal into a monetary top-up instruction for Lite.
+    """
 
 
 @dataclass(frozen=True)
@@ -291,8 +295,11 @@ class ManusClient:
         current_task_authorized: bool,
         requested_profile: str = "lite",
         requested_connector_purposes: Mapping[str, str | Purpose] | None = None,
+        connector_mutation_authorized: bool = False,
         notion_authorized_by_jay_via_chatgpt: bool = False,
     ) -> BoundManusRoute:
+        if type(connector_mutation_authorized) is not bool:
+            raise ManusError("MANUS_CONNECTOR_MUTATION_AUTH_FLAG_INVALID")
         project_id, project_name = self.resolve_manus_project()
         requested = dict(requested_connector_purposes or {})
         canonical_purposes: list[tuple[str, str]] = []
@@ -309,11 +316,28 @@ class ManusClient:
                 purpose = raw_purpose if isinstance(raw_purpose, Purpose) else Purpose(str(raw_purpose).strip().casefold())
             except ValueError as exc:
                 raise ManusError("MANUS_CONNECTOR_PURPOSE_INVALID") from exc
+            if purpose in MUTATING:
+                source_value = (
+                    authority_source.value
+                    if isinstance(authority_source, AuthoritySource)
+                    else str(authority_source).strip().casefold()
+                )
+                if (
+                    not connector_mutation_authorized
+                    or source_value not in {
+                        AuthoritySource.JAY.value,
+                        AuthoritySource.CHATGPT.value,
+                    }
+                ):
+                    raise ManusError("MANUS_CONNECTOR_MUTATION_AUTH_REQUIRED")
             authorize_relationship(
                 source=Actor.MANUS,
                 destination=actor_for[key],
                 purpose=purpose,
-                current_task_authorized=current_task_authorized,
+                current_task_authorized=(
+                    current_task_authorized
+                    and (purpose not in MUTATING or connector_mutation_authorized)
+                ),
             )
             canonical_purposes.append((key, purpose.value))
 
