@@ -85,7 +85,7 @@ class RelationshipPolicyTests(unittest.TestCase):
             jay_authorized_notion_via_chatgpt=True,
         )
 
-    def test_connector_read_is_allowed_but_mutation_requires_current_authority(self):
+    def test_connector_read_is_allowed_but_mutation_requires_separate_authority(self):
         for destination in (Actor.GITHUB, Actor.NEON, Actor.RENDER):
             authorize_relationship(
                 source=Actor.MANUS,
@@ -93,18 +93,33 @@ class RelationshipPolicyTests(unittest.TestCase):
                 purpose=Purpose.INSPECT,
             )
             with self.assertRaisesRegex(
-                RelationshipPolicyError, "RELATIONSHIP_CURRENT_AUTH_REQUIRED"
+                RelationshipPolicyError,
+                "RELATIONSHIP_CONNECTOR_MUTATION_AUTH_REQUIRED",
             ):
                 authorize_relationship(
                     source=Actor.MANUS,
                     destination=destination,
                     purpose=Purpose.WRITE,
+                    current_task_authorized=True,
                 )
             authorize_relationship(
                 source=Actor.MANUS,
                 destination=destination,
                 purpose=Purpose.WRITE,
                 current_task_authorized=True,
+                connector_mutation_authorized=True,
+            )
+
+    def test_mutation_authority_flag_is_strict_boolean(self):
+        with self.assertRaisesRegex(
+            RelationshipPolicyError, "RELATIONSHIP_MUTATION_AUTH_INVALID"
+        ):
+            authorize_relationship(
+                source=Actor.MANUS,
+                destination=Actor.GITHUB,
+                purpose=Purpose.WRITE,
+                current_task_authorized=True,
+                connector_mutation_authorized=1,
             )
 
     def test_no_connector_to_connector_edges(self):
