@@ -238,9 +238,13 @@ def main() -> int:
     client: ManusClient | None = None
     try:
         client = ManusClient()
-        approved_names, _approved_ids = client.resolve_approved_connector_ids(
-            ["github", "neon", "render"]
-        )
+        connector_body = client.list_connectors()
+        connector_rows = connector_body.get("data") if isinstance(connector_body.get("data"), list) else []
+        api_visible_connector_names = sorted({
+            str(row.get("name") or "").strip()
+            for row in connector_rows
+            if isinstance(row, Mapping) and str(row.get("name") or "").strip()
+        })
         route = client.prepare_route(
             scope="jaytec_delegated_task",
             authority_source="chatgpt",
@@ -258,7 +262,8 @@ def main() -> int:
         output["task_id"] = task_id
         output["requested_profile"] = "lite"
         output["project_id"] = route.authorization.project_id
-        output["approved_connector_capabilities"] = list(approved_names)
+        output["policy_connector_allowlist"] = ["github", "neon", "render"]
+        output["api_visible_connector_names"] = api_visible_connector_names
         output["task_connector_names"] = list(route.authorization.connectors)
 
         detail = _wait_until_stopped(client, route, task_id)
