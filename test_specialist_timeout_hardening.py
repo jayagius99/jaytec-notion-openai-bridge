@@ -16,7 +16,7 @@ class FakeProviderError(RuntimeError):
         self.status_code = status_code
 
 
-class FakeCodexResponses:
+class FakeEngineeringCompletions:
     def __init__(self, exc=None):
         self.timeout = None
         self.exc = exc or FakeProviderError("request timed out")
@@ -26,9 +26,9 @@ class FakeCodexResponses:
         raise self.exc
 
 
-class FakeCodexClient:
+class FakeEngineeringClient:
     def __init__(self, exc=None):
-        self.responses = FakeCodexResponses(exc)
+        self.chat = FakeChat(exc)
 
 
 class FakeCompletions:
@@ -66,17 +66,17 @@ def sol_packet():
 
 class TestSpecialistTimeoutHardening(unittest.TestCase):
     def test_codex_timeout_is_bounded_and_normalized(self):
-        client = FakeCodexClient()
+        client = FakeEngineeringClient()
         dispatch = build_codex_dispatch(
             openai_client=client,
             codex_model=EXPECTED_CODEX_MODEL,
             circuit=CircuitBreaker(failure_threshold=3, reset_after_seconds=60),
             codex_timeout_s=7.5,
-            provider_mode="BOUNDED_SOL_ONLY",
+            provider_mode="OPENROUTER_FREE_PRIMARY",
         )
         with self.assertRaises(TimeoutError):
             dispatch(sol_packet())
-        self.assertEqual(client.responses.timeout, 7.5)
+        self.assertEqual(client.chat.completions.timeout, 7.5)
 
     def test_gemini_timeout_is_bounded_and_normalized(self):
         client = FakeGeminiClient()
@@ -98,13 +98,13 @@ class TestSpecialistTimeoutHardening(unittest.TestCase):
         self.assertEqual(client.chat.completions.timeout, 8.5)
 
     def test_429_is_normalized_to_jaytec_rate_limit(self):
-        client = FakeCodexClient(FakeProviderError("too many requests", status_code=429))
+        client = FakeEngineeringClient(FakeProviderError("too many requests", status_code=429))
         dispatch = build_codex_dispatch(
             openai_client=client,
             codex_model=EXPECTED_CODEX_MODEL,
             circuit=CircuitBreaker(failure_threshold=3, reset_after_seconds=60),
             codex_timeout_s=5,
-            provider_mode="BOUNDED_SOL_ONLY",
+            provider_mode="OPENROUTER_FREE_PRIMARY",
         )
         with self.assertRaises(RateLimitError):
             dispatch(sol_packet())
