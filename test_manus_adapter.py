@@ -197,19 +197,58 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertEqual(route.authorization.connectors, ())
         connector_list.assert_not_called()
 
-    def test_connector_mutation_requires_current_authority(self):
+    def test_connector_mutation_requires_separate_current_authority(self):
         client = ma.ManusClient(api_key="x")
-        with mock.patch.object(
+        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
             client, "resolve_manus_project", return_value=("project-manus", "MANUS")
         ):
-            with self.assertRaises(Exception):
+            with self.assertRaisesRegex(
+                ma.ManusError, "MANUS_CONNECTOR_MUTATION_AUTH_REQUIRED"
+            ):
                 client.prepare_route(
-                    scope="manus_internal",
-                    authority_source="manus",
-                    current_task_authorized=False,
+                    scope="jaytec_delegated_task",
+                    authority_source="chatgpt",
+                    current_task_authorized=True,
                     requested_profile="lite",
                     requested_connector_purposes={"github": "write"},
                 )
+
+    def test_connector_mutation_cannot_be_authorized_by_jaytec_itself(self):
+        client = ma.ManusClient(api_key="x")
+        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
+            client, "resolve_manus_project", return_value=("project-manus", "MANUS")
+        ):
+            with self.assertRaisesRegex(
+                ma.ManusError, "MANUS_CONNECTOR_MUTATION_AUTH_REQUIRED"
+            ):
+                client.prepare_route(
+                    scope="jaytec_delegated_task",
+                    authority_source="jaytec",
+                    current_task_authorized=True,
+                    connector_mutation_authorized=True,
+                    requested_profile="lite",
+                    requested_connector_purposes={"github": "write"},
+                )
+
+    def test_connector_mutation_with_fresh_chatgpt_authority_is_allowed(self):
+        client = ma.ManusClient(api_key="x")
+        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
+            client, "resolve_manus_project", return_value=("project-manus", "MANUS")
+        ), mock.patch.object(
+            client,
+            "resolve_approved_connector_ids",
+            return_value=(("github",), ("gh",)),
+        ):
+            route = client.prepare_route(
+                scope="jaytec_delegated_task",
+                authority_source="chatgpt",
+                current_task_authorized=True,
+                connector_mutation_authorized=True,
+                requested_profile="lite",
+                requested_connector_purposes={"github": "write"},
+            )
+        self.assertEqual(route.connector_permissions, (("github", "write"),))
+        self.assertEqual(route.connector_ids, ("gh",))
 
     def test_prepare_route_cannot_select_paid_profile(self):
         client = ma.ManusClient(api_key="x")
