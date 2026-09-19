@@ -72,10 +72,14 @@ Normal direct Manus connectors are limited to:
 - Neon
 - Render
 
-Unknown direct connectors fail closed. Connector presence is not permission to
-mutate. Read/inspect/diagnose/test/report is the normal posture. Writes,
-deploys, deletes, migrations, destructive operations, credential changes,
-production changes, and external spend require current explicit authority.
+Unknown direct connectors fail closed. The allowlist is a capability ceiling,
+not a default grant: every task receives only the minimum explicit connector
+subset it needs, and the default connector scope is NONE. Project/user default
+connectors must never be treated as JAYTEC authority. Connector presence is not
+permission to mutate. Read/inspect/diagnose/test/report is allowed only inside
+the task's explicit connector scope. Writes, deploys, deletes, migrations,
+destructive operations, credential changes, production changes, and external
+spend require current explicit authority.
 
 ## Cost/profile rule
 
