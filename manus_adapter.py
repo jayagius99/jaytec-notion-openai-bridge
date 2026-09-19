@@ -1,8 +1,13 @@
-"""STAGING ONLY: bounded Manus API v2 adapter for the JAYTEC control door.
+"""STAGING ONLY: bounded Manus API v2 adapter for JAYTEC.
 
-Secrets remain server-side. This module never returns or logs MANUS_API_KEY.
-Mutating methods require explicit callers and fail closed when Manus reports
-insufficient credits. The paid OpenAI engineering reserve is not used here.
+Every Manus execution must pass the composed JAYTEC dispatch contract:
+- exact MANUS project identity;
+- explicit GitHub/Neon/Render connector binding;
+- explicit Lite profile selection;
+- current-task authority;
+- post-dispatch observed-profile verification.
+
+No implicit project/user connector inheritance is allowed.
 """
 from __future__ import annotations
 
@@ -14,7 +19,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
+
+from manus_dispatch_contract import (
+    ManusDispatchAuthorization,
+    ManusDispatchContractError,
+    authorize_manus_dispatch,
+)
+from manus_governance import AuthoritySource, ManusScope
+from manus_policy import ManusProfilePolicyError, verify_manus_profile
 
 MANUS_BASE_URL = os.environ.get("MANUS_BASE_URL", "https://api.manus.ai/v2").rstrip("/")
 MANUS_API_KEY = os.environ.get("MANUS_API_KEY", "").strip()
@@ -22,6 +35,17 @@ MANUS_TIMEOUT_S = float(os.environ.get("MANUS_TIMEOUT_S", "20"))
 MANUS_MAX_RETRIES = min(max(int(os.environ.get("MANUS_MAX_RETRIES", "1")), 0), 3)
 MANUS_MAX_RESPONSE_BYTES = min(max(int(os.environ.get("MANUS_MAX_RESPONSE_BYTES", "1048576")), 4096), 4 * 1024 * 1024)
 MANUS_MAX_MESSAGE_CHARS = min(max(int(os.environ.get("MANUS_MAX_MESSAGE_CHARS", "12000")), 1), 50000)
+JAYTEC_MANUS_PROJECT_ID = os.environ.get("JAYTEC_MANUS_PROJECT_ID", "").strip()
+
+APPROVED_CONNECTOR_KEYS = ("github", "neon", "render")
+_CONNECTOR_ALIASES = {
+    "github": "github",
+    "github connect": "github",
+    "neon": "neon",
+    "neon connect": "neon",
+    "render": "render",
+    "render connect": "render",
+}
 
 
 class ManusError(RuntimeError):
@@ -41,6 +65,12 @@ class ManusResponse:
     credit_usage: float | int | None = None
 
 
+@dataclass(frozen=True)
+class BoundManusRoute:
+    authorization: ManusDispatchAuthorization
+    connector_ids: tuple[str, ...]
+
+
 def _error_code(parsed: Mapping[str, Any]) -> str | None:
     error = parsed.get("error")
     if isinstance(error, Mapping) and error.get("code") is not None:
@@ -51,7 +81,7 @@ def _error_code(parsed: Mapping[str, Any]) -> str | None:
 
 
 def _credit_usage(parsed: Mapping[str, Any]) -> float | int | None:
-    for candidate in (parsed, parsed.get("data")):
+    for candidate in (parsed, parsed.get("data"), parsed.get("task")):
         if isinstance(candidate, Mapping):
             value = candidate.get("credit_usage")
             if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -64,6 +94,22 @@ def _is_credit_failure(parsed: Mapping[str, Any]) -> bool:
         return True
     text = json.dumps(parsed, ensure_ascii=False).lower()
     return "not enough credits" in text or "insufficient credits" in text
+
+
+def _rows(body: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    value = body.get("data")
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, Mapping)]
+
+
+def _task(body: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = body.get("task")
+    return value if isinstance(value, Mapping) else {}
+
+
+def _normalize_connector_name(value: Any) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
 
 
 class ManusClient:
@@ -94,13 +140,25 @@ class ManusClient:
                 pass
         return min(5.0, 0.5 * (2 ** attempt)) + random.uniform(0.0, 0.25)
 
-    def _request(self, method: str, endpoint: str, *, params: Mapping[str, Any] | None = None, payload: Mapping[str, Any] | None = None) -> ManusResponse:
+    def _request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        payload: Mapping[str, Any] | None = None,
+    ) -> ManusResponse:
         query = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None})
         url = f"{self._base_url}/{endpoint}" + (f"?{query}" if query else "")
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
-        headers = {"Accept": "application/json", "x-manus-api-key": self._api_key, "User-Agent": "JAYTEC-Manus-Door/1"}
+        headers = {
+            "Accept": "application/json",
+            "x-manus-api-key": self._api_key,
+            "User-Agent": "JAYTEC-Manus-Door/2",
+        }
         if body is not None:
             headers["Content-Type"] = "application/json"
+
         attempts = MANUS_MAX_RETRIES + 1
         last: Exception | None = None
         for attempt in range(attempts):
@@ -144,6 +202,9 @@ class ManusClient:
     def list_projects(self) -> Mapping[str, Any]:
         return self._request("GET", "project.list").body
 
+    def list_connectors(self) -> Mapping[str, Any]:
+        return self._request("GET", "connector.list").body
+
     def list_tasks(self, *, project_id: str | None = None, limit: int = 100) -> Mapping[str, Any]:
         params: dict[str, Any] = {"limit": min(max(limit, 1), 100), "order": "desc"}
         if project_id:
@@ -154,18 +215,176 @@ class ManusClient:
         return self._request("GET", "task.detail", params={"task_id": task_id}).body
 
     def list_messages(self, task_id: str, *, limit: int = 50) -> Mapping[str, Any]:
-        return self._request("GET", "task.listMessages", params={"task_id": task_id, "order": "desc", "limit": min(max(limit, 1), 200)}).body
+        return self._request(
+            "GET",
+            "task.listMessages",
+            params={"task_id": task_id, "order": "desc", "limit": min(max(limit, 1), 200)},
+        ).body
 
-    def send_message(self, task_id: str, content: str) -> Mapping[str, Any]:
+    def stop_task(self, task_id: str) -> Mapping[str, Any]:
+        return self._request("POST", "task.stop", payload={"task_id": task_id}).body
+
+    def resolve_manus_project(self) -> tuple[str, str]:
+        matches = [
+            row for row in _rows(self.list_projects())
+            if str(row.get("name") or "").strip().casefold() == "manus"
+        ]
+        if len(matches) != 1:
+            raise ManusError(
+                "MANUS_PROJECT_NOT_FOUND" if not matches else "MANUS_PROJECT_AMBIGUOUS"
+            )
+        project_id = str(matches[0].get("id") or "").strip()
+        if not project_id:
+            raise ManusError("MANUS_PROJECT_ID_MISSING")
+        if JAYTEC_MANUS_PROJECT_ID and project_id != JAYTEC_MANUS_PROJECT_ID:
+            raise ManusError("MANUS_PROJECT_ID_MISMATCH")
+        return project_id, str(matches[0].get("name") or "")
+
+    def resolve_approved_connector_ids(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        by_key: dict[str, list[str]] = {key: [] for key in APPROVED_CONNECTOR_KEYS}
+        for row in _rows(self.list_connectors()):
+            normalized = _normalize_connector_name(row.get("name"))
+            key = _CONNECTOR_ALIASES.get(normalized)
+            if key is None:
+                continue
+            connector_id = str(row.get("id") or "").strip()
+            if connector_id:
+                by_key[key].append(connector_id)
+
+        missing = [key for key, values in by_key.items() if not values]
+        ambiguous = [key for key, values in by_key.items() if len(values) > 1]
+        if missing:
+            raise ManusError("MANUS_APPROVED_CONNECTOR_MISSING:" + ",".join(missing))
+        if ambiguous:
+            raise ManusError("MANUS_APPROVED_CONNECTOR_AMBIGUOUS:" + ",".join(ambiguous))
+
+        names = tuple(APPROVED_CONNECTOR_KEYS)
+        ids = tuple(by_key[key][0] for key in names)
+        return names, ids
+
+    def prepare_route(
+        self,
+        *,
+        scope: str | ManusScope,
+        authority_source: str | AuthoritySource,
+        current_task_authorized: bool,
+        requested_profile: str = "lite",
+        notion_authorized_by_jay_via_chatgpt: bool = False,
+    ) -> BoundManusRoute:
+        project_id, project_name = self.resolve_manus_project()
+        connector_names, connector_ids = self.resolve_approved_connector_ids()
+        expected_project_id = JAYTEC_MANUS_PROJECT_ID or project_id
+
+        authorization = authorize_manus_dispatch(
+            project_id=project_id,
+            expected_project_id=expected_project_id,
+            project_name=project_name,
+            connectors=list(connector_names),
+            connectors_explicit=True,
+            scope=scope,
+            authority_source=authority_source,
+            current_task_authorized=current_task_authorized,
+            requested_profile=requested_profile,
+            route_supports_profile_selector=True,
+            notion_authorized_by_jay_via_chatgpt=notion_authorized_by_jay_via_chatgpt,
+        )
+        return BoundManusRoute(authorization=authorization, connector_ids=connector_ids)
+
+    def create_task(
+        self,
+        route: BoundManusRoute,
+        content: str,
+        *,
+        title: str | None = None,
+        structured_output_schema: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
         message = content.strip()
         if not message:
             raise ManusError("EMPTY_MESSAGE")
         if len(message) > MANUS_MAX_MESSAGE_CHARS:
             raise ManusError("MESSAGE_TOO_LARGE")
-        return self._request("POST", "task.sendMessage", payload={"task_id": task_id, "message": {"content": message}}).body
 
-    def stop_task(self, task_id: str) -> Mapping[str, Any]:
-        return self._request("POST", "task.stop", payload={"task_id": task_id}).body
+        payload: dict[str, Any] = {
+            "message": {
+                "content": message,
+                "connectors": list(route.connector_ids),
+            },
+            "project_id": route.authorization.project_id,
+            "agent_profile": route.authorization.profile.requested_profile.value,
+            "interactive_mode": False,
+            "share_visibility": "private",
+        }
+        if title:
+            payload["title"] = str(title)[:200]
+        if structured_output_schema is not None:
+            payload["structured_output_schema"] = dict(structured_output_schema)
+
+        created = self._request("POST", "task.create", payload=payload).body
+        task_id = str(created.get("task_id") or "").strip()
+        if not task_id:
+            raise ManusError("MANUS_TASK_ID_MISSING")
+
+        # Verify what Manus actually used, not merely what JAYTEC requested.
+        try:
+            self.verify_task_profile(route, task_id)
+        except (ManusProfilePolicyError, ManusError):
+            try:
+                self.stop_task(task_id)
+            finally:
+                raise
+        return created
+
+    def send_message(
+        self,
+        route: BoundManusRoute,
+        task_id: str,
+        content: str,
+        *,
+        structured_output_schema: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        message = content.strip()
+        if not message:
+            raise ManusError("EMPTY_MESSAGE")
+        if len(message) > MANUS_MAX_MESSAGE_CHARS:
+            raise ManusError("MESSAGE_TOO_LARGE")
+
+        # Old tasks that are not observably Lite are not continued.
+        self.verify_task_profile(route, task_id)
+
+        payload: dict[str, Any] = {
+            "task_id": task_id,
+            "message": {
+                "content": message,
+                # Non-empty sendMessage connector list explicitly replaces the
+                # task connector set, preventing hidden connector drift.
+                "connectors": list(route.connector_ids),
+            },
+            # sendMessage explicitly supports a per-turn profile override.
+            "agent_profile": route.authorization.profile.requested_profile.value,
+        }
+        if structured_output_schema is not None:
+            payload["structured_output_schema"] = dict(structured_output_schema)
+
+        result = self._request("POST", "task.sendMessage", payload=payload).body
+        self.verify_task_profile(route, task_id)
+        return result
+
+    def verify_task_profile(
+        self,
+        route: BoundManusRoute,
+        task_id: str,
+    ) -> Mapping[str, Any]:
+        detail = self.task_detail(task_id)
+        task = _task(detail)
+        observed = task.get("agent_profile")
+        verify_manus_profile(
+            route.authorization.profile,
+            observed_profile=str(observed) if observed is not None else None,
+        )
+        project_id = task.get("project_id")
+        if project_id not in (None, "") and str(project_id) != route.authorization.project_id:
+            raise ManusError("MANUS_TASK_PROJECT_MISMATCH")
+        return detail
 
 
 def safe_identity_summary(body: Mapping[str, Any]) -> dict[str, Any]:
@@ -176,4 +395,17 @@ def safe_identity_summary(body: Mapping[str, Any]) -> dict[str, Any]:
         "authenticated": bool(body.get("ok", True)),
         "user_id": data.get("id"),
         "display_name": data.get("name") or data.get("display_name"),
+    }
+
+
+def safe_task_summary(body: Mapping[str, Any]) -> dict[str, Any]:
+    task = _task(body)
+    return {
+        "id": task.get("id"),
+        "status": task.get("status"),
+        "title": task.get("title"),
+        "project_id": task.get("project_id"),
+        "agent_profile": task.get("agent_profile"),
+        "credit_usage": task.get("credit_usage"),
+        "task_url": task.get("task_url"),
     }
