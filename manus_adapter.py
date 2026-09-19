@@ -25,6 +25,7 @@ from manus_dispatch_contract import (
     ManusDispatchAuthorization,
     ManusDispatchContractError,
     authorize_manus_dispatch,
+    verify_manus_dispatch_result,
 )
 from manus_governance import AuthoritySource, ManusScope, render_directive
 from manus_policy import ManusProfilePolicyError, verify_manus_profile
@@ -377,6 +378,23 @@ class ManusClient:
         result = self._request("POST", "task.sendMessage", payload=payload).body
         self.verify_task_profile(route, task_id)
         return result
+
+    def verify_completed_result(
+        self,
+        route: BoundManusRoute,
+        task_id: str,
+        result: Mapping[str, object],
+    ) -> Mapping[str, Any]:
+        """Run the composed post-dispatch gate on evidence-backed completion."""
+        detail = self.verify_task_profile(route, task_id)
+        task = _task(detail)
+        observed = task.get("agent_profile")
+        verify_manus_dispatch_result(
+            route.authorization,
+            observed_profile=str(observed) if observed is not None else None,
+            result=result,
+        )
+        return detail
 
     def verify_task_profile(
         self,
