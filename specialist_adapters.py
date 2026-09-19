@@ -32,14 +32,14 @@ from jaytec_read import (
 )
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
-EXPECTED_CODEX_MODEL = "gpt-5.3-codex"
+EXPECTED_CODEX_MODEL = "gpt-5.6-sol"
 EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
 
 CODEX_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
 
 REQUIRED SHAPE (types are strict):
 - status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
-- model: string exactly gpt-5.3-codex
+- model: string exactly gpt-5.6-sol
 - findings: JSON array of strings (NOT an object)
 - evidence: JSON array of strings (NOT an object)
 - confidence: string|null
@@ -160,14 +160,23 @@ def build_codex_dispatch(
     codex_model: str,
     circuit: CircuitBreaker,
     codex_timeout_s: float = 45.0,
+    provider_mode: str = "LOCKED_RESERVE",
+    allowed_workflow_prefixes: tuple[str, ...] = ("JAYTEC_V2_",),
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     require_exact_model(codex_model, EXPECTED_CODEX_MODEL, context="codex")
     if codex_timeout_s <= 0:
         raise ValueError("codex_timeout_s must be positive")
+    if provider_mode not in {"LOCKED_RESERVE", "BOUNDED_SOL_ONLY"}:
+        raise ValueError("unsupported engineering provider mode")
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+        if provider_mode != "BOUNDED_SOL_ONLY":
+            raise RuntimeError("engineering_provider_locked")
+        workflow_id = str(packet.get("workflow_id", ""))
+        if not any(workflow_id.startswith(prefix) for prefix in allowed_workflow_prefixes):
+            raise RuntimeError("engineering_workflow_not_authorized")
         prompt = (
-            "ROLE: GPT-5.3 CODEX ENGINEERING\n"
+            "ROLE: GPT-5.6 SOL JAYTEC ENGINEERING SPECIALIST\n"
             + CODEX_CONTRACT
             + "\nTASK_PACKET_JSON:\n"
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
