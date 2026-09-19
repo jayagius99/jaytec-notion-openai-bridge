@@ -50,6 +50,10 @@ MEETING_BUS_ENABLED = os.environ.get(
 SOL_ENABLED = os.environ.get("MEETING_SOL_ENABLED", "0").strip().lower() in {
     "1", "true", "yes", "on"
 }
+SOL_RESERVE_MODE = os.environ.get(
+    "OPENAI_API_ENGINEERING_RESERVE_DOOR", "LOCKED_RESERVE"
+).strip().upper()
+SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("MEETING_SOL_OUTPUT_TOKEN_CAP", "1200"))
 GEMINI_ENABLED = os.environ.get("MEETING_GEMINI_ENABLED", "1").strip().lower() in {
     "1", "true", "yes", "on"
 }
@@ -293,6 +297,8 @@ def _normalize_output(participant: str, model: str, raw_text: str) -> dict[str, 
 def _call_sol(request: Mapping[str, Any], client: Optional[OpenAI] = None):
     if not SOL_ENABLED:
         raise MeetingPolicyError("sol_meeting_lane_cost_locked")
+    if SOL_RESERVE_MODE != "BOUNDED_SOL_ONLY":
+        raise MeetingPolicyError("sol_reserve_door_not_bounded_open")
     if SOL_MODEL != "gpt-5.6-sol":
         raise MeetingPolicyError("sol_model_lock_mismatch")
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -304,7 +310,10 @@ def _call_sol(request: Mapping[str, Any], client: Optional[OpenAI] = None):
             model=SOL_MODEL,
             input=_participant_prompt(request),
             reasoning={"effort": os.environ.get("MEETING_SOL_REASONING_EFFORT", "medium")},
-            max_output_tokens=int(request.get("max_output_tokens", 1800)),
+            max_output_tokens=min(
+                int(request.get("max_output_tokens", 1800)),
+                SOL_OUTPUT_TOKEN_CAP,
+            ),
             timeout=float(os.environ.get("MEETING_SOL_TIMEOUT_S", "90")),
         )
     except Exception as exc:
@@ -437,6 +446,8 @@ def status() -> dict[str, Any]:
                 "model": SOL_MODEL,
                 "enabled": SOL_ENABLED,
                 "configured": bool(os.environ.get("OPENAI_API_KEY", "").strip()),
+                "reserve_mode": SOL_RESERVE_MODE,
+                "output_token_cap": SOL_OUTPUT_TOKEN_CAP,
             },
             "gemini": {
                 "model": GEMINI_MODEL,
