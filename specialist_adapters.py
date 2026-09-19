@@ -355,6 +355,13 @@ def build_gemini_dispatch(
             )
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+        operations = packet.get("allowed_operations") or []
+        if isinstance(operations, list) and any(
+            op in {"code_staging", "engineering_write", "production_write"}
+            for op in operations
+            if isinstance(op, str)
+        ):
+            raise RuntimeError("gemini_role_task_not_authorized")
         if not is_jaytec_read_packet(packet):
             return _single_with_format_retry(packet)
 
