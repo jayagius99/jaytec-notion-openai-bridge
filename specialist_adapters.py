@@ -11,18 +11,19 @@ Security / safety:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import Any, Callable, Mapping
 
 from openai import OpenAI, RateLimitError as OpenAIRateLimitError
 
-from orchestration import RateLimitError as OrchestrationRateLimitError
+from orchestration import ProviderUnavailableError, RateLimitError as OrchestrationRateLimitError
 
 from circuit_breaker import CircuitBreaker
 from participant_contracts import render_actor_contract
 from relationship_policy import Actor
-from worker_json import json_object
+from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
 EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
 # TaskPacket v1 keeps the historical "codex" specialist key for wire compatibility.
@@ -74,6 +75,77 @@ REQUIRED SHAPE (types are strict):
 - requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
 
 Never expose credentials. Do not perform engineering writes."""
+
+GEMINI_FORMAT_RETRY = """Your previous transport attempt did not produce a complete parseable JSON object.
+Re-answer the ORIGINAL TASK_PACKET_JSON from scratch. Do not quote or repair the prior response.
+Return one compact valid JSON object only, using exactly the required JAYTEC Gemini research fields.
+Never include markdown fences, comments, trailing prose, NaN/Infinity, or unescaped newlines inside JSON strings."""
+
+
+def _provider_model(response: Any) -> str | None:
+    value = getattr(response, "model", None)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _finish_reason(choice: Any) -> str | None:
+    value = getattr(choice, "finish_reason", None)
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _safe_transport_diagnostics(*, content: str, finish_reason: str | None, provider_model: str | None, extracted_object: bool) -> dict[str, Any]:
+    encoded = (content or "").encode("utf-8", errors="replace")
+    return {
+        "content_sha256": hashlib.sha256(encoded).hexdigest(),
+        "content_bytes": len(encoded),
+        "finish_reason": finish_reason,
+        "provider_model": provider_model,
+        "extracted_balanced_object": bool(extracted_object),
+        "max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS,
+        "provider_fallbacks": False,
+    }
+
+
+def _status_code(exc: Exception) -> int | None:
+    for name in ("status_code", "status"):
+        value = getattr(exc, name, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    value = getattr(response, "status_code", None)
+    return value if isinstance(value, int) else None
+
+
+def _retry_after(exc: Exception) -> Any:
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        try:
+            value = headers.get("retry-after") or headers.get("Retry-After")
+            if value is not None:
+                return value
+        except Exception:
+            pass
+    return getattr(exc, "retry_after", None)
+
+
+def _normalize_provider_exception(exc: Exception, *, context: str) -> None:
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    status = _status_code(exc)
+    if "timeout" in name or "timedout" in name or "timeout" in text or "timed out" in text:
+        raise TimeoutError(f"{context}_timeout") from exc
+    if status == 429 or "ratelimit" in name or "rate limit" in text or "rate_limit" in text:
+        raise OrchestrationRateLimitError(
+            f"{context}_rate_limited", retry_after=_retry_after(exc)
+        ) from exc
+    if (status is not None and status >= 500) or any(
+        token in name or token in text
+        for token in ("serviceunavailable", "service unavailable", "connectionerror", "connection error", "temporarily unavailable")
+    ):
+        raise ProviderUnavailableError(
+            f"{context}_provider_unavailable", retry_after=_retry_after(exc)
+        ) from exc
+    raise exc
 
 
 def resolve_engineering_provider_mode(env: Mapping[str, str] | None = None) -> str:
@@ -204,12 +276,19 @@ def build_gemini_dispatch(
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     # Fail closed BEFORE any upstream call.
     require_exact_model(gemini_model, EXPECTED_GEMINI_MODEL, context="gemini")
+    if gemini_timeout_s <= 0:
+        raise ValueError("gemini_timeout_s must be positive")
 
-    def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
-        prompt = (
+    def _prompt(packet: Mapping[str, Any], *, retry_format: bool = False) -> str:
+        prefix = (
             render_actor_contract(Actor.GEMINI)
             + "\n"
             + GEMINI_RESEARCH_MODE_V1_1
+        )
+        if retry_format:
+            prefix += "\n" + GEMINI_FORMAT_RETRY
+        return (
+            prefix
             + "\nTASK_ID: "
             + str(packet.get("task_id", ""))
             + "\nSUBTASK_ID: "
@@ -217,24 +296,68 @@ def build_gemini_dispatch(
             + "\nTASK_PACKET_JSON:\n"
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         )
-        response = openrouter_client.chat.completions.create(
-            model=gemini_model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=GEMINI_MAX_OUTPUT_TOKENS,
-            timeout=gemini_timeout_s,
-            stream=False,
-            extra_body={
-                "provider": {
-                    "sort": "price",
-                    "allow_fallbacks": True,
-                }
-            },
-        )
+
+    def _single_call(packet: Mapping[str, Any], *, retry_format: bool) -> Mapping[str, Any]:
+        try:
+            response = openrouter_client.chat.completions.create(
+                model=gemini_model,
+                messages=[{"role": "user", "content": _prompt(packet, retry_format=retry_format)}],
+                temperature=0,
+                max_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+                timeout=gemini_timeout_s,
+                stream=False,
+                response_format={"type": "json_object"},
+                extra_body={
+                    "provider": {
+                        "sort": "price",
+                        "allow_fallbacks": False,
+                    }
+                },
+            )
+        except Exception as exc:
+            _normalize_provider_exception(exc, context="gemini_provider")
+
         if not response.choices:
-            raise RuntimeError("Gemini returned no choices")
-        result = json_object(response.choices[0].message.content or "")
+            raise RuntimeError("gemini_no_choices")
+
+        returned_provider_model = _provider_model(response)
+        if returned_provider_model is not None:
+            require_exact_model(
+                returned_provider_model,
+                gemini_model,
+                context="gemini_provider_response",
+            )
+
+        choice = response.choices[0]
+        finish_reason = _finish_reason(choice)
+        content = choice.message.content or ""
+        if finish_reason in {"length", "content_filter"}:
+            digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+            raise WorkerJsonError(
+                "TRUNCATED_OR_BLOCKED_RESPONSE",
+                f"finish_reason={finish_reason};bytes={len(content.encode('utf-8', errors='replace'))};sha256={digest}",
+            )
+
+        result, diagnostics = json_object_with_diagnostics(content)
         result.setdefault("model", gemini_model)
+        result["bridge_diagnostics"] = _safe_transport_diagnostics(
+            content=content,
+            finish_reason=finish_reason,
+            provider_model=returned_provider_model,
+            extracted_object=diagnostics.extracted_object,
+        )
         return result
 
+    def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+        try:
+            return _single_call(packet, retry_format=False)
+        except WorkerJsonError:
+            retries = packet.get("max_retries", 0)
+            if not isinstance(retries, int) or isinstance(retries, bool) or retries < 1:
+                raise
+            # Exactly one format-only retry; never loop indefinitely or silently
+            # switch model/provider/profile.
+            return _single_call(packet, retry_format=True)
+
     return circuit.guard(_dispatch)
+
