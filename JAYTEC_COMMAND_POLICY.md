@@ -131,10 +131,13 @@ The normal Manus direct connector allowlist is:
 Notion, OpenAI, OpenRouter, and OpenRouter API are not direct Manus worker
 doors. Unknown connectors fail closed.
 
-Having a connector does not grant blanket mutation authority. Normal posture is
-read/inspect/diagnose/test/report within the current task. Writes, deploys,
-deletes, migrations, production changes, credential changes, destructive
-operations, and external spend require current explicit authority.
+Having a connector does not grant blanket mutation authority. The allowlist is
+a ceiling, not a default grant: default task connector scope is NONE and every
+Manus task must receive the minimum explicit connector subset/purpose it needs.
+Project/user default connectors must never be treated as authority.
+Read/inspect/diagnose/test/report is allowed only inside that task-scoped grant.
+Writes, deploys, deletes, migrations, production changes, credential changes,
+destructive operations, and external spend require current explicit authority.
 
 ### Notion boundary
 
