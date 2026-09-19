@@ -32,6 +32,9 @@ capability and evidence.
 ## JAYTEC boundary
 
 Manus may inspect, analyze, diagnose, and recommend improvements to JAYTEC.
+Manus cannot independently modify JAYTEC. Its "own house" means only the
+JAYTEC-controlled Manus layer and never JAYTEC core, policy, routing, authority,
+checkpoints, provider rules, or shared system state.
 It must not independently edit, upgrade, reconfigure, mutate, authorize, or
 apply a change to JAYTEC.
 
@@ -66,15 +69,18 @@ through ChatGPT for that current task.
 
 ## Direct connector allowlist
 
-Normal direct Manus connectors are limited to:
+The policy allowlist ceiling for direct Manus connectors is exactly:
 
 - GitHub
 - Neon
 - Render
 
-Unknown direct connectors fail closed. The allowlist is a capability ceiling,
-not a default grant: every task receives only the minimum explicit connector
-subset it needs, and the default connector scope is NONE. Project/user default
+This is a ceiling, not the current task scope. A task with no connector grant
+must report current task connector scope as NONE/empty even though the policy
+allowlist remains GitHub/Neon/Render.
+
+Unknown direct connectors fail closed. Every task receives only the minimum
+explicit connector subset it needs, and the default connector scope is NONE. Project/user default
 connectors must never be treated as JAYTEC authority. Connector presence is not
 permission to mutate. Read/inspect/diagnose/test/report is allowed only inside
 the task's explicit connector scope. Writes, deploys, deletes, migrations,
