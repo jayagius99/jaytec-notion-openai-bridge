@@ -118,18 +118,20 @@ class ManusAdapterTests(unittest.TestCase):
 
     def test_project_resolution_requires_exact_single_manus_project(self):
         client = ma.ManusClient(api_key="x")
-        with mock.patch.object(
+        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
             client,
             "list_projects",
             return_value={"data": [{"id": "p1", "name": "MANUS"}]},
         ):
             self.assertEqual(client.resolve_manus_project(), ("p1", "MANUS"))
 
-        with mock.patch.object(client, "list_projects", return_value={"data": []}):
+        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
+            client, "list_projects", return_value={"data": []}
+        ):
             with self.assertRaisesRegex(ma.ManusError, "MANUS_PROJECT_NOT_FOUND"):
                 client.resolve_manus_project()
 
-        with mock.patch.object(
+        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
             client,
             "list_projects",
             return_value={
@@ -179,7 +181,7 @@ class ManusAdapterTests(unittest.TestCase):
 
     def test_zero_connector_route_does_not_resolve_account_defaults(self):
         client = ma.ManusClient(api_key="x")
-        with mock.patch.object(
+        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
             client, "resolve_manus_project", return_value=("project-manus", "MANUS")
         ), mock.patch.object(
             client, "list_connectors"
@@ -211,7 +213,7 @@ class ManusAdapterTests(unittest.TestCase):
 
     def test_prepare_route_cannot_select_paid_profile(self):
         client = ma.ManusClient(api_key="x")
-        with mock.patch.object(
+        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
             client, "resolve_manus_project", return_value=("project-manus", "MANUS")
         ), mock.patch.object(
             client,
