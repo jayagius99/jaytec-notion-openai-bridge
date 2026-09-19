@@ -69,3 +69,18 @@ An override must appear in Jay's current message, for example:
 
 The override applies only to that current task and does not become a standing
 permission.
+
+
+## Manus profile hard gate
+
+JAYTEC must treat Manus as **Lite-only by default**.
+
+Rules:
+- Default Manus profile: `lite`.
+- Manus 1.6 / standard and Manus Max are paid-profile routes and are blocked unless Jay explicitly requests that paid profile for the current task.
+- Any Manus route must expose an explicit profile selector before dispatch. If the route cannot explicitly pin Lite, return `BLOCKED_ROUTE / MANUS_PROFILE_SELECTOR_UNAVAILABLE` and do not call Manus.
+- Manus participation is not verified unless the observed profile can be checked against the requested profile. Missing profile identity fails closed.
+- Never automatically fall back from Lite to 1.6/standard/Max because of quality, task complexity, timeout, availability, or retry conditions.
+- A paid-profile override is one-task-only and does not change this standing default.
+
+Executable enforcement lives in `manus_policy.py` and must be reused by any future Manus adapter before it is allowed into production routing.
