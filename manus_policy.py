@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import re
 
 
 class ManusProfile(StrEnum):
@@ -24,14 +25,15 @@ class ManusProfile(StrEnum):
 _PROFILE_ALIASES = {
     "lite": ManusProfile.LITE,
     "manus lite": ManusProfile.LITE,
-    "1.6": ManusProfile.STANDARD,
-    "manus 1.6": ManusProfile.STANDARD,
     "standard": ManusProfile.STANDARD,
+    "manus standard": ManusProfile.STANDARD,
     "max": ManusProfile.MAX,
-    "1.6 max": ManusProfile.MAX,
-    "manus 1.6 max": ManusProfile.MAX,
     "manus max": ManusProfile.MAX,
 }
+_VERSIONED_PROFILE = re.compile(
+    r"^(?:manus[- ]?)?(?P<version>\\d+(?:\\.\\d+)+)(?:[- ](?P<tier>lite|max))?$",
+    re.I,
+)
 
 
 class PaidOverrideAuthority(StrEnum):
@@ -65,9 +67,20 @@ def canonicalize_manus_profile(value: str | ManusProfile | None) -> ManusProfile
         return value
     normalized = " ".join(str(value).strip().casefold().split())
     profile = _PROFILE_ALIASES.get(normalized)
-    if profile is None:
-        raise ManusProfilePolicyError("MANUS_PROFILE_UNKNOWN")
-    return profile
+    if profile is not None:
+        return profile
+
+    versioned = _VERSIONED_PROFILE.fullmatch(normalized)
+    if versioned is not None:
+        tier = versioned.group("tier")
+        if tier is None:
+            return ManusProfile.STANDARD
+        if tier.casefold() == "lite":
+            return ManusProfile.LITE
+        if tier.casefold() == "max":
+            return ManusProfile.MAX
+
+    raise ManusProfilePolicyError("MANUS_PROFILE_UNKNOWN")
 
 
 def authorize_manus_route(
