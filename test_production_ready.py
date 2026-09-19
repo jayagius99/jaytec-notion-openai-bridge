@@ -13,9 +13,9 @@ class TestProductionReady(unittest.TestCase):
         os.environ["RUNTIME_MODE"] = "production"
         os.environ["DATABASE_URL"] = "postgres://user:pass@localhost:5432/db"
         os.environ["MCP_AUTH_TOKEN"] = "test"
-        os.environ["OPENAI_API_KEY"] = "test"
+        os.environ.pop("OPENAI_API_KEY", None)
         os.environ["OPENROUTER_API_KEY"] = "test"
-        os.environ["CODEX_MODEL"] = "gpt-5.6-sol"
+        os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
         os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         server = self._reload()
@@ -27,7 +27,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 mcp_auth_token_present=True,
-                openai_api_key_present=True,
+                openai_api_key_present=False,
                 openrouter_api_key_present=True,
             )
         )
@@ -38,7 +38,7 @@ class TestProductionReady(unittest.TestCase):
         os.environ["MCP_AUTH_TOKEN"] = "test"
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ.pop("OPENROUTER_API_KEY", None)
-        os.environ["CODEX_MODEL"] = "gpt-5.6-sol"
+        os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
         os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         server = self._reload()
@@ -61,7 +61,7 @@ class TestProductionReady(unittest.TestCase):
         os.environ["MCP_AUTH_TOKEN"] = "test"
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ.pop("OPENROUTER_API_KEY", None)
-        os.environ["CODEX_MODEL"] = "gpt-5.6-sol"
+        os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
         os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         server = self._reload()
