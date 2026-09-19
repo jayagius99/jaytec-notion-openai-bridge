@@ -1,9 +1,9 @@
 """One-shot live Manus Lite governance acceptance test.
 
 Runs only when RUN_LIVE_MANUS_GOVERNANCE_ACCEPTANCE=1. It creates one bounded,
-private, no-side-effect task in the MANUS project, explicitly pins Lite and the
-GitHub/Neon/Render connector IDs, verifies observed profile identity, and checks
-structured acknowledgement of the permanent relationship rules.
+private, no-side-effect task in the MANUS project, explicitly pins Lite with
+zero task connectors, verifies observed profile identity, and checks structured
+acknowledgement of the permanent relationship rules.
 """
 from __future__ import annotations
 
@@ -372,14 +372,17 @@ def main() -> int:
         return 0
 
     except ManusInsufficientCredits:
-        output["status"] = "BLOCKED_CREDIT_TOPUP_REQUIRED"
-        output["error"] = "MANUS_INSUFFICIENT_CREDITS"
-        output["credit_topup_required"] = {
-            "required": True,
-            "provider": "Manus",
+        # Manus Lite is free in the JAYTEC policy. The vendor may still expose
+        # a usage/quota-style error code, but that must not be turned into a
+        # monetary top-up instruction.
+        output["status"] = "BLOCKED_LITE_AVAILABILITY"
+        output["error"] = "MANUS_LITE_VENDOR_QUOTA_OR_AVAILABILITY_BLOCK"
+        output["blocking_notice"] = {
+            "provider": "Manus Lite",
             "importance": "BLOCKING",
-            "action_required": "Top up Manus credits to continue Manus-dependent JAYTEC work.",
+            "action_required": "Check Manus Lite availability/account quota before continuing Manus-dependent work.",
             "blocked_work": "Live Manus governance acceptance and any later Manus-delegated work",
+            "monetary_topup_required": False,
         }
     except (ManusProfilePolicyError, ManusError) as exc:
         output["error"] = str(exc)
