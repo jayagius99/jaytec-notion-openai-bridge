@@ -23,6 +23,10 @@ class ManusPolicyTests(unittest.TestCase):
         self.assertEqual(canonicalize_manus_profile("Manus Lite"), ManusProfile.LITE)
         self.assertEqual(canonicalize_manus_profile("1.6"), ManusProfile.STANDARD)
         self.assertEqual(canonicalize_manus_profile("Manus 1.6 Max"), ManusProfile.MAX)
+        self.assertEqual(canonicalize_manus_profile("manus-1.6-lite"), ManusProfile.LITE)
+        self.assertEqual(canonicalize_manus_profile("1.6-lite"), ManusProfile.LITE)
+        self.assertEqual(canonicalize_manus_profile("2.0-max"), ManusProfile.MAX)
+        self.assertEqual(canonicalize_manus_profile("manus-1.6"), ManusProfile.STANDARD)
 
     def test_route_without_profile_selector_fails_closed(self):
         with self.assertRaisesRegex(
@@ -106,7 +110,7 @@ class ManusPolicyTests(unittest.TestCase):
             route_supports_profile_selector=True,
         )
         self.assertIs(
-            verify_manus_profile(decision, observed_profile="Manus Lite"),
+            verify_manus_profile(decision, observed_profile="manus-1.6-lite"),
             decision,
         )
 
