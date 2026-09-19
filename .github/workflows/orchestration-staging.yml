@@ -39,6 +39,7 @@ on:
       - 'test_jaytec_read.py'
       - 'test_specialist_timeout_hardening.py'
       - 'test_manus_policy.py'
+      - 'test_manus_policy_integration_guard.py'
       - 'test_job_runtime.py'
       - 'test_concurrency.py'
       - 'test_guardian.py'
@@ -79,7 +80,7 @@ jobs:
             server.py reliable_server.py compat_server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
-            test_worker_output_parsing.py test_gemini_transport_hardening.py test_jaytec_read.py test_specialist_timeout_hardening.py test_manus_policy.py \
+            test_worker_output_parsing.py test_gemini_transport_hardening.py test_jaytec_read.py test_specialist_timeout_hardening.py test_manus_policy.py test_manus_policy_integration_guard.py \
             test_job_runtime.py test_concurrency.py test_guardian.py test_durable_tasks.py \
             test_reliable_runtime_hardening.py test_compat_server.py test_compat_native_validation.py \
             test_compat_transport_hardening.py test_idempotency_postgres.py test_dockerfile_packaging.py \
