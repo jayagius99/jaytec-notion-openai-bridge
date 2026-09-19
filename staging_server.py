@@ -33,9 +33,9 @@ PORT = int(os.environ.get("PORT", "8000"))
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 CODEX_MODEL = os.environ.get("CODEX_MODEL", EXPECTED_CODEX_MODEL).strip()
-ENGINEERING_PROVIDER_MODE = os.environ.get("ENGINEERING_PROVIDER_MODE", "LOCKED_RESERVE").strip().upper()
-ENGINEERING_SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("ENGINEERING_SOL_OUTPUT_TOKEN_CAP", "2000"))
-ENGINEERING_SOL_MAX_PACKET_RETRIES = int(os.environ.get("ENGINEERING_SOL_MAX_PACKET_RETRIES", "1"))
+ENGINEERING_PROVIDER_MODE = os.environ.get("ENGINEERING_PROVIDER_MODE", "OPENROUTER_FREE_PRIMARY").strip().upper()
+ENGINEERING_OUTPUT_TOKEN_CAP = int(os.environ.get("ENGINEERING_OUTPUT_TOKEN_CAP", os.environ.get("ENGINEERING_SOL_OUTPUT_TOKEN_CAP", "2000")))
+ENGINEERING_MAX_PACKET_RETRIES = int(os.environ.get("ENGINEERING_MAX_PACKET_RETRIES", os.environ.get("ENGINEERING_SOL_MAX_PACKET_RETRIES", "1")))
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
@@ -82,9 +82,16 @@ OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_
 
 # Build dispatchers ONCE to avoid runtime drift and repeated guards.
 CODEX_DISPATCH = (
-    build_codex_dispatch(openai_client=OPENAI_CLIENT, codex_model=CODEX_MODEL, circuit=CODEX_CIRCUIT, provider_mode=ENGINEERING_PROVIDER_MODE, max_output_tokens=ENGINEERING_SOL_OUTPUT_TOKEN_CAP, max_packet_retries=ENGINEERING_SOL_MAX_PACKET_RETRIES)
-    if OPENAI_CLIENT
-    else CODEX_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENAI_API_KEY is not configured on the staging bridge")))
+    build_codex_dispatch(
+        openai_client=OPENROUTER_CLIENT,
+        codex_model=CODEX_MODEL,
+        circuit=CODEX_CIRCUIT,
+        provider_mode=ENGINEERING_PROVIDER_MODE,
+        max_output_tokens=ENGINEERING_OUTPUT_TOKEN_CAP,
+        max_packet_retries=ENGINEERING_MAX_PACKET_RETRIES,
+    )
+    if OPENROUTER_CLIENT
+    else CODEX_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on the staging bridge")))
 )
 
 GEMINI_DISPATCH = (
@@ -106,7 +113,7 @@ def orchestration_status() -> str:
             "status": "STAGING",
             "operation": "execute_task_packet",
             "codex_model": CODEX_MODEL,
-            "codex_adapter_configured": bool(OPENAI_API_KEY),
+            "codex_adapter_configured": bool(OPENROUTER_API_KEY),
             "codex_circuit": CODEX_CIRCUIT.snapshot(),
             "gemini_model": GEMINI_MODEL,
             "gemini_adapter_configured": bool(OPENROUTER_API_KEY),
