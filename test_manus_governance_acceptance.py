@@ -54,6 +54,16 @@ class ManusLiveAcceptanceValidatorTests(unittest.TestCase):
                 value["policy_connector_allowlist"] = connectors
                 self.assertIn("policy_connector_allowlist", _validate(value))
 
+    def test_none_literal_is_accepted_as_empty_task_scope(self):
+        value = self.good()
+        value["current_task_connector_scope"] = ["NONE"]
+        self.assertNotIn("current_task_connector_scope", _validate(value))
+
+    def test_specialist_return_phrase_may_contain_jaytec(self):
+        value = self.good()
+        value["specialist_requests_return_to"] = "Return specialist requests to JAYTEC"
+        self.assertNotIn("specialist_requests_return_to", _validate(value))
+
     def test_current_task_connector_scope_must_be_empty_for_acceptance(self):
         for connectors in (["github"], ["neon"], ["render"], ["notion"]):
             with self.subTest(connectors=connectors):
