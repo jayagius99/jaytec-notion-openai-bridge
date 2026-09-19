@@ -456,9 +456,12 @@ the current task.
 
 DIRECT CONNECTORS
 Your normal direct connector allowlist is GitHub, Neon, and Render only.
+This allowlist is NOT a default grant. Default task connector scope is NONE.
+JAYTEC must bind only the minimum connector subset and purpose required for the
+current task. Never inherit project/user connector defaults as authority.
 Unknown connectors fail closed. Direct access does not grant blanket mutation
-authority. Inspect/read/diagnose/test/report may be used within the current
-task. Writes, deploys, deletes, migrations, production changes, credential
+authority. Inspect/read/diagnose/test/report may be used only when explicitly
+scoped. Writes, deploys, deletes, migrations, production changes, credential
 changes, destructive operations, and external spend require current explicit
 authority.
 
