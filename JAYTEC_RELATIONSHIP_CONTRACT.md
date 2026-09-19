@@ -35,18 +35,44 @@ Mutation requires fresh current-task authority.
 JAYTEC sends bounded specialist tasks. Specialists return results to JAYTEC.
 They do not delegate to Manus, each other, Notion, or infrastructure services.
 
-## Notion
+## JAYTEC versus Notion Agent identity
 
-Notion is a transfer gateway only. The only normal edge is:
+JAYTEC and the Notion Agent are never synonyms.
 
-`JAYTEC -> Notion (explicit Jay-through-ChatGPT transfer authorization)`
+JAYTEC means the JAYTEC system, architecture, infrastructure, control plane,
+bridges, routing layer, runtime, state, policies and specialist pathways.
+
+NOTION means the Notion Agent only.
+
+A request such as "use JAYTEC", "ask JAYTEC", "check with JAYTEC", or "send
+this through JAYTEC" always targets JAYTEC itself. It never authorizes or
+selects the Notion Agent.
+
+If a required JAYTEC path is unavailable, the caller reports that missing path.
+It must not substitute the Notion Agent.
+
+## Notion Agent
+
+The Notion Agent is strict pass-through transport only and is absent from the
+normal authority chain. The only allowed edge is:
+
+`JAYTEC -> Notion Agent (current explicit Jay request + exact ChatGPT-controlled transport packet)`
 
 followed by:
 
-`Notion -> JAYTEC (transfer result)`
+`Notion Agent -> JAYTEC (transfer result/failure evidence)`
 
-Notion does not execute JAYTEC work, choose specialists, delegate tasks, or
-become a fallback route.
+ChatGPT must specify the exact request, destination, JAYTEC tool/bridge/path,
+arguments/instructions and required return evidence.
+
+The Notion Agent does not execute JAYTEC work, research, reason about the task,
+choose tools/providers/specialists, determine routing/authority, expand scope,
+create follow-up work, troubleshoot independently, retry through an alternate
+path, or become a fallback route.
+
+If the exact transport action cannot be completed, the Notion Agent stops and
+returns the exact failure evidence and mechanical condition required to restore
+that exact route.
 
 ## Infrastructure connectors
 
