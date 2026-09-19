@@ -45,6 +45,8 @@ on:
       - 'test_participant_prompt_injection.py'
       - 'test_manus_policy_integration_guard.py'
       - 'test_manus_adversarial_matrix.py'
+      - 'staging_gemini_manus_governance_review.py'
+      - 'staging_manus_governance_acceptance.py'
       - 'requirements.txt'
 
 permissions:
@@ -68,7 +70,7 @@ jobs:
           python -m py_compile \
             orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py \
             server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
-            staging_engineering_provider_probe.py staging_gemini_migration_review.py staging_manus_review_readback.py manus_adapter.py \
+            staging_engineering_provider_probe.py staging_gemini_migration_review.py staging_gemini_manus_governance_review.py staging_manus_review_readback.py staging_manus_governance_acceptance.py manus_adapter.py \
             manus_policy.py manus_governance.py manus_dispatch_contract.py relationship_policy.py participant_contracts.py \
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
