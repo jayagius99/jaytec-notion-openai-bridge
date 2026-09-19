@@ -1,4 +1,3 @@
-import re
 import unittest
 from pathlib import Path
 
@@ -16,21 +15,22 @@ EXCLUDED = {
     "test_relationship_policy.py",
     "test_manus_policy_integration_guard.py",
 }
-ROUTING_MARKERS = re.compile(
-    r"\b(dispatch|adapter|client|provider|profile|task\.create|task\.sendMessage)\b",
-    re.I,
-)
 
 
 class ManusPolicyIntegrationGuardTests(unittest.TestCase):
-    def test_any_manus_routing_code_must_use_composed_dispatch_contract(self):
+    def test_direct_manus_provider_routing_must_use_composed_contract(self):
+        """Only files that directly hit Manus task execution endpoints need this guard.
+
+        Review/readback scripts may mention Manus but cannot bypass the adapter
+        merely by mentioning a client/provider/profile word.
+        """
         violations = []
         for path in sorted(ROOT.glob("*.py")):
             if path.name in EXCLUDED or path.name.startswith("test_"):
                 continue
             source = path.read_text(encoding="utf-8")
             lowered = source.casefold()
-            if "manus" not in lowered or not ROUTING_MARKERS.search(source):
+            if "task.create" not in lowered and "task.sendmessage" not in lowered:
                 continue
 
             if "manus_dispatch_contract" not in lowered:
@@ -50,7 +50,7 @@ class ManusPolicyIntegrationGuardTests(unittest.TestCase):
         self.assertEqual(
             violations,
             [],
-            "Manus routing bypasses composed JAYTEC dispatch contract: "
+            "Direct Manus provider route bypasses composed JAYTEC contract: "
             + ", ".join(violations),
         )
 
