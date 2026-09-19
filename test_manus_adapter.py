@@ -100,7 +100,8 @@ class ManusAdapterTests(unittest.TestCase):
         with mock.patch("urllib.request.urlopen") as call:
             with self.assertRaises(ma.ManusError) as ctx:
                 ma.ManusClient(api_key="x")._governed_message(
-                    "x" * (ma.MANUS_MAX_MESSAGE_CHARS + 1)
+                    _route(),
+                    "x" * (ma.MANUS_MAX_MESSAGE_CHARS + 1),
                 )
         self.assertEqual(str(ctx.exception), "MESSAGE_TOO_LARGE")
         call.assert_not_called()
