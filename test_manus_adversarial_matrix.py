@@ -43,6 +43,9 @@ class ManusAdversarialMatrixTests(unittest.TestCase):
                                 current_task_authorized=True,
                                 connector_mutation_authorized=True,
                                 jay_authorized_notion_via_chatgpt=True,
+                                notion_agent_explicitly_requested=True,
+                                notion_transport_instructions_complete=True,
+                                notion_chatgpt_controlled=True,
                             )
                         else:
                             with self.assertRaises(RelationshipPolicyError):
@@ -53,6 +56,9 @@ class ManusAdversarialMatrixTests(unittest.TestCase):
                                     current_task_authorized=True,
                                     connector_mutation_authorized=True,
                                     jay_authorized_notion_via_chatgpt=True,
+                                notion_agent_explicitly_requested=True,
+                                notion_transport_instructions_complete=True,
+                                notion_chatgpt_controlled=True,
                                 )
 
     def test_manus_never_gets_direct_specialist_or_notion_edge(self):
