@@ -350,8 +350,15 @@ def main() -> int:
         return 0
 
     except ManusInsufficientCredits:
-        output["status"] = "BLOCKED_NO_CREDITS"
+        output["status"] = "BLOCKED_CREDIT_TOPUP_REQUIRED"
         output["error"] = "MANUS_INSUFFICIENT_CREDITS"
+        output["credit_topup_required"] = {
+            "required": True,
+            "provider": "Manus",
+            "importance": "BLOCKING",
+            "action_required": "Top up Manus credits to continue Manus-dependent JAYTEC work.",
+            "blocked_work": "Live Manus governance acceptance and any later Manus-delegated work",
+        }
     except (ManusProfilePolicyError, ManusError) as exc:
         output["error"] = str(exc)
     except Exception as exc:
