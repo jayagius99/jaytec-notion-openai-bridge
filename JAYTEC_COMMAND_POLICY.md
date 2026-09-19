@@ -198,3 +198,24 @@ Executable behavioural enforcement lives in `manus_governance.py`.
 The human-readable canonical directive lives in
 `MANUS_OPERATING_DIRECTIVE.md`. Any future production Manus adapter must use
 both `manus_policy.py` and `manus_governance.py`.
+
+## Provider credit exhaustion hard gate
+
+If any required external service cannot continue because credits, prepaid balance,
+billing quota, or account spend allowance is exhausted, JAYTEC must fail closed
+and make the blocker obvious to Jay.
+
+Required behavior:
+- emit a prominent `CREDIT TOP-UP REQUIRED` / `BLOCKED_CREDIT_TOPUP_REQUIRED` signal;
+- name the affected provider/service;
+- mark importance as `BLOCKING` when required work cannot continue;
+- state exactly which work is blocked until the top-up occurs;
+- keep the task unresolved and resumable after funding is restored;
+- do not silently retry credit failures as ordinary rate limits;
+- do not switch to a paid/more expensive provider, model, profile, or fallback to hide the blocker;
+- do not claim completion while required provider work remains blocked;
+- after Jay tops up the service, re-run the smallest bounded verification needed before resuming normal work.
+
+This is a standing cost-safety and continuity rule across OpenRouter, OpenAI,
+Manus, Notion credits when explicitly authorized, and any future metered JAYTEC
+provider.
