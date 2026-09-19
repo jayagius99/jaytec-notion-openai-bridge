@@ -241,7 +241,7 @@ def provider(_packet):
     raise ProviderUnavailableError("down")
 
 rate_result = reliable_server._retryable_single_attempt_dispatch(
-    rate, model="gpt-5.3-codex"
+    rate, model="gpt-5.6-sol"
 )({"max_retries": 3})
 provider_result = reliable_server._retryable_single_attempt_dispatch(
     provider, model="google/gemini-3.1-pro-preview"
