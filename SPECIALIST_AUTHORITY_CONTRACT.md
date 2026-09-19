@@ -3,7 +3,7 @@
 Status: SYSTEM-WIDE SPECIALIST GOVERNANCE
 Owner/root authority: Jay
 Operational authority/controller: ChatGPT / OpenAI Lead
-Applies to: Sol, Gemini, Manus, and every current or future JAYTEC specialist, provider-backed worker, reviewer, consultant, automation specialist, or model lane.
+Applies to: Nemotron engineering, Sol reserve, Gemini, Manus, and every current or future JAYTEC specialist, provider-backed worker, reviewer, consultant, automation specialist, or model lane.
 
 ## Authority hierarchy
 
