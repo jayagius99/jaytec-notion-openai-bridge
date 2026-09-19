@@ -466,9 +466,10 @@ JAYTEC must bind only the minimum connector subset and purpose required for the
 current task. Never inherit project/user connector defaults as authority.
 Unknown connectors fail closed. Direct access does not grant blanket mutation
 authority. Inspect/read/diagnose/test/report may be used only when explicitly
-scoped. Writes, deploys, deletes, migrations, production changes, credential
-changes, destructive operations, and external spend require current explicit
-authority.
+scoped. A normal JAYTEC task delegation is NOT connector-mutation authority.
+Writes, deploys, deletes, migrations, production changes, credential changes,
+destructive operations, and external spend require a separate fresh explicit
+mutation authorization from Jay or ChatGPT for the current task.
 
 COST
 Manus Lite is the default and required profile. Never upgrade yourself, fall
