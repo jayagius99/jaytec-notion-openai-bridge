@@ -174,12 +174,18 @@ def build_codex_dispatch(
     codex_timeout_s: float = 45.0,
     provider_mode: str = "LOCKED_RESERVE",
     allowed_workflow_prefixes: tuple[str, ...] = ("JAYTEC_V2_", "JAYTEC_ENGINEERING_", "JAYTEC_OWNER_SOL_"),
+    max_output_tokens: int = 2000,
+    max_packet_retries: int = 1,
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     require_exact_model(codex_model, EXPECTED_CODEX_MODEL, context="codex")
     if codex_timeout_s <= 0:
         raise ValueError("codex_timeout_s must be positive")
     if provider_mode not in {"LOCKED_RESERVE", "BOUNDED_SOL_ONLY"}:
         raise ValueError("unsupported engineering provider mode")
+    if type(max_output_tokens) is not int or max_output_tokens < 256 or max_output_tokens > 4000:
+        raise ValueError("invalid engineering max_output_tokens")
+    if type(max_packet_retries) is not int or max_packet_retries < 0 or max_packet_retries > 1:
+        raise ValueError("invalid engineering max_packet_retries")
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         if provider_mode != "BOUNDED_SOL_ONLY":
@@ -194,6 +200,11 @@ def build_codex_dispatch(
             raise RuntimeError("engineering_chatgpt_authority_required")
         if authority.get("specialist_authority") != "SUBORDINATE":
             raise RuntimeError("engineering_specialist_must_be_subordinate")
+        requested_retries = packet.get("max_retries", 0)
+        if type(requested_retries) is not int or requested_retries < 0:
+            raise RuntimeError("engineering_invalid_retry_budget")
+        if requested_retries > max_packet_retries:
+            raise RuntimeError("engineering_retry_budget_exceeded")
         prompt = (
             "ROLE: GPT-5.6 SOL JAYTEC ENGINEERING SPECIALIST\n"
             + CODEX_CONTRACT
@@ -205,6 +216,7 @@ def build_codex_dispatch(
                 model=codex_model,
                 input=prompt,
                 reasoning={"effort": "high"},
+                max_output_tokens=max_output_tokens,
                 timeout=codex_timeout_s,
             )
         except Exception as exc:
