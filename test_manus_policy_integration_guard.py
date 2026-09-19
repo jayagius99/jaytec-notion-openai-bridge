@@ -9,6 +9,7 @@ EXCLUDED = {
     "manus_governance.py",
     "manus_dispatch_contract.py",
     "relationship_policy.py",
+    "participant_contracts.py",
     "test_manus_policy.py",
     "test_manus_governance.py",
     "test_manus_dispatch_contract.py",
