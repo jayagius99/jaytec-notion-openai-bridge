@@ -9,9 +9,11 @@ from specialist_adapters import EXPECTED_CODEX_MODEL, build_codex_dispatch
 class FakeResponses:
     def __init__(self):
         self.calls = 0
+        self.last_kwargs = None
 
     def create(self, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         payload = {
             "status": "SUCCESS",
             "model": "gpt-5.6-sol",
@@ -112,6 +114,28 @@ class SolAuthorityPolicyTests(unittest.TestCase):
         self.assertEqual(result["model"], "gpt-5.6-sol")
         self.assertEqual(client.responses.calls, 1)
 
+
+    def test_output_tokens_are_hard_capped(self):
+        client, dispatch = self.build()
+        result = dispatch(packet("JAYTEC_ENGINEERING_CODE_REVIEW"))
+        self.assertEqual(result["model"], "gpt-5.6-sol")
+        self.assertEqual(client.responses.last_kwargs["max_output_tokens"], 2000)
+
+    def test_retry_budget_above_one_is_rejected_before_provider_call(self):
+        client, dispatch = self.build()
+        p = packet("JAYTEC_ENGINEERING_CODE_REVIEW")
+        p["max_retries"] = 2
+        with self.assertRaisesRegex(RuntimeError, "engineering_retry_budget_exceeded"):
+            dispatch(p)
+        self.assertEqual(client.responses.calls, 0)
+
+    def test_one_retry_is_within_bounded_policy(self):
+        client, dispatch = self.build()
+        p = packet("JAYTEC_ENGINEERING_CODE_REVIEW")
+        p["max_retries"] = 1
+        result = dispatch(p)
+        self.assertEqual(result["model"], "gpt-5.6-sol")
+        self.assertEqual(client.responses.calls, 1)
 
 if __name__ == "__main__":
     unittest.main()
