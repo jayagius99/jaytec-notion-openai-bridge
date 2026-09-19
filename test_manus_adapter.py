@@ -47,6 +47,11 @@ def _route():
     return ma.BoundManusRoute(
         authorization=auth,
         connector_ids=("gh-id", "neon-id", "render-id"),
+        connector_permissions=(
+            ("github", "read"),
+            ("neon", "inspect"),
+            ("render", "diagnose"),
+        ),
     )
 
 
@@ -148,7 +153,7 @@ class ManusAdapterTests(unittest.TestCase):
             ]
         }
         with mock.patch.object(client, "list_connectors", return_value=installed):
-            names, ids = client.resolve_approved_connector_ids()
+            names, ids = client.resolve_approved_connector_ids(["github", "neon", "render"])
         self.assertEqual(names, ("github", "neon", "render"))
         self.assertEqual(ids, ("gh", "neon", "render"))
         self.assertNotIn("notion", ids)
@@ -169,7 +174,39 @@ class ManusAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 ma.ManusError, "MANUS_APPROVED_CONNECTOR_MISSING:render"
             ):
-                client.resolve_approved_connector_ids()
+                client.resolve_approved_connector_ids(["github", "neon", "render"])
+
+    def test_zero_connector_route_does_not_resolve_account_defaults(self):
+        client = ma.ManusClient(api_key="x")
+        with mock.patch.object(
+            client, "resolve_manus_project", return_value=("project-manus", "MANUS")
+        ), mock.patch.object(
+            client, "list_connectors"
+        ) as connector_list:
+            route = client.prepare_route(
+                scope="jaytec_delegated_task",
+                authority_source="chatgpt",
+                current_task_authorized=True,
+                requested_profile="lite",
+            )
+        self.assertEqual(route.connector_ids, ())
+        self.assertEqual(route.connector_permissions, ())
+        self.assertEqual(route.authorization.connectors, ())
+        connector_list.assert_not_called()
+
+    def test_connector_mutation_requires_current_authority(self):
+        client = ma.ManusClient(api_key="x")
+        with mock.patch.object(
+            client, "resolve_manus_project", return_value=("project-manus", "MANUS")
+        ):
+            with self.assertRaises(Exception):
+                client.prepare_route(
+                    scope="manus_internal",
+                    authority_source="manus",
+                    current_task_authorized=False,
+                    requested_profile="lite",
+                    requested_connector_purposes={"github": "write"},
+                )
 
     def test_prepare_route_cannot_select_paid_profile(self):
         client = ma.ManusClient(api_key="x")
@@ -191,7 +228,7 @@ class ManusAdapterTests(unittest.TestCase):
                 )
 
     def test_governed_message_always_injects_role_and_directive(self):
-        message = ma.ManusClient._governed_message("Return a test result.")
+        message = ma.ManusClient._governed_message(_route(), "Return a test result.")
         self.assertIn("BOUNDED AUTOMATION SPECIALIST", message)
         self.assertIn("JAYTEC_MANUS_GOVERNANCE_V1", message)
         self.assertIn("CURRENT DELEGATED TASK", message)
@@ -318,6 +355,56 @@ class ManusAdapterTests(unittest.TestCase):
             ["gh-id", "neon-id", "render-id"],
         )
         self.assertIn("JAYTEC_MANUS_GOVERNANCE_V1", payload["message"]["content"])
+
+    def test_send_message_with_no_connectors_clears_existing_set(self):
+        auth = authorize_manus_dispatch(
+            project_id="project-manus",
+            expected_project_id="project-manus",
+            project_name="MANUS",
+            connectors=[],
+            connectors_explicit=True,
+            scope="jaytec_delegated_task",
+            authority_source="chatgpt",
+            current_task_authorized=True,
+            requested_profile="lite",
+            route_supports_profile_selector=True,
+        )
+        route = ma.BoundManusRoute(
+            authorization=auth,
+            connector_ids=(),
+            connector_permissions=(),
+        )
+        client = ma.ManusClient(api_key="x")
+        captured = {}
+
+        def fake_request(method, endpoint, *, params=None, payload=None):
+            if endpoint == "task.detail":
+                return ma.ManusResponse(
+                    endpoint=endpoint,
+                    status_code=200,
+                    body={
+                        "ok": True,
+                        "task": {
+                            "id": "task-clear",
+                            "project_id": "project-manus",
+                            "agent_profile": "manus-1.6-lite",
+                        },
+                    },
+                )
+            if endpoint == "task.sendMessage":
+                captured["payload"] = payload
+                return ma.ManusResponse(
+                    endpoint=endpoint,
+                    status_code=200,
+                    body={"ok": True, "task_id": "task-clear"},
+                )
+            self.fail(f"unexpected endpoint {endpoint}")
+
+        with mock.patch.object(client, "_request", side_effect=fake_request):
+            client.send_message(route, "task-clear", "No connector use.")
+
+        self.assertTrue(captured["payload"]["clear_connectors"])
+        self.assertNotIn("connectors", captured["payload"]["message"])
 
     def test_old_non_lite_task_is_never_continued(self):
         client = ma.ManusClient(api_key="x")
