@@ -478,7 +478,7 @@ def create_mcp_app() -> FastMCP:
         return (
             "JAYTEC bridge is online. "
             f"Primary engineering model: {CODEX_MODEL} via OpenRouter. "
-            f"Gemini reviewer: {GEMINI_MODEL}. "
+            f"Independent reviewer: {GEMINI_MODEL}. "
             f"OpenAI premium reserve configured: {bool(OPENAI_API_KEY)}"
         )
 
