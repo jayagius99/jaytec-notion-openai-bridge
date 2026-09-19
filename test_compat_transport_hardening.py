@@ -109,8 +109,9 @@ class TestCompatTransportHardening(unittest.TestCase):
         self.assertTrue(fake.kwargs["stateless_http"])
         self.assertFalse(fake.kwargs["host_origin_protection"])
         middleware = fake.kwargs["middleware"]
-        self.assertEqual(len(middleware), 1)
-        self.assertIs(middleware[0].cls, compat_server.LegacyCatalogCompatMiddleware)
+        self.assertEqual(len(middleware), 2)
+        self.assertIs(middleware[0].cls, compat_server.MeetingBusMiddleware)
+        self.assertIs(middleware[1].cls, compat_server.LegacyCatalogCompatMiddleware)
 
     def test_declared_oversized_mcp_json_body_is_rejected_before_downstream(self):
         messages = [{"type": "http.request", "body": b"{}", "more_body": False}]
