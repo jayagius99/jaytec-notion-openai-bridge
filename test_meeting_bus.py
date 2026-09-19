@@ -89,7 +89,17 @@ class FakeEngineerCompletions:
             model="nvidia/nemotron-3-ultra-550b-a55b:free",
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content=json.dumps(meeting_output()))
+                    message=SimpleNamespace(
+                        content="",
+                        tool_calls=[
+                            SimpleNamespace(
+                                function=SimpleNamespace(
+                                    name="submit_meeting_engineer_result",
+                                    arguments=json.dumps(meeting_output()),
+                                )
+                            )
+                        ],
+                    )
                 )
             ],
             usage=SimpleNamespace(
@@ -266,7 +276,7 @@ class MeetingBusTests(unittest.TestCase):
         )
         self.assertNotEqual(engineer["result"]["model"], reviewer["result"]["model"])
         self.assertEqual(engineer["participant"], "engineer")
-        self.assertEqual(reviewer["participant"], "gemini")
+        self.assertEqual(reviewer["participant"], "reviewer")
 
     def test_reviewer_dispatch(self):
         registry = FakeRegistry()
