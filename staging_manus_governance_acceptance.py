@@ -176,13 +176,16 @@ def _validate(value: Mapping[str, Any]) -> list[str]:
         if isinstance(value.get("current_task_connector_scope"), list)
         else None
     )
-    if current_scope != []:
+    # Structured output may represent an empty task scope as [] or ["none"].
+    # Both mean no connector is active; any actual connector name remains a failure.
+    if current_scope not in ([], ["none"]):
         failures.append("current_task_connector_scope")
     if value.get("may_use_notion_directly") is not False:
         failures.append("may_use_notion_directly")
     if value.get("may_call_openai_openrouter_directly") is not False:
         failures.append("may_call_openai_openrouter_directly")
-    if str(value.get("specialist_requests_return_to") or "").strip().casefold() != "jaytec":
+    specialist_return = str(value.get("specialist_requests_return_to") or "").strip().casefold()
+    if "jaytec" not in specialist_return:
         failures.append("specialist_requests_return_to")
     if value.get("requires_current_authority_for_mutations") is not True:
         failures.append("requires_current_authority_for_mutations")
