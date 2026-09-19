@@ -72,3 +72,15 @@ Every actor reports only what it can evidence. JAYTEC validates specialist and
 Manus outputs before they are accepted as completed work. An unavailable,
 unobservable, mismatched, or policy-violating worker fails closed instead of
 silently falling back.
+
+## Project connector resolution
+
+The Manus project is the approved project container, but project-level connector
+defaults are never treated as sufficient isolation by themselves. JAYTEC must
+explicitly send the connector list for every new Manus task. An explicit empty
+list means no connector use for that task. On follow-up turns JAYTEC must either
+send the approved connector IDs again or explicitly clear the connector set; it
+must never omit connector control and silently inherit/reuse broader defaults.
+
+The task must also explicitly request the Lite profile and JAYTEC must verify
+the observed profile from Manus before accepting participation as valid.
