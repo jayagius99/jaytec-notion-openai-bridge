@@ -23,8 +23,12 @@ Manus does not directly dispatch Gemini, the engineering specialist, Notion,
 OpenAI, or OpenRouter. A Manus specialist request always returns to JAYTEC for
 routing.
 
-Manus may directly use only GitHub, Neon, and Render. Read/inspect/diagnose/test
-is the normal posture. Mutation requires fresh current-task authority.
+Manus may directly use only GitHub, Neon, and Render, but that is a maximum
+allowlist rather than an automatic grant. Each task receives the minimum
+explicit subset it needs; default connector scope is NONE. Project/user
+connector defaults are never accepted as JAYTEC authority.
+Read/inspect/diagnose/test is allowed only inside that explicit task scope.
+Mutation requires fresh current-task authority.
 
 ## Gemini and engineering specialist
 
