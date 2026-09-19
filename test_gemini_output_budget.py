@@ -51,6 +51,8 @@ class GeminiOutputBudgetTests(unittest.TestCase):
         self.assertLessEqual(kwargs["max_tokens"], 4096)
         self.assertEqual({"type": "json_object"}, kwargs["response_format"])
         self.assertFalse(kwargs["extra_body"]["provider"]["allow_fallbacks"])
+        self.assertEqual("low", kwargs["extra_body"]["reasoning"]["effort"])
+        self.assertEqual("low", result["bridge_diagnostics"]["reasoning_effort"])
         self.assertEqual("SUCCESS", result["status"])
         self.assertFalse(result["bridge_diagnostics"]["provider_fallbacks"])
 
