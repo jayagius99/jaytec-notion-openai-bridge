@@ -11,9 +11,9 @@ Standing rule:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
-import re
 
 
 class ManusProfile(StrEnum):
@@ -30,8 +30,13 @@ _PROFILE_ALIASES = {
     "max": ManusProfile.MAX,
     "manus max": ManusProfile.MAX,
 }
+
+# Manus accepts versioned aliases but does not use the version segment to
+# select the model independently. An unsuffixed version therefore means the
+# paid/default STANDARD profile; explicit -lite and -max suffixes map to their
+# corresponding tiers.
 _VERSIONED_PROFILE = re.compile(
-    r"^(?:manus[- ]?)?(?P<version>\\d+(?:\\.\\d+)+)(?:[- ](?P<tier>lite|max))?$",
+    r"^(?:manus[- ]?)?(?P<version>\d+(?:\.\d+)+)(?:[- ](?P<tier>lite|max))?$",
     re.I,
 )
 
@@ -59,13 +64,15 @@ class ManusRouteDecision:
 
 
 def canonicalize_manus_profile(value: str | ManusProfile | None) -> ManusProfile:
-    """Normalize UI/API aliases into JAYTEC's canonical Manus profiles."""
+    """Normalize supported UI/API aliases into canonical Manus profiles."""
 
     if value is None:
         return ManusProfile.LITE
     if isinstance(value, ManusProfile):
         return value
+
     normalized = " ".join(str(value).strip().casefold().split())
+
     profile = _PROFILE_ALIASES.get(normalized)
     if profile is not None:
         return profile
@@ -92,12 +99,13 @@ def authorize_manus_route(
 ) -> ManusRouteDecision:
     """Authorize a Manus dispatch before any provider call is made.
 
-    The default is always Lite. A route without an explicit profile selector
-    fails closed because it could silently land on a paid Manus tier.
+    Default is always Lite. A route without an explicit profile selector fails
+    closed because Manus otherwise defaults to STANDARD.
     """
 
     profile = canonicalize_manus_profile(requested_profile)
 
+    # Avoid truthiness bugs such as "false" being accepted as True.
     if type(route_supports_profile_selector) is not bool:
         raise ManusProfilePolicyError("MANUS_SELECTOR_CAPABILITY_INVALID")
     if type(explicit_paid_override) is not bool:
@@ -112,10 +120,14 @@ def authorize_manus_route(
             authority = (
                 paid_override_authority
                 if isinstance(paid_override_authority, PaidOverrideAuthority)
-                else PaidOverrideAuthority(str(paid_override_authority).strip().casefold())
+                else PaidOverrideAuthority(
+                    str(paid_override_authority).strip().casefold()
+                )
             )
         except ValueError as exc:
-            raise ManusProfilePolicyError("MANUS_OVERRIDE_AUTHORITY_INVALID") from exc
+            raise ManusProfilePolicyError(
+                "MANUS_OVERRIDE_AUTHORITY_INVALID"
+            ) from exc
 
     if profile is not ManusProfile.LITE:
         if not explicit_paid_override:
@@ -134,11 +146,11 @@ def verify_manus_profile(
     *,
     observed_profile: str | ManusProfile | None,
 ) -> ManusRouteDecision:
-    """Verify the provider-observed Manus profile after dispatch.
+    """Verify provider-observed Manus profile after dispatch.
 
-    Missing identity is not success. This mirrors JAYTEC's exact-model
-    specialist policy: a task may have run, but it cannot be accepted as
-    verified Manus participation without observable matching identity.
+    Missing identity is not success. This mirrors JAYTEC's exact-model policy:
+    a task may have run, but it cannot count as verified Manus participation
+    without observable matching profile identity.
     """
 
     if observed_profile is None:
@@ -151,7 +163,11 @@ def verify_manus_profile(
     return decision
 
 
-def allow_manus_fallback(*, from_profile: str | ManusProfile, to_profile: str | ManusProfile) -> bool:
+def allow_manus_fallback(
+    *,
+    from_profile: str | ManusProfile,
+    to_profile: str | ManusProfile,
+) -> bool:
     """JAYTEC never automatically falls back between Manus profiles."""
 
     canonicalize_manus_profile(from_profile)
