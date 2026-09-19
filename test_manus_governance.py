@@ -178,7 +178,9 @@ class ManusGovernanceTests(unittest.TestCase):
         for phrase in (
             "Manus may evolve Manus",
             "MUST NOT edit",
-            "Notion is a gateway/transfer path",
+            "The Notion Agent is NOT JAYTEC",
+            '"JAYTEC" always means the JAYTEC system/control',
+            "strict pass-through transport only",
             "GitHub, Neon, and Render only",
             "Manus Lite is the default and required profile",
             "Never claim success because an action merely ran",
