@@ -46,10 +46,11 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
             "role_question": "Challenge one assumption.",
         }
         prompt = meeting_bus._participant_prompt(request)
-        self.assertIn("ChatGPT/OpenAI Lead is the sole", prompt)
-        self.assertIn("subordinate", prompt)
-        self.assertIn("Do not self-initiate JAYTEC work", prompt)
-        self.assertIn("Return advice/evidence only to ChatGPT", prompt)
+        normalized = " ".join(prompt.split())
+        self.assertIn("ChatGPT/OpenAI Lead is the sole", normalized)
+        self.assertIn("subordinate", normalized)
+        self.assertIn("Do not self-initiate JAYTEC work", normalized)
+        self.assertIn("Return advice/evidence only to ChatGPT", normalized)
 
     def test_durable_governance_document_exists(self):
         text = Path("SPECIALIST_AUTHORITY_CONTRACT.md").read_text(encoding="utf-8")
