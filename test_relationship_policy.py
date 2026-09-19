@@ -7,6 +7,7 @@ from relationship_policy import (
     authorize_relationship,
     manus_outbound_destinations,
     notion_outbound_destinations,
+    resolve_identity_label,
     specialist_outbound_destinations,
 )
 
@@ -83,7 +84,46 @@ class RelationshipPolicyTests(unittest.TestCase):
             purpose=Purpose.TRANSFER_REQUEST,
             current_task_authorized=True,
             jay_authorized_notion_via_chatgpt=True,
+            notion_agent_explicitly_requested=True,
+            notion_transport_instructions_complete=True,
+            notion_chatgpt_controlled=True,
         )
+
+    def test_jaytec_and_notion_are_distinct_canonical_identities(self):
+        self.assertIs(resolve_identity_label("JAYTEC"), Actor.JAYTEC)
+        self.assertIs(resolve_identity_label("NOTION"), Actor.NOTION)
+        self.assertIs(resolve_identity_label("NOTION AGENT"), Actor.NOTION)
+        self.assertNotEqual(Actor.JAYTEC, Actor.NOTION)
+        self.assertEqual("notion_agent", Actor.NOTION.value)
+        with self.assertRaisesRegex(RelationshipPolicyError, "RELATIONSHIP_IDENTITY_UNKNOWN"):
+            resolve_identity_label("notion_gateway")
+
+    def test_notion_transport_requires_explicit_agent_request_exact_packet_and_chatgpt_control(self):
+        base = dict(
+            source=Actor.JAYTEC,
+            destination=Actor.NOTION,
+            purpose=Purpose.TRANSFER_REQUEST,
+            current_task_authorized=True,
+            jay_authorized_notion_via_chatgpt=True,
+        )
+        for missing in (
+            "notion_agent_explicitly_requested",
+            "notion_transport_instructions_complete",
+            "notion_chatgpt_controlled",
+        ):
+            flags = {
+                "notion_agent_explicitly_requested": True,
+                "notion_transport_instructions_complete": True,
+                "notion_chatgpt_controlled": True,
+            }
+            flags[missing] = False
+            with self.subTest(missing=missing):
+                with self.assertRaises(RelationshipPolicyError):
+                    authorize_relationship(**base, **flags)
+
+    def test_saying_jaytec_never_resolves_to_notion_agent(self):
+        self.assertIs(resolve_identity_label("use JAYTEC".replace("use ", "")), Actor.JAYTEC)
+        self.assertIsNot(resolve_identity_label("JAYTEC"), Actor.NOTION)
 
     def test_connector_read_is_allowed_but_mutation_requires_separate_authority(self):
         for destination in (Actor.GITHUB, Actor.NEON, Actor.RENDER):
