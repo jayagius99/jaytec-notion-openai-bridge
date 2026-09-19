@@ -90,6 +90,23 @@ class ProviderUnavailableError(RuntimeError):
         self.retry_after = retry_after
 
 
+class CreditTopupRequiredError(RuntimeError):
+    """Hard blocker: a required provider cannot continue until credits are topped up."""
+
+    def __init__(
+        self,
+        provider: str,
+        *,
+        blocked_work: str = "",
+        details: Optional[Mapping[str, Any]] = None,
+    ):
+        safe_provider = str(provider or "unknown").strip() or "unknown"
+        super().__init__(f"{safe_provider} credit top-up required")
+        self.provider = safe_provider
+        self.blocked_work = str(blocked_work or "").strip()
+        self.details = dict(details or {})
+
+
 @dataclass(frozen=True)
 class ValidationResult:
     ok: bool
@@ -312,6 +329,7 @@ def _base_envelope(packet: Mapping[str, Any], *, status: str, execution_id: str)
         "worker_trace": [],
         "timing": {},
         "usage_summary": {},
+        "credit_topup_required": [],
         "packet_hash": packet_hash(packet),
         "integrity": {"algorithm": "sha256", "signature": None},
         "return_schema_version": RETURN_SCHEMA_VERSION,
@@ -471,6 +489,39 @@ def _invoke_with_retries(
             if not isinstance(raw, Mapping):
                 raise TypeError("dispatcher result must be mapping")
             return _normalize_worker_result(specialist, raw, packet["allowed_operations"]), retry_trace
+        except CreditTopupRequiredError as exc:
+            blocker = {
+                "required": True,
+                "provider": exc.provider,
+                "importance": "BLOCKING",
+                "action_required": f"Top up {exc.provider} credits to continue the blocked work.",
+                "blocked_work": exc.blocked_work or f"{specialist} specialist work",
+            }
+            if exc.details:
+                blocker["provider_details"] = redact(dict(exc.details))
+            retry_trace.append(
+                {
+                    "specialist": specialist,
+                    "attempt": attempt + 1,
+                    "error": type(exc).__name__,
+                    "credit_topup_required": True,
+                    "provider": exc.provider,
+                }
+            )
+            return (
+                {
+                    "status": "FAILED_CLOSED",
+                    "model": EXPECTED_MODELS[specialist],
+                    "findings": [f"CREDIT TOP-UP REQUIRED: {exc.provider}"],
+                    "evidence": [],
+                    "unresolved_items": [
+                        f"credit_topup_required:{exc.provider}",
+                        "work_blocked_until_credit_topup",
+                    ],
+                    "credit_topup_required": blocker,
+                },
+                retry_trace,
+            )
         except TimeoutError:
             return (
                 {
@@ -573,6 +624,9 @@ def deterministic_fan_in(
             if isinstance(safe.get("side_effects_attempted"), list)
             else []
         )
+        blocker = safe.get("credit_topup_required")
+        if isinstance(blocker, Mapping) and blocker.get("required") is True:
+            env["credit_topup_required"].append(redact(dict(blocker)))
 
     claims = {s: results[s].get("conclusion") for s in ordered if results[s].get("conclusion") is not None}
     if len(set(map(_canonical_json, claims.values()))) > 1:
