@@ -198,7 +198,7 @@ class TestCompatProcessIsolation(unittest.TestCase):
                 "RUNTIME_MODE": "staging_candidate",
                 "MCP_AUTH_TOKEN": "test",
                 "OPENAI_API_KEY": "test",
-                "CODEX_MODEL": "gpt-5.3-codex",
+                "CODEX_MODEL": "gpt-5.6-sol",
                 "GEMINI_MODEL": "google/gemini-3.1-pro-preview",
                 "DURABLE_WORKER_ENABLED": "0",
                 "GUARDIAN_LOOP_ENABLED": "0",
