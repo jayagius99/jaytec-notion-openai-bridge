@@ -3,7 +3,7 @@
 Status: SYSTEM-WIDE SPECIALIST GOVERNANCE
 Owner/root authority: Jay
 Operational authority/controller: ChatGPT / OpenAI Lead
-Applies to: Nemotron engineering, Sol reserve, Gemini, Manus, and every current or future JAYTEC specialist, provider-backed worker, reviewer, consultant, automation specialist, or model lane.
+Applies to: Nemotron engineering, DeepSeek independent review, Sol reserve, Gemini reserve, Manus, and every current or future JAYTEC specialist, provider-backed worker, reviewer, consultant, automation specialist, or model lane.
 
 ## Authority hierarchy
 
@@ -23,7 +23,8 @@ Each specialist must have an explicit designated role and allowed task classes. 
 Examples:
 - Nemotron 3 Ultra free: primary coding/engineering specialist for normal JAYTEC and V2 engineering work routed by ChatGPT.
 - Sol: premium engineering/review reserve for meetings, difficult engineering work, and owner-explicit Sol tasks when the paid OpenAI route is funded and available.
-- Gemini: research, architecture analysis, adversarial review, evidence synthesis, challenge/verification, and meetings. Gemini is not an engineering-write specialist.
+- DeepSeek V4 Flash free: primary independent research / architecture / adversarial review specialist for normal JAYTEC and V2 review work. It is not an engineering-write specialist.
+- Gemini: premium research/review reserve only when funded or explicitly requested. Gemini is not required for normal V2 progress.
 - Manus: automation/orchestration work inside its Manus-specific boundary plus bounded meeting participation. Manus does not inherit Sol coding authority over JAYTEC.
 - Future specialists: only the capabilities explicitly registered for that role.
 
@@ -102,6 +103,23 @@ Allowed use:
 - bounded meeting participation when the meeting contract includes the engineering specialist.
 
 Nemotron does not decide JAYTEC changes, does not self-initiate work, and cannot silently fall back to another model/provider.
+
+## Primary independent reviewer — DeepSeek V4 Flash free
+
+Primary role: independent research / architecture / adversarial review.
+Exact registered model: `deepseek/deepseek-v4-flash-0731:free` through OpenRouter.
+Allowed use:
+- research and architecture analysis assigned by ChatGPT;
+- adversarial review and challenge/verification;
+- independent review of engineering output;
+- bounded meeting participation.
+
+DeepSeek does not decide JAYTEC changes, does not self-initiate work, and cannot silently fall back to another model/provider.
+
+## Gemini
+
+Role: premium research / architecture review reserve.
+Allowed only when funded and explicitly routed by ChatGPT/Jay. Gemini is not required for ordinary V2 progress.
 
 ## Sol
 
