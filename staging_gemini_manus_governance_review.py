@@ -195,4 +195,7 @@ if __name__ == "__main__":
     if code == 0 and os.environ.get("RUN_LIVE_GEMINI_TOR_SECURITY_REVIEW", "0").strip() == "1":
         from staging_gemini_tor_security_review import main as tor_security_review_main
         code = tor_security_review_main()
+    if code == 0 and os.environ.get("RUN_LIVE_GEMINI_TOR_BACKEND_REVIEW", "0").strip() == "1":
+        from staging_gemini_tor_backend_review import main as tor_backend_review_main
+        code = tor_backend_review_main()
     raise SystemExit(code)
