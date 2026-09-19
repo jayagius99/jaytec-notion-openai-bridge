@@ -17,7 +17,7 @@ class Actor(StrEnum):
     MANUS = "manus"
     GEMINI = "gemini"
     ENGINEERING = "engineering_specialist"
-    NOTION = "notion_gateway"
+    # NOTION always means the Notion Agent. It is never an alias for JAYTEC.\n    NOTION = "notion_agent"
     GITHUB = "github"
     NEON = "neon"
     RENDER = "render"
@@ -58,6 +58,7 @@ class EdgeRule:
     purposes: frozenset[Purpose]
     requires_current_authority: bool = False
     requires_jay_via_chatgpt_for_notion: bool = False
+    notion_pass_through_only: bool = False
 
 
 READISH = frozenset({
@@ -90,6 +91,7 @@ EDGE_RULES = (
         frozenset({Purpose.TRANSFER_REQUEST}),
         True,
         True,
+        True,
     ),
     EdgeRule(Actor.NOTION, Actor.JAYTEC, frozenset({Purpose.TRANSFER_RESULT})),
     EdgeRule(Actor.MANUS, Actor.GITHUB, READISH | MUTATING, False),
@@ -111,6 +113,9 @@ def authorize_relationship(
     current_task_authorized: bool = False,
     connector_mutation_authorized: bool = False,
     jay_authorized_notion_via_chatgpt: bool = False,
+    notion_agent_explicitly_requested: bool = False,
+    notion_transport_instructions_complete: bool = False,
+    notion_chatgpt_controlled: bool = False,
 ) -> EdgeRule:
     if type(current_task_authorized) is not bool:
         raise RelationshipPolicyError("RELATIONSHIP_CURRENT_AUTH_INVALID")
@@ -118,6 +123,12 @@ def authorize_relationship(
         raise RelationshipPolicyError("RELATIONSHIP_MUTATION_AUTH_INVALID")
     if type(jay_authorized_notion_via_chatgpt) is not bool:
         raise RelationshipPolicyError("RELATIONSHIP_NOTION_AUTH_INVALID")
+    if type(notion_agent_explicitly_requested) is not bool:
+        raise RelationshipPolicyError("RELATIONSHIP_NOTION_EXPLICIT_FLAG_INVALID")
+    if type(notion_transport_instructions_complete) is not bool:
+        raise RelationshipPolicyError("RELATIONSHIP_NOTION_TRANSPORT_FLAG_INVALID")
+    if type(notion_chatgpt_controlled) is not bool:
+        raise RelationshipPolicyError("RELATIONSHIP_NOTION_CONTROL_FLAG_INVALID")
 
     try:
         src = source if isinstance(source, Actor) else Actor(str(source).strip().casefold())
@@ -150,8 +161,15 @@ def authorize_relationship(
     elif rule.requires_current_authority and not current_task_authorized:
         raise RelationshipPolicyError("RELATIONSHIP_CURRENT_AUTH_REQUIRED")
 
-    if rule.requires_jay_via_chatgpt_for_notion and not jay_authorized_notion_via_chatgpt:
-        raise RelationshipPolicyError("RELATIONSHIP_NOTION_AUTH_REQUIRED")
+    if rule.requires_jay_via_chatgpt_for_notion:
+        if not jay_authorized_notion_via_chatgpt:
+            raise RelationshipPolicyError("RELATIONSHIP_NOTION_AUTH_REQUIRED")
+        if not notion_agent_explicitly_requested:
+            raise RelationshipPolicyError("RELATIONSHIP_NOTION_AGENT_EXPLICIT_REQUEST_REQUIRED")
+        if rule.notion_pass_through_only and not notion_transport_instructions_complete:
+            raise RelationshipPolicyError("RELATIONSHIP_NOTION_EXACT_TRANSPORT_REQUIRED")
+        if rule.notion_pass_through_only and not notion_chatgpt_controlled:
+            raise RelationshipPolicyError("RELATIONSHIP_NOTION_CHATGPT_CONTROL_REQUIRED")
 
     return rule
 
@@ -169,3 +187,27 @@ def specialist_outbound_destinations() -> dict[Actor, frozenset[Actor]]:
         actor: frozenset(r.destination for r in EDGE_RULES if r.source is actor)
         for actor in (Actor.GEMINI, Actor.ENGINEERING)
     }
+
+
+CANONICAL_IDENTITY_LABELS = {
+    "JAY": Actor.JAY,
+    "CHATGPT": Actor.CHATGPT,
+    "JAYTEC": Actor.JAYTEC,
+    "GEMINI": Actor.GEMINI,
+    "SOL": Actor.ENGINEERING,
+    "GPT-5.6 SOL": Actor.ENGINEERING,
+    "MANUS": Actor.MANUS,
+    "NOTION": Actor.NOTION,
+    "NOTION AGENT": Actor.NOTION,
+}
+
+
+def resolve_identity_label(label: str) -> Actor:
+    """Resolve Jay-facing role labels without ever conflating JAYTEC and Notion."""
+    if not isinstance(label, str) or not label.strip():
+        raise RelationshipPolicyError("RELATIONSHIP_IDENTITY_LABEL_INVALID")
+    normalized = " ".join(label.strip().upper().split())
+    actor = CANONICAL_IDENTITY_LABELS.get(normalized)
+    if actor is None:
+        raise RelationshipPolicyError("RELATIONSHIP_IDENTITY_UNKNOWN")
+    return actor
