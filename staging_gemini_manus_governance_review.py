@@ -186,4 +186,7 @@ if __name__ == "__main__":
     if code == 0 and os.environ.get("RUN_LIVE_GEMINI_SUPERPROMPT_REVIEW", "0").strip() == "1":
         from staging_gemini_superprompt_review import main as superprompt_review_main
         code = superprompt_review_main()
+    if code == 0 and os.environ.get("RUN_LIVE_GEMINI_G1_P11_REVIEW", "0").strip() == "1":
+        from staging_gemini_g1_p11_review import main as g1_p11_review_main
+        code = g1_p11_review_main()
     raise SystemExit(code)
