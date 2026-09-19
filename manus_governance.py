@@ -20,6 +20,27 @@ from typing import Any, Mapping, Sequence
 DIRECTIVE_VERSION = "JAYTEC_MANUS_GOVERNANCE_V1"
 MAX_PACKET_BYTES = 32_000
 MAX_TEXT_CHARS = 12_000
+MAX_EVIDENCE_ITEMS = 20
+MAX_EVIDENCE_BYTES = 24_000
+MAX_SPECIALIST_REQUEST_BYTES = 16_000
+MAX_IDENTIFIER_CHARS = 200
+
+_COMPLETION_FACETS = frozenset({
+    "instruction_match_verified",
+    "scope_verified",
+    "evidence_verified",
+    "no_unauthorized_side_effects",
+    "duplicate_work_check_passed",
+})
+_EVIDENCE_KINDS = frozenset({
+    "provider_observation",
+    "connector_observation",
+    "runtime_observation",
+    "artifact",
+    "test",
+    "audit_record",
+})
+_SPECIALIST_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 
 APPROVED_DIRECT_CONNECTORS = frozenset({"github", "neon", "render"})
 BLOCKED_DIRECT_CONNECTORS = frozenset({
@@ -292,7 +313,14 @@ def build_minimal_task_packet(
         "return_schema": {
             "status": "SUCCESS|PARTIAL_SUCCESS|NEEDS_JAYTEC|FAILED_CLOSED",
             "summary": "string",
-            "evidence": ["string"],
+            "evidence": [{
+                "kind": "provider_observation|connector_observation|runtime_observation|artifact|test|audit_record",
+                "source": "string",
+                "reference": "string",
+                "observed_at": "RFC3339 string",
+                "claim": "string",
+                "supports": ["completion_verification_field"],
+            }],
             "changes_made": ["string"],
             "unresolved_items": ["string"],
             "specialist_requests": ["object"],
@@ -358,6 +386,78 @@ def packet_digest(packet: Mapping[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def validate_completion_evidence(
+    evidence: Any,
+    *,
+    require_all_facets: bool,
+) -> tuple[Mapping[str, Any], ...]:
+    """Validate bounded provenance-bearing evidence for Manus completion."""
+
+    if not isinstance(evidence, list) or not evidence:
+        raise ManusGovernanceError("MANUS_SUCCESS_EVIDENCE_MISSING")
+    if len(evidence) > MAX_EVIDENCE_ITEMS:
+        raise ManusGovernanceError("MANUS_EVIDENCE_TOO_MANY_ITEMS")
+
+    normalized: list[Mapping[str, Any]] = []
+    covered: set[str] = set()
+    required_fields = {"kind", "source", "reference", "observed_at", "claim", "supports"}
+
+    for index, item in enumerate(evidence):
+        if not isinstance(item, Mapping):
+            raise ManusGovernanceError(f"MANUS_EVIDENCE_ITEM_INVALID:{index}")
+        if set(item) != required_fields:
+            raise ManusGovernanceError(f"MANUS_EVIDENCE_FIELDS_INVALID:{index}")
+
+        kind = str(item.get("kind") or "").strip()
+        source = str(item.get("source") or "").strip()
+        reference = str(item.get("reference") or "").strip()
+        observed_at = str(item.get("observed_at") or "").strip()
+        claim = str(item.get("claim") or "").strip()
+        supports = item.get("supports")
+
+        if kind not in _EVIDENCE_KINDS:
+            raise ManusGovernanceError(f"MANUS_EVIDENCE_KIND_INVALID:{index}")
+        if not source or len(source) > 200:
+            raise ManusGovernanceError(f"MANUS_EVIDENCE_SOURCE_INVALID:{index}")
+        if not reference or len(reference) > 1000:
+            raise ManusGovernanceError(f"MANUS_EVIDENCE_REFERENCE_INVALID:{index}")
+        if not claim or len(claim) > 2000:
+            raise ManusGovernanceError(f"MANUS_EVIDENCE_CLAIM_INVALID:{index}")
+        if (
+            not observed_at
+            or len(observed_at) > 64
+            or "T" not in observed_at
+            or not (observed_at.endswith("Z") or "+" in observed_at[10:])
+        ):
+            raise ManusGovernanceError(f"MANUS_EVIDENCE_TIME_INVALID:{index}")
+        if (
+            not isinstance(supports, list)
+            or not supports
+            or not all(isinstance(value, str) and value in _COMPLETION_FACETS for value in supports)
+        ):
+            raise ManusGovernanceError(f"MANUS_EVIDENCE_SUPPORTS_INVALID:{index}")
+
+        covered.update(supports)
+        normalized.append(dict(item))
+
+    encoded = json.dumps(
+        _redact(normalized),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(encoded) > MAX_EVIDENCE_BYTES:
+        raise ManusGovernanceError("MANUS_EVIDENCE_TOO_LARGE")
+
+    if require_all_facets:
+        missing = sorted(_COMPLETION_FACETS - covered)
+        if missing:
+            raise ManusGovernanceError(
+                "MANUS_EVIDENCE_FACETS_MISSING:" + ",".join(missing)
+            )
+    return tuple(normalized)
+
+
 def verify_manus_completion(result: Mapping[str, Any]) -> None:
     """Reject a success claim that was not explicitly checked and evidenced."""
 
@@ -376,41 +476,143 @@ def verify_manus_completion(result: Mapping[str, Any]) -> None:
     if not isinstance(verification, Mapping):
         raise ManusGovernanceError("MANUS_RESULT_VERIFICATION_MISSING")
 
-    required_true = (
-        "instruction_match_verified",
-        "scope_verified",
-        "evidence_verified",
-        "no_unauthorized_side_effects",
-        "duplicate_work_check_passed",
-    )
+    required_true = tuple(sorted(_COMPLETION_FACETS))
     if status == "SUCCESS":
         failed = [key for key in required_true if verification.get(key) is not True]
         if failed:
             raise ManusGovernanceError(
                 "MANUS_SUCCESS_NOT_VERIFIED:" + ",".join(failed)
             )
-        evidence = result.get("evidence")
-        if not isinstance(evidence, list) or not evidence:
-            raise ManusGovernanceError("MANUS_SUCCESS_EVIDENCE_MISSING")
+        validate_completion_evidence(
+            result.get("evidence"),
+            require_all_facets=True,
+        )
+
+
+def validate_specialist_request(request: Mapping[str, Any]) -> None:
+    """Validate a bounded Manus -> JAYTEC escalation packet."""
+
+    required = {
+        "type",
+        "request_id",
+        "parent_task_id",
+        "directive_version",
+        "specialist",
+        "objective",
+        "reason",
+        "required_context",
+        "authority",
+        "packet_sha256",
+    }
+    if not isinstance(request, Mapping) or set(request) != required:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_FIELDS_INVALID")
+    if request.get("type") != "SPECIALIST_REQUEST":
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_TYPE_INVALID")
+    if request.get("directive_version") != DIRECTIVE_VERSION:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_VERSION_INVALID")
+    if request.get("authority") != "REQUEST_ONLY_NO_SELF_DISPATCH":
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_AUTHORITY_INVALID")
+
+    for field in ("request_id", "parent_task_id"):
+        value = request.get(field)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value) > MAX_IDENTIFIER_CHARS
+        ):
+            raise ManusGovernanceError(f"MANUS_SPECIALIST_REQUEST_{field.upper()}_INVALID")
+
+    specialist = request.get("specialist")
+    if not isinstance(specialist, str) or not _SPECIALIST_NAME.fullmatch(specialist):
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_SPECIALIST_INVALID")
+
+    for field in ("objective", "reason"):
+        value = request.get(field)
+        if not isinstance(value, str) or not value.strip() or len(value) > MAX_TEXT_CHARS:
+            raise ManusGovernanceError(f"MANUS_SPECIALIST_REQUEST_{field.upper()}_INVALID")
+
+    if not isinstance(request.get("required_context"), Mapping):
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_CONTEXT_INVALID")
+
+    unsigned = {key: value for key, value in request.items() if key != "packet_sha256"}
+    encoded_unsigned = json.dumps(
+        _redact(unsigned),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    expected = hashlib.sha256(encoded_unsigned).hexdigest()
+    if request.get("packet_sha256") != expected:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_DIGEST_INVALID")
+
+    encoded = json.dumps(
+        _redact(dict(request)),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(encoded) > MAX_SPECIALIST_REQUEST_BYTES:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_TOO_LARGE")
 
 
 def specialist_request(
     *,
+    parent_task_id: str,
     specialist: str,
     objective: str,
     reason: str,
     required_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a request Manus returns to JAYTEC; it is not a self-dispatch token."""
+    """Create a bounded request Manus returns to JAYTEC; never a dispatch token."""
 
-    return {
+    parent = str(parent_task_id).strip()
+    role = str(specialist).strip()
+    objective_value = str(objective).strip()
+    reason_value = str(reason).strip()
+    if not parent or len(parent) > MAX_IDENTIFIER_CHARS:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_PARENT_TASK_ID_INVALID")
+    if not _SPECIALIST_NAME.fullmatch(role):
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_SPECIALIST_INVALID")
+    if not objective_value or len(objective_value) > MAX_TEXT_CHARS:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_OBJECTIVE_INVALID")
+    if not reason_value or len(reason_value) > MAX_TEXT_CHARS:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_REASON_INVALID")
+
+    context = _redact(dict(required_context or {}))
+    seed = json.dumps(
+        {
+            "parent_task_id": parent,
+            "specialist": role,
+            "objective": objective_value,
+            "reason": reason_value,
+            "required_context": context,
+            "directive_version": DIRECTIVE_VERSION,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    request_id = "sr-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+    packet: dict[str, Any] = {
         "type": "SPECIALIST_REQUEST",
-        "specialist": str(specialist).strip(),
-        "objective": str(objective).strip()[:MAX_TEXT_CHARS],
-        "reason": str(reason).strip()[:MAX_TEXT_CHARS],
-        "required_context": _redact(dict(required_context or {})),
+        "request_id": request_id,
+        "parent_task_id": parent,
+        "directive_version": DIRECTIVE_VERSION,
+        "specialist": role,
+        "objective": objective_value,
+        "reason": reason_value,
+        "required_context": context,
         "authority": "REQUEST_ONLY_NO_SELF_DISPATCH",
     }
+    unsigned = json.dumps(
+        packet,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    packet["packet_sha256"] = hashlib.sha256(unsigned).hexdigest()
+    validate_specialist_request(packet)
+    return packet
 
 
 def render_directive() -> str:
@@ -446,9 +648,11 @@ unless Jay or ChatGPT explicitly authorizes that exact current-task change.
 If not authorized, report the proposal and return it to JAYTEC.
 
 SPECIALISTS
-You may ask JAYTEC for specialist help. Return a minimal SPECIALIST_REQUEST with
-only the context necessary. Do not call OpenAI or OpenRouter directly. JAYTEC
-chooses and invokes specialists, then returns the result to you.
+You may ask JAYTEC for specialist help. Return only a bounded, versioned,
+correlated SPECIALIST_REQUEST using JAYTEC's request schema, with the minimum
+context necessary. It is a request only, never a dispatch token. Do not call
+OpenAI or OpenRouter directly. JAYTEC validates the packet, chooses and invokes
+specialists, then returns the result to you.
 
 NOTION
 Notion is a gateway/transfer path, not your worker. You must not invoke or
@@ -490,7 +694,7 @@ COMPLETION
 Never claim success because an action merely ran. Before SUCCESS, verify:
 1. the actual result matches Jay/ChatGPT's instructions,
 2. scope and authority were obeyed,
-3. evidence supports the claimed result,
+3. provenance-bearing structured evidence supports every claimed verification facet,
 4. no unauthorized side effect occurred,
 5. duplicate-work checks passed,
 6. JAYTEC verified the Manus Lite profile.
