@@ -26,15 +26,17 @@ from manus_dispatch_contract import (
     ManusDispatchContractError,
     authorize_manus_dispatch,
 )
-from manus_governance import AuthoritySource, ManusScope
+from manus_governance import AuthoritySource, ManusScope, render_directive
 from manus_policy import ManusProfilePolicyError, verify_manus_profile
+from participant_contracts import render_actor_contract
+from relationship_policy import Actor
 
 MANUS_BASE_URL = os.environ.get("MANUS_BASE_URL", "https://api.manus.ai/v2").rstrip("/")
 MANUS_API_KEY = os.environ.get("MANUS_API_KEY", "").strip()
 MANUS_TIMEOUT_S = float(os.environ.get("MANUS_TIMEOUT_S", "20"))
 MANUS_MAX_RETRIES = min(max(int(os.environ.get("MANUS_MAX_RETRIES", "1")), 0), 3)
 MANUS_MAX_RESPONSE_BYTES = min(max(int(os.environ.get("MANUS_MAX_RESPONSE_BYTES", "1048576")), 4096), 4 * 1024 * 1024)
-MANUS_MAX_MESSAGE_CHARS = min(max(int(os.environ.get("MANUS_MAX_MESSAGE_CHARS", "12000")), 1), 50000)
+MANUS_MAX_MESSAGE_CHARS = min(max(int(os.environ.get("MANUS_MAX_MESSAGE_CHARS", "6000")), 1), 10000)
 JAYTEC_MANUS_PROJECT_ID = os.environ.get("JAYTEC_MANUS_PROJECT_ID", "").strip()
 
 APPROVED_CONNECTOR_KEYS = ("github", "neon", "render")
@@ -290,6 +292,21 @@ class ManusClient:
         )
         return BoundManusRoute(authorization=authorization, connector_ids=connector_ids)
 
+    @staticmethod
+    def _governed_message(content: str) -> str:
+        raw = content.strip()
+        if not raw:
+            raise ManusError("EMPTY_MESSAGE")
+        if len(raw) > MANUS_MAX_MESSAGE_CHARS:
+            raise ManusError("MESSAGE_TOO_LARGE")
+        return (
+            render_actor_contract(Actor.MANUS)
+            + "\n\nCANONICAL MANUS DIRECTIVE\n"
+            + render_directive()
+            + "\n\nCURRENT DELEGATED TASK\n"
+            + raw
+        )
+
     def create_task(
         self,
         route: BoundManusRoute,
@@ -298,11 +315,7 @@ class ManusClient:
         title: str | None = None,
         structured_output_schema: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        message = content.strip()
-        if not message:
-            raise ManusError("EMPTY_MESSAGE")
-        if len(message) > MANUS_MAX_MESSAGE_CHARS:
-            raise ManusError("MESSAGE_TOO_LARGE")
+        message = self._governed_message(content)
 
         payload: dict[str, Any] = {
             "message": {
@@ -342,11 +355,7 @@ class ManusClient:
         *,
         structured_output_schema: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        message = content.strip()
-        if not message:
-            raise ManusError("EMPTY_MESSAGE")
-        if len(message) > MANUS_MAX_MESSAGE_CHARS:
-            raise ManusError("MESSAGE_TOO_LARGE")
+        message = self._governed_message(content)
 
         # Old tasks that are not observably Lite are not continued.
         self.verify_task_profile(route, task_id)
