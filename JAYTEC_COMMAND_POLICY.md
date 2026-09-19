@@ -28,6 +28,40 @@ authorized, it is transport only.
 
 Executable identity/edge enforcement lives in `relationship_policy.py`.
 
+## JAYTEC specialist coordination advisory
+
+For speed, JAYTEC may fan out independent, bounded specialist packets in
+parallel when the scopes do not conflict.
+
+Specialists may:
+- challenge assumptions;
+- recommend sequencing and parallel lanes;
+- recommend which specialist is suitable for a bounded subtask;
+- identify dependencies, blockers, duplication risk, and missing evidence.
+
+Specialists may NOT:
+- self-assign or create work;
+- reprioritize active JAYTEC work;
+- override ChatGPT;
+- mutate routing/authority/policy merely because they recommended a change;
+- silently choose another provider, profile, connector, or fallback;
+- duplicate work already owned by another active lane.
+
+ChatGPT remains the final coordinator and authority interpreter. ChatGPT decides
+which specialist advice to accept, rejects conflicts, assigns approved work
+through JAYTEC, and owns the final join/verification step.
+
+Parallelism must preserve:
+- active-work ownership and anti-duplication;
+- dependency order for non-independent work;
+- cost/profile/provider gates;
+- fail-closed behavior;
+- completion/evidence requirements;
+- Jay's current authority.
+
+Advice is not execution authority. A specialist recommendation never grants the
+specialist or another worker permission to perform the recommended action.
+
 ## Global Notion Agent hard gate
 
 The Notion Agent must not perform, route, retrieve, research, execute, repair,
