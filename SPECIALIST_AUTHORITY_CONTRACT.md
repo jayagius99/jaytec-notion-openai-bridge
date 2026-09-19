@@ -14,6 +14,20 @@ Jay
 
 No specialist sits beside or above ChatGPT in the JAYTEC authority chain.
 
+## Same authority boundary, different capabilities
+
+"All specialists operate the same" means the same authority hierarchy and control rules, NOT the same capabilities.
+
+Each specialist must have an explicit designated role and allowed task classes. A specialist does not inherit another specialist's capabilities.
+
+Examples:
+- Sol: coding, engineering, implementation analysis, code review, technical validation, meetings, and owner-explicit Sol tasks routed by ChatGPT.
+- Gemini: research, architecture analysis, adversarial review, evidence synthesis, challenge/verification, and meetings. Gemini is not an engineering-write specialist.
+- Manus: automation/orchestration work inside its Manus-specific boundary plus bounded meeting participation. Manus does not inherit Sol coding authority over JAYTEC.
+- Future specialists: only the capabilities explicitly registered for that role.
+
+Cross-role work is denied by default. If a task does not match the specialist's registered role, ChatGPT must route it to the appropriate specialist or explicitly authorize a bounded cross-role exception that still preserves all authority/cost/side-effect gates.
+
 ## Mandatory specialist behavior
 
 Every specialist is subordinate by default and permanently unless Jay explicitly changes the JAYTEC authority model.
