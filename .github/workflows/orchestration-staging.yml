@@ -11,6 +11,13 @@ on:
       - 'worker_json.py'
       - 'specialist_adapters.py'
       - 'manus_policy.py'
+      - 'manus_governance.py'
+      - 'manus_dispatch_contract.py'
+      - 'relationship_policy.py'
+      - 'participant_contracts.py'
+      - 'MANUS_OPERATING_DIRECTIVE.md'
+      - 'JAYTEC_RELATIONSHIP_CONTRACT.md'
+      - 'JAYTEC_COMMAND_POLICY.md'
       - 'jaytec_read.py'
       - 'jaytec_read_startup_selftest.py'
       - 'job_runtime.py'
@@ -39,6 +46,11 @@ on:
       - 'test_jaytec_read.py'
       - 'test_specialist_timeout_hardening.py'
       - 'test_manus_policy.py'
+      - 'test_manus_governance.py'
+      - 'test_manus_dispatch_contract.py'
+      - 'test_relationship_policy.py'
+      - 'test_participant_contracts.py'
+      - 'test_participant_prompt_injection.py'
       - 'test_manus_policy_integration_guard.py'
       - 'test_job_runtime.py'
       - 'test_concurrency.py'
@@ -74,13 +86,13 @@ jobs:
       - name: Compile modules (including production entrypoint)
         run: |
           python -m py_compile \
-            orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py manus_policy.py jaytec_read.py jaytec_read_startup_selftest.py \
+            orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py manus_policy.py manus_governance.py manus_dispatch_contract.py relationship_policy.py participant_contracts.py jaytec_read.py jaytec_read_startup_selftest.py \
             job_runtime.py concurrency.py guardian.py guardian_runtime.py \
             durable_tasks.py durable_tasks_runtime.py reliability_registry.py \
             server.py reliable_server.py compat_server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
-            test_worker_output_parsing.py test_gemini_transport_hardening.py test_jaytec_read.py test_specialist_timeout_hardening.py test_manus_policy.py test_manus_policy_integration_guard.py \
+            test_worker_output_parsing.py test_gemini_transport_hardening.py test_jaytec_read.py test_specialist_timeout_hardening.py test_manus_policy.py test_manus_governance.py test_manus_dispatch_contract.py test_relationship_policy.py test_participant_contracts.py test_participant_prompt_injection.py test_manus_policy_integration_guard.py \
             test_job_runtime.py test_concurrency.py test_guardian.py test_durable_tasks.py \
             test_reliable_runtime_hardening.py test_compat_server.py test_compat_native_validation.py \
             test_compat_transport_hardening.py test_idempotency_postgres.py test_dockerfile_packaging.py \

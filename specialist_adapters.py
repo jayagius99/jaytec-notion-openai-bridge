@@ -22,6 +22,8 @@ from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
 from orchestration import ProviderUnavailableError, RateLimitError
+from participant_contracts import render_actor_contract
+from relationship_policy import Actor
 from jaytec_read import (
     JAYTEC_READ_FETCH_ENGINES,
     JAYTEC_READ_PROMPT,
@@ -167,7 +169,8 @@ def build_codex_dispatch(
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         prompt = (
-            "ROLE: GPT-5.3 CODEX ENGINEERING\n"
+            render_actor_contract(Actor.ENGINEERING)
+            + "\nROLE: GPT-5.3 CODEX ENGINEERING\n"
             + CODEX_CONTRACT
             + "\nTASK_PACKET_JSON:\n"
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
@@ -205,7 +208,7 @@ def build_gemini_dispatch(
         retry_format: bool = False,
         fetch_engine: str | None = None,
     ) -> str:
-        prefix = GEMINI_RESEARCH_MODE_V1_1
+        prefix = render_actor_contract(Actor.GEMINI) + "\n" + GEMINI_RESEARCH_MODE_V1_1
         if is_jaytec_read_packet(packet):
             prefix += "\n" + JAYTEC_READ_PROMPT
             prefix += "\nSOURCE_URL: " + source_url_from_packet(packet)
