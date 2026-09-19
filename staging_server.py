@@ -17,6 +17,7 @@ import gzip
 import hashlib
 import json
 import os
+import threading
 from typing import Any, Mapping
 
 from fastmcp import FastMCP
@@ -335,7 +336,11 @@ EXACT REVIEW PACKET:
 
 if __name__ == "__main__":
     _run_jaytec_read_bootstrap_probe()
-    _run_god_project_review_probe()
+    threading.Thread(
+        target=_run_god_project_review_probe,
+        name="jaytec-god-project-review",
+        daemon=True,
+    ).start()
     mcp.run(
         transport="http",
         host="0.0.0.0",
