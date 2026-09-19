@@ -3,6 +3,7 @@ import unittest
 from manus_policy import (
     ManusProfile,
     ManusProfilePolicyError,
+    PaidOverrideAuthority,
     allow_manus_fallback,
     authorize_manus_route,
     canonicalize_manus_profile,
@@ -45,9 +46,59 @@ class ManusPolicyTests(unittest.TestCase):
             requested_profile="1.6",
             route_supports_profile_selector=True,
             explicit_paid_override=True,
+            paid_override_authority=PaidOverrideAuthority.CURRENT_USER_MESSAGE,
         )
         self.assertEqual(decision.requested_profile, ManusProfile.STANDARD)
         self.assertTrue(decision.paid_profile)
+
+    def test_truthy_non_boolean_flags_fail_closed(self):
+        with self.assertRaisesRegex(
+            ManusProfilePolicyError, "MANUS_SELECTOR_CAPABILITY_INVALID"
+        ):
+            authorize_manus_route(route_supports_profile_selector="true")
+
+        with self.assertRaisesRegex(
+            ManusProfilePolicyError, "MANUS_OVERRIDE_FLAG_INVALID"
+        ):
+            authorize_manus_route(
+                requested_profile="1.6",
+                route_supports_profile_selector=True,
+                explicit_paid_override="false",
+                paid_override_authority="current_user_message",
+            )
+
+    def test_paid_override_requires_current_message_authority(self):
+        with self.assertRaisesRegex(
+            ManusProfilePolicyError, "MANUS_PAID_OVERRIDE_NOT_CURRENT"
+        ):
+            authorize_manus_route(
+                requested_profile="max",
+                route_supports_profile_selector=True,
+                explicit_paid_override=True,
+            )
+
+        with self.assertRaisesRegex(
+            ManusProfilePolicyError, "MANUS_OVERRIDE_AUTHORITY_INVALID"
+        ):
+            authorize_manus_route(
+                requested_profile="max",
+                route_supports_profile_selector=True,
+                explicit_paid_override=True,
+                paid_override_authority="old_chat",
+            )
+
+    def test_case_and_whitespace_cannot_bypass_profile_policy(self):
+        self.assertEqual(
+            canonicalize_manus_profile("  MaNuS   LiTe  "),
+            ManusProfile.LITE,
+        )
+        with self.assertRaisesRegex(
+            ManusProfilePolicyError, "MANUS_PAID_PROFILE_BLOCKED"
+        ):
+            authorize_manus_route(
+                requested_profile="  MANUS   1.6 MAX ",
+                route_supports_profile_selector=True,
+            )
 
     def test_observed_lite_is_verified(self):
         decision = authorize_manus_route(
