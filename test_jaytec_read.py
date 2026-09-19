@@ -39,7 +39,7 @@ def verified_result():
     source = "https://chatgpt.com/share/example"
     return {
         "status": "SUCCESS",
-        "model": "google/gemini-3.1-pro-preview",
+        "model": "deepseek/deepseek-v4-flash-0731:free",
         "findings": ["Conversation title and source-specific detail recovered."],
         "evidence": ["Fetched exact shared conversation page."],
         "confidence": "HIGH",
@@ -47,7 +47,7 @@ def verified_result():
             "READ_REPORT": {
                 "READ_REPORT_ID": "READ-example",
                 "SOURCE_URL": source,
-                "ACCESS_ROUTE": "google/gemini-3.1-pro-preview",
+                "ACCESS_ROUTE": "deepseek/deepseek-v4-flash-0731:free",
                 "FETCH_STATUS": "SUCCESS",
                 "VERIFIED": True,
                 "TITLE": "Example conversation",
@@ -64,7 +64,7 @@ def verified_result():
                 "DEDUPLICATION_KEY": "example",
                 "ROUTE_AUDIT": {
                     "web_retrieval_used": True,
-                    "gemini_used": True,
+                    "reviewer_used": True,
                     "notion_used": False,
                     "other_agents_used": [],
                 },
@@ -121,7 +121,7 @@ class TestJaytecReadPolicy(unittest.TestCase):
                 engine="native",
             )
 
-    def test_read_packet_requires_gemini_only(self):
+    def test_read_packet_requires_reviewer_wire_only(self):
         good = validate_packet(read_packet())
         self.assertTrue(good.ok, good.errors)
 
