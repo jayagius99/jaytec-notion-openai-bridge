@@ -139,7 +139,7 @@ implementation. Be strict. Do not perform any write or external side effect.
         "idempotency_key": "gemini-manus-governance-review-v1",
         "deadline": "2099-01-01T00:00:00Z",
         "max_fanout": 1,
-        "max_retries": 0,
+        "max_retries": 1,
         "return_schema_version": "1.0",
         "required_context": {
             "source_digests": digests,
