@@ -132,7 +132,7 @@ class TestLegacyCompatibility(unittest.TestCase):
                 server._require_startup_prereqs()
 
         with patch.object(server, "MCP_AUTH_TOKEN", "configured"), patch.object(
-            server, "OPENAI_API_KEY", "configured"
+            server, "OPENROUTER_API_KEY", "configured"
         ), patch.object(server, "RUNTIME_MODE", "production"), patch.object(
             server, "DATABASE_URL", ""
         ):
