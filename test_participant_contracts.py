@@ -33,10 +33,17 @@ class ParticipantContractTests(unittest.TestCase):
         self.assertIn("Never independently change JAYTEC", normalized)
         self.assertIn("inherit implicit connectors", normalized)
 
-    def test_notion_is_transfer_only(self):
+    def test_notion_is_strict_agent_transport_only(self):
         text = render_actor_contract(Actor.NOTION)
-        self.assertIn("TRANSFER GATEWAY ONLY", text)
-        self.assertIn("Do not research, execute, repair, analyze", text)
+        self.assertIn("NOTION AGENT — STRICT PASS-THROUGH TRANSPORT ONLY", text)
+        self.assertIn("not JAYTEC", text)
+        self.assertIn("Do not rewrite, expand, research, solve", text)
+        self.assertIn("exact failure evidence", text)
+
+    def test_chatgpt_contract_never_substitutes_notion_for_jaytec(self):
+        text = render_actor_contract(Actor.CHATGPT)
+        self.assertIn("JAYTEC ALWAYS means the JAYTEC system/control plane", text)
+        self.assertIn("Never substitute Notion Agent", text)
 
     def test_specialists_cannot_delegate(self):
         for actor in (Actor.GEMINI, Actor.ENGINEERING):
