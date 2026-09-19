@@ -182,4 +182,8 @@ implementation. Be strict. Do not perform any write or external side effect.
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    code = main()
+    if code == 0 and os.environ.get("RUN_LIVE_GEMINI_SUPERPROMPT_REVIEW", "0").strip() == "1":
+        from staging_gemini_superprompt_review import main as superprompt_review_main
+        code = superprompt_review_main()
+    raise SystemExit(code)
