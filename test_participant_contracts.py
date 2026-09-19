@@ -42,8 +42,9 @@ class ParticipantContractTests(unittest.TestCase):
 
     def test_chatgpt_contract_never_substitutes_notion_for_jaytec(self):
         text = render_actor_contract(Actor.CHATGPT)
-        self.assertIn("JAYTEC ALWAYS means the JAYTEC system/control plane", text)
-        self.assertIn("Never substitute Notion Agent", text)
+        normalized = " ".join(text.split())
+        self.assertIn("JAYTEC ALWAYS means the JAYTEC system/control plane", normalized)
+        self.assertIn("Never substitute Notion Agent", normalized)
 
     def test_chatgpt_retains_final_coordination_authority(self):
         text = render_actor_contract(Actor.CHATGPT)
