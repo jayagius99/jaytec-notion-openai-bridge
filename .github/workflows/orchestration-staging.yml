@@ -103,7 +103,7 @@ jobs:
             -e RUNTIME_MODE=staging_candidate \
             -e MCP_AUTH_TOKEN=test \
             -e OPENAI_API_KEY=test \
-            -e CODEX_MODEL=gpt-5.3-codex \
+            -e CODEX_MODEL=gpt-5.6-sol \
             -e GEMINI_MODEL=google/gemini-3.1-pro-preview \
             -e DURABLE_WORKER_ENABLED=0 \
             -e GUARDIAN_LOOP_ENABLED=0 \
