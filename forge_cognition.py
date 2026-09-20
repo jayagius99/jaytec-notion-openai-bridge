@@ -81,6 +81,7 @@ class CycleAction(StrEnum):
 
 
 class ReasoningTier(StrEnum):
+    REFLEX = "REFLEX"
     FAST = "FAST"
     STANDARD = "STANDARD"
     DEEP = "DEEP"
@@ -219,14 +220,28 @@ def choose_reasoning_tier(goal: Optional[ForgeGoal], *, ambiguity: bool = False,
         return ReasoningTier.STANDARD
     if high_impact or goal.complexity >= 80 or goal.uncertainty >= 80:
         return ReasoningTier.DEEP
+    if not ambiguity and goal.complexity <= 15 and goal.uncertainty <= 10:
+        return ReasoningTier.REFLEX
     if not ambiguity and goal.complexity <= 35 and goal.uncertainty <= 35:
         return ReasoningTier.FAST
     return ReasoningTier.STANDARD
 
 
+def next_cycle_delay_seconds(action: CycleAction, tier: ReasoningTier) -> int | None:
+    """Scheduling hint; liveness WATCH remains separate from cognition cadence."""
+    if action is CycleAction.HOLD:
+        return None
+    if action is CycleAction.EXECUTE_NEXT:
+        return 0
+    # Empty goal stack should reflect soon, but not spin an LLM continuously.
+    if tier is ReasoningTier.DEEP:
+        return 60
+    return 15
+
+
 def choose_cycle(state: ForgeMindState) -> tuple[CycleAction, Optional[ForgeGoal], ReasoningTier, str]:
     if state.mode in HOLD_MODES:
-        return CycleAction.HOLD, None, ReasoningTier.FAST, "MODE_HOLD:" + state.mode.value
+        return CycleAction.HOLD, None, ReasoningTier.REFLEX, "MODE_HOLD:" + state.mode.value
     goals = actionable_goals(state)
     if goals:
         goal = goals[0]
@@ -262,10 +277,13 @@ def build_delta_context(state: ForgeMindState, *, recent_events: list[Mapping[st
         "unresolved_questions": list(state.unresolved_questions),
         "specialist_roster": _json(dict(state.specialist_roster)),
         "recent_events": _json(recent_events),
+        "next_cycle_delay_seconds": next_cycle_delay_seconds(action, tier),
         "performance_rules": {
             "event_driven": True,
+            "watch_cadence_is_not_cognition_cadence": True,
             "full_history_replay": False,
             "use_delta_context": True,
+            "reflex_path_may_avoid_model_call": True,
             "parallelize_only_independent_work": True,
             "deep_reasoning_only_when_justified": True,
             "completion_returns_to_goal_hierarchy": True,
