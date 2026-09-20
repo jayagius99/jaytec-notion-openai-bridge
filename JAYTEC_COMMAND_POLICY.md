@@ -100,60 +100,222 @@ A "way to fix" means the factual failed condition and technical requirement
 needed to restore the intended route. It does NOT authorize an alternative
 solution or autonomous repair.
 
-## JAYTEC:WATCH
+## JAYTEC:WATCH + AUTORECOVERY
 
-`JAYTEC:WATCH` is the owner-facing command for JAYTEC's isolated progress
-observer. It does not create execution authority and it does not use ChatGPT's
-native recurring automation scheduler.
+`JAYTEC:WATCH` is JAYTEC's durable assignment supervisor. It observes the
+assignment, but its primary source of truth is canonical task state rather than
+the continued existence of any one chat window or worker process.
 
-The command layer must:
+Core law:
 
-1. resolve exactly one current active assignment from the authoritative
-   checkpoint/context;
-2. identify the registered WATCH target for that assignment;
-3. fail closed and ask Jay if the target is ambiguous, unsupported, or cannot
-   be observed without broader permissions;
-4. enable that registered observer and mark the target expected-active;
-5. report exactly what is being watched, the requested nominal cadence, and
-   the first observable state when available.
+> The assignment survives the worker.
 
-Current WATCH v1 implementation:
-- observer repository: `jayagius99/jaytec-work-engine-v2-g1`;
-- control record: GitHub issue `#53 — JAYTEC WATCH CONTROL`;
-- scheduler: GitHub Actions `JAYTEC WATCH`;
-- nominal cadence: every five minutes (`*/5 * * * *`);
-- cadence is platform-scheduled and may be delayed by GitHub load;
-- current registered target: ROOT_OWNER/GOD Mode PR #17.
+WATCH must never keep poking a UI merely because a chat appears quiet. It reads
+canonical assignment state, classifies why execution stopped, and automatically
+recovers only stops that are explicitly classified as recoverable.
 
-`JAYTEC:WATCH STATUS` reads the most recent completed WATCH result and returns:
-- what the timer is watching;
-- current/previous observable head;
-- WATCH state;
-- CI/workflow state;
-- last observable movement;
-- time since observable movement;
+### Canonical stop reasons
+
+The supervisor recognizes:
+
+- `RUNNING`
+- `STALLED_RECOVERABLE`
+- `WORKER_LOST`
+- `TIMEOUT`
+- `TRANSIENT_PROVIDER_FAILURE`
+- `PAUSED_BY_OWNER`
+- `PAUSED_BY_OPERATOR`
+- `WAITING_FOR_AUTHORITY`
+- `WAITING_FOR_REQUIRED_INPUT`
+- `WAITING_FOR_RESOURCE`
+- `WAITING_FOR_DEPENDENCY`
+- `COMPLETED`
+- `FAILED_FATAL`
+- `RECOVERY_EXHAUSTED`
+
+Automatic recovery is allowed only for:
+
+- `STALLED_RECOVERABLE`
+- `WORKER_LOST`
+- `TIMEOUT`
+- `TRANSIENT_PROVIDER_FAILURE`
+
+The supervisor MUST NOT automatically resume:
+
+- `PAUSED_BY_OWNER`
+- `PAUSED_BY_OPERATOR`
+- `WAITING_FOR_AUTHORITY`
+- `WAITING_FOR_REQUIRED_INPUT`
+- `WAITING_FOR_RESOURCE`
+- `WAITING_FOR_DEPENDENCY`
+- `FAILED_FATAL`
+- `RECOVERY_EXHAUSTED`
+
+`COMPLETED` stops WATCH for that assignment.
+
+An owner/operator pause is intentional state, not a failure. The supervisor must
+never reinterpret "pause safely" as a stale worker and restart it.
+
+### Five-minute supervisor loop
+
+While WATCH is enabled for an assignment, the supervisor performs this bounded
+decision loop approximately every five minutes:
+
+1. read canonical task state;
+2. if `COMPLETED`, stop watching;
+3. if a healthy worker heartbeat exists, leave the worker alone;
+4. classify the stop reason;
+5. if the stop is intentional or authority/input/resource/dependency blocked,
+   hold or notify Jay as appropriate;
+6. if the stop is recoverable, acquire an exclusive recovery lease;
+7. increment the fencing token so stale workers can no longer mutate the task;
+8. load and validate the exact saved checkpoint;
+9. verify repository/branch/head and required state before dispatch;
+10. choose the bounded recovery route;
+11. invoke only a registered callable JAYTEC worker;
+12. send the continuation instruction:
+    `Resume — do not recreate completed work`;
+13. verify a new heartbeat/progress signal;
+14. keep supervising until completion or a genuine blocker.
+
+### Durable resurrection checkpoint
+
+A canonical continuation checkpoint must contain, at minimum:
+
+- `task_id`;
+- objective;
+- current phase;
+- completed work;
+- remaining work;
+- last safe checkpoint;
+- repository;
+- branch;
+- verified commit/head;
+- open PR when applicable;
+- relevant file/state summary;
+- tests already completed;
+- known failures;
+- active constraints;
+- authority envelope;
+- cost envelope;
+- dependencies;
+- next intended action;
+- worker/specialist preference;
+- checkpoint number/version.
+
+A replacement worker receives the checkpoint plus an explicit anti-duplication
+instruction. Work already marked complete must not be recreated unless current
+verification proves the checkpoint is invalid.
+
+### Disposable-worker rule
+
+Normal ChatGPT app conversations are not assumed externally callable.
+
+If a recoverable assignment is owned only by a normal ChatGPT UI conversation,
+WATCH performs Level 1 recovery:
+
+- generate the exact continuation packet;
+- notify Jay that one manual resume action is required;
+- do not try to click, poke, message, or impersonate the chat externally.
+
+Level 2 automatic recovery is permitted only when the assignment's worker is a
+registered `JAYTEC_CALLABLE` endpoint that JAYTEC can invoke through a
+supported interface.
+
+Future GOD Mode execution should use Level 2 so assignment continuity does not
+depend on one app conversation remaining alive.
+
+### Recovery lease and fencing
+
+Before any automatic recovery, WATCH must atomically acquire a recovery lease.
+
+Only one supervisor may own the lease at a time.
+
+Every successful lease acquisition increments a monotonically increasing
+fencing token. The new worker receives that token. Worker heartbeats, progress
+updates, and task-state mutations are valid only when they present the current
+token.
+
+An older worker that wakes after replacement and presents a stale token must be
+rejected. This prevents duplicate concurrent writers even when an old process
+returns unexpectedly.
+
+The durable PostgreSQL implementation lives in
+`autorecovery_supervisor.py`.
+
+### Bounded escalation
+
+Recovery is deliberately bounded:
+
+- attempt 1: same worker/provider route;
+- attempt 2: fresh worker, exact same checkpoint;
+- attempt 3: alternate **pre-approved** execution route;
+- after attempt 3: set/behave as `RECOVERY_EXHAUSTED`, stop automatic restart
+  attempts, diagnose, and notify Jay/GOD Mode.
+
+No recovery route may bypass existing authority, provider, model, profile,
+connector, cost, or spend gates.
+
+A "failed route" does not end the objective, but it also does not grant
+permission to invent a new provider or spend money.
+
+### JAYTEC:WATCH command family
+
+`JAYTEC:WATCH`
+- resolves exactly one assignment;
+- verifies or creates canonical assignment state;
+- starts/continues supervision;
+- does not itself grant new execution authority.
+
+`JAYTEC:WATCH STATUS`
+returns:
+- assignment/task ID;
+- objective/current phase;
+- stop reason;
+- current worker kind/identity;
+- heartbeat/progress age;
+- exact checkpoint number/head;
+- recovery attempt count;
+- active recovery lease/fencing token metadata without secrets;
+- what WATCH is monitoring;
 - whether Jay must act;
-- the exact safe next step;
-- observer limitations/uncertainty.
+- exact next safe step;
+- limitations/uncertainty.
 
-`JAYTEC:WATCH STOP` disables only the observer control record. It MUST NOT
-stop, pause, restart, resume, rerun, cancel, merge, edit, deploy, or otherwise
-change the assignment being watched.
+`JAYTEC:WATCH STOP`
+sets WATCH/supervision off or marks the assignment intentionally paused as
+directed. It MUST NOT infer cancellation, delete canonical task state, destroy
+the checkpoint, or mark the objective complete.
 
-WATCH is observation-only. Lack of GitHub movement is not proof that a chat or
-agent is frozen. Watcher/API failure is `UNKNOWN`, never assignment failure.
-An `ATTENTION` result asks Jay to inspect the owning chat; it never
-automatically sends a continue/restart instruction.
+### Existing GitHub observer
 
-The external five-minute observer emits a structured status packet. It does not
-bypass ChatGPT's native recurring-automation delivery limit and it does not
-claim that ChatGPT can originate a new chat message every five minutes. A
-separate explicitly authorized notification adapter may consume WATCH status in
-future without changing WATCH execution authority.
+The repository observer in `jayagius99/jaytec-work-engine-v2-g1` remains a
+read-only observability surface. It can display GitHub/CI movement and feed
+status evidence, but it is not the canonical recovery authority.
 
-A repository outside the registered WATCH scope must not be silently watched
-with broader credentials. Install an equivalent least-privilege observer in
-that repository or return `WATCH_TARGET_UNSUPPORTED`.
+The canonical recovery authority is durable assignment state plus the
+autorecovery supervisor. GitHub inactivity alone can never prove a worker died.
+
+The existing five-minute WATCH session must not gain repository-write,
+ROOT_OWNER, deployment, provider-spend, or GOD Mode execution credentials merely
+because AUTORECOVERY exists.
+
+### Default activation state
+
+AUTORECOVERY is fail-closed and disabled by default until all of the following
+are true for an assignment:
+
+- canonical task state is registered;
+- a valid resurrection checkpoint exists;
+- stop-reason classification is available;
+- durable lease/fencing storage is healthy;
+- the worker is explicitly classified as `JAYTEC_CALLABLE` for Level 2;
+- checkpoint verification can verify the exact repository/head/state;
+- the invocation route is approved by the assignment's authority/cost envelope;
+- heartbeat/progress verification is available.
+
+If any prerequisite is missing, WATCH falls back to observation and/or a manual
+continuation packet. It must not guess.
 
 ## JAYTEC:READ
 
