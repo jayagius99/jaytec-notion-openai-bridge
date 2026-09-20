@@ -167,7 +167,9 @@ def _needs_jaytec_state(state: Any) -> bool:
     if state is None or not getattr(state, "worker_id", None):
         return False
     marker = str(getattr(state, "last_error", "") or "")
-    return marker.startswith("MANUS_TERMINAL:NEEDS_JAYTEC:")
+    return marker.startswith(
+        ("MANUS_TERMINAL:NEEDS_JAYTEC:", "MANUS_TERMINAL:PARTIAL_SUCCESS:")
+    )
 
 
 
@@ -546,7 +548,7 @@ def execute_watch_cycle(
             )
             if (
                 readonly.get("status") != "VERIFIED_COMPLETE"
-                or terminal.get("status") != "NEEDS_JAYTEC"
+                or terminal.get("status") not in {"NEEDS_JAYTEC", "PARTIAL_SUCCESS"}
             ):
                 return {
                     "status": "BLOCKED_FAIL_CLOSED",
@@ -619,20 +621,22 @@ def execute_watch_cycle(
             if state.progress_marker == delivered_marker:
                 github_broker = "WAITING_FOR_NEW_CONTEXT"
             else:
-                claim_marker = "JAYTEC_BROKER_HANDOFF_CLAIM:" + handoff_digest
-                store.heartbeat(
-                    task_id,
-                    fencing_token=state.fencing_token,
-                    worker_id=state.worker_id,
-                    progress_marker=claim_marker,
-                )
                 handoff = invoker.continue_existing(
                     checkpoint=state.checkpoint,
                     worker_id=state.worker_id,
                     fencing_token=state.fencing_token,
                     broker_context=broker_context,
                 )
-                if handoff.accepted:
+                if handoff.accepted and handoff.detail == "MANUS_JAYTEC_HANDOFF_REPLAY":
+                    store.mark_stop(
+                        task_id,
+                        fencing_token=state.fencing_token,
+                        stop_reason=StopReason.STALLED_RECOVERABLE,
+                        error="JAYTEC_INTERNAL_HANDOFF_REPLAY_NO_PROGRESS",
+                    )
+                    github_broker = "HANDOFF_REPLAY_NO_PROGRESS"
+                    state = store.get(task_id)
+                elif handoff.accepted:
                     store.heartbeat(
                         task_id,
                         fencing_token=state.fencing_token,
