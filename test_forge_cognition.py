@@ -6,7 +6,8 @@ from forge_cognition import (
     CycleAction, ForgeGoal, ForgeMindState, ForgeMode, GoalStatus,
     ReasoningTier, actionable_goals, build_delta_context,
     choose_cycle, choose_reasoning_tier, next_cycle_delay_seconds,
-    parallel_goal_batch, _validate_goal_graph, ForgeCognitionError, ForgeMindStore
+    parallel_goal_batch, _validate_goal_graph, ForgeCognitionError, ForgeMindStore,
+    reasoning_policy_for_tier
 )
 
 NOW=datetime.now(timezone.utc)
@@ -91,6 +92,17 @@ class ForgeCognitionTests(unittest.TestCase):
         b=ForgeGoal("b","B.",2,dependencies=("a",))
         with self.assertRaisesRegex(ForgeCognitionError,"GOAL_DEPENDENCY_CYCLE"):
             _validate_goal_graph([a,b])
+
+    def test_reflex_policy_avoids_model_call(self):
+        policy=reasoning_policy_for_tier(ReasoningTier.REFLEX)
+        self.assertFalse(policy["model_call"])
+        self.assertEqual(policy["context_scope"],"minimal")
+
+    def test_deep_policy_expands_only_on_demand(self):
+        policy=reasoning_policy_for_tier(ReasoningTier.DEEP)
+        self.assertTrue(policy["model_call"])
+        self.assertEqual(policy["effort_hint"],"high")
+        self.assertEqual(policy["context_scope"],"expanded_on_demand")
 
     def test_event_driven_execute_wakes_immediately(self):
         self.assertEqual(next_cycle_delay_seconds(CycleAction.EXECUTE_NEXT,ReasoningTier.REFLEX),0)
