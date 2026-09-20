@@ -95,13 +95,17 @@ def main() -> int:
         # returned substantive assistant content without an error event. Earlier
         # progress chatter must never be misclassified as an opinion.
         if (
-            task_status in {"completed", "success", "succeeded"}
+            task_status in {"stopped", "completed", "success", "succeeded"}
             and assistant_messages
             and not error_messages
             and not status_errors
         ):
+            # Manus v2 uses "stopped" for normal completed tasks as well as
+            # explicitly stopped tasks. Substantive assistant output plus no
+            # error events is the evidence that this stopped state completed
+            # successfully rather than failing.
             out["status"] = "PASS"
-        elif task_status in {"error", "failed", "stopped", "cancelled", "canceled"} or error_messages or status_errors:
+        elif task_status in {"error", "failed", "cancelled", "canceled"} or error_messages or status_errors:
             out["status"] = "FAILED_CLOSED"
             out["error"] = "MANUS_REVIEW_FAILED_OR_CREDIT_BLOCKED"
         elif meaningful_task:

@@ -1,6 +1,7 @@
 import unittest
+from unittest import mock
 
-from staging_manus_usability_eval import _validate
+from staging_manus_usability_eval import _validate, _wait_until_stopped
 
 
 class ManusUsabilityEvalTests(unittest.TestCase):
@@ -64,6 +65,26 @@ class ManusUsabilityEvalTests(unittest.TestCase):
         value = self.good()
         value["verification"]["evidence_backed"] = False
         self.assertIn("verification_evidence_backed", _validate(value))
+
+
+    def test_transient_waiting_does_not_end_usability_eval_early(self):
+        class FakeClient:
+            def __init__(self):
+                self.statuses = iter(("waiting", "running", "stopped"))
+                self.calls = 0
+
+            def verify_task_profile(self, route, task_id):
+                self.calls += 1
+                return {"task": {"status": next(self.statuses)}}
+
+        client = FakeClient()
+        with mock.patch(
+            "staging_manus_usability_eval.time.sleep",
+            return_value=None,
+        ):
+            detail = _wait_until_stopped(client, object(), "task-1")
+        self.assertEqual(detail["task"]["status"], "stopped")
+        self.assertEqual(client.calls, 3)
 
 
 if __name__ == "__main__":
