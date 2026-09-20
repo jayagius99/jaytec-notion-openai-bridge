@@ -6,6 +6,8 @@ from forge_strategic_drives import (
     GENERAL_CAPABILITY_DIMENSIONS,
     VALUE_CAPABILITY_DIMENSIONS,
     CapabilityGap,
+    CapabilityAcquisitionContext,
+    CapabilityAcquisitionRoute,
     ImprovementCandidate,
     ImprovementDecision,
     ImprovementEvidence,
@@ -25,6 +27,7 @@ from forge_strategic_drives import (
     touches_root_boundary,
     learning_update_is_verified,
     reinvestment_target_decision,
+    choose_capability_acquisition_route,
 )
 
 def root():
@@ -139,6 +142,72 @@ class StrategicDriveTests(unittest.TestCase):
             "identity_pinned":True,"fallback_policy_verified":True,"measured_gain":0.3,
         })
         self.assertEqual(evaluate_improvement(c,e),ImprovementDecision.OWNER_REVIEW)
+
+    def test_capability_acquisition_prefers_existing_then_build(self):
+        existing=CapabilityAcquisitionContext.parse({
+            "capability":"search","required_scopes":["forge:tools"],
+            "existing_capability_adequate":True,"existing_improvement_feasible":True,
+            "bounded_build_feasible":True,"approved_external_capability_available":True,
+            "requires_physical_action":False,"requires_legal_or_identity_action":False,
+            "requires_external_spend":False,"human_specialist_can_act":True,
+        })
+        self.assertEqual(
+            choose_capability_acquisition_route(existing).route,
+            CapabilityAcquisitionRoute.USE_EXISTING,
+        )
+        build=CapabilityAcquisitionContext.parse({
+            "capability":"new-parser","required_scopes":["forge:tools"],
+            "existing_capability_adequate":False,"existing_improvement_feasible":False,
+            "bounded_build_feasible":True,"approved_external_capability_available":True,
+            "requires_physical_action":False,"requires_legal_or_identity_action":False,
+            "requires_external_spend":False,"human_specialist_can_act":True,
+        })
+        self.assertEqual(
+            choose_capability_acquisition_route(build).route,
+            CapabilityAcquisitionRoute.BUILD_BOUNDED_TOOL,
+        )
+
+    def test_physical_capability_routes_to_human_specialist(self):
+        ctx=CapabilityAcquisitionContext.parse({
+            "capability":"install-hardware","required_scopes":["forge:hardware"],
+            "existing_capability_adequate":False,"existing_improvement_feasible":False,
+            "bounded_build_feasible":False,"approved_external_capability_available":False,
+            "requires_physical_action":True,"requires_legal_or_identity_action":False,
+            "requires_external_spend":False,"human_specialist_can_act":True,
+        })
+        decision=choose_capability_acquisition_route(ctx)
+        self.assertEqual(decision.route,CapabilityAcquisitionRoute.HUMAN_SPECIALIST)
+        self.assertFalse(decision.execution_eligible)
+
+    def test_paid_acquisition_needs_external_jaytec_budget_authority(self):
+        ctx=CapabilityAcquisitionContext.parse({
+            "capability":"compute","required_scopes":["forge:compute"],
+            "existing_capability_adequate":False,"existing_improvement_feasible":False,
+            "bounded_build_feasible":False,"approved_external_capability_available":True,
+            "requires_physical_action":False,"requires_legal_or_identity_action":False,
+            "requires_external_spend":True,"human_specialist_can_act":True,
+        })
+        self.assertEqual(
+            choose_capability_acquisition_route(ctx).route,
+            CapabilityAcquisitionRoute.OWNER_REVIEW,
+        )
+        self.assertEqual(
+            choose_capability_acquisition_route(ctx,budget_authority()).route,
+            CapabilityAcquisitionRoute.ACQUIRE_EXTERNAL,
+        )
+
+    def test_root_scoped_capability_acquisition_is_blocked(self):
+        ctx=CapabilityAcquisitionContext.parse({
+            "capability":"root-signer","required_scopes":["opaque_signer_kms_hsm:key"],
+            "existing_capability_adequate":False,"existing_improvement_feasible":False,
+            "bounded_build_feasible":True,"approved_external_capability_available":True,
+            "requires_physical_action":False,"requires_legal_or_identity_action":False,
+            "requires_external_spend":False,"human_specialist_can_act":True,
+        })
+        self.assertEqual(
+            choose_capability_acquisition_route(ctx).route,
+            CapabilityAcquisitionRoute.BLOCKED,
+        )
 
     def test_capability_gap_ranking_prioritises_large_confident_gap(self):
         a=CapabilityGap.parse({"capability":"a","current_score":20,"target_score":80,"evidence_confidence":0.9,"blocking_dependencies":[]})
