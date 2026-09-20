@@ -190,6 +190,7 @@ class ForgeMindState:
     specialist_roster: Mapping[str, Any]
     world_model: Mapping[str, Any]
     capability_frontier: Mapping[str, Any]
+    working_memory: Mapping[str, Any]
     goals: tuple[ForgeGoal, ...]
     unresolved_questions: tuple[str, ...]
     current_focus: Optional[str]
@@ -213,6 +214,19 @@ def actionable_goals(state: ForgeMindState) -> list[ForgeGoal]:
         ],
         key=lambda g: (g.priority, g.goal_id),
     )
+
+
+def parallel_goal_batch(state: ForgeMindState, *, max_parallel: int = 3) -> list[ForgeGoal]:
+    """Select only goals explicitly marked safe to run concurrently."""
+    if isinstance(max_parallel, bool) or not isinstance(max_parallel, int) or not 1 <= max_parallel <= 8:
+        raise ForgeCognitionError("MAX_PARALLEL_INVALID")
+    goals = actionable_goals(state)
+    if not goals:
+        return []
+    first = goals[0]
+    if not first.parallel_safe:
+        return [first]
+    return [g for g in goals if g.parallel_safe][:max_parallel]
 
 
 def choose_reasoning_tier(goal: Optional[ForgeGoal], *, ambiguity: bool = False, high_impact: bool = False) -> ReasoningTier:
@@ -272,10 +286,12 @@ def build_delta_context(state: ForgeMindState, *, recent_events: list[Mapping[st
         "selection_reason": reason,
         "world_model_digest": digest(dict(state.world_model)),
         "capability_frontier_digest": digest(dict(state.capability_frontier)),
-        "world_model": _json(dict(state.world_model)),
-        "capability_frontier": _json(dict(state.capability_frontier)),
+        "world_model_ref": f"forge_mind_state:{state.forge_id}:world_model:v{state.state_version}",
+        "capability_frontier_ref": f"forge_mind_state:{state.forge_id}:capability_frontier:v{state.state_version}",
+        "working_memory": _json(dict(state.working_memory)),
         "unresolved_questions": list(state.unresolved_questions),
         "specialist_roster": _json(dict(state.specialist_roster)),
+        "parallel_goal_batch": [g.to_dict() for g in parallel_goal_batch(state)],
         "recent_events": _json(recent_events),
         "next_cycle_delay_seconds": next_cycle_delay_seconds(action, tier),
         "performance_rules": {
@@ -283,6 +299,7 @@ def build_delta_context(state: ForgeMindState, *, recent_events: list[Mapping[st
             "watch_cadence_is_not_cognition_cadence": True,
             "full_history_replay": False,
             "use_delta_context": True,
+            "full_world_model_loaded_only_on_demand": True,
             "reflex_path_may_avoid_model_call": True,
             "parallelize_only_independent_work": True,
             "deep_reasoning_only_when_justified": True,
@@ -374,6 +391,7 @@ class ForgeMindStore:
             "specialist_roster": _json(dict(packet.get("specialist_roster") or {})),
             "world_model": _json(dict(packet.get("world_model") or {})),
             "capability_frontier": _json(dict(packet.get("capability_frontier") or {})),
+            "working_memory": _json(dict(packet.get("working_memory") or {})),
             "goals": goals,
             "unresolved_questions": list(_list(packet.get("unresolved_questions"), "UNRESOLVED_QUESTIONS")),
             "current_focus": packet.get("current_focus"),
