@@ -163,6 +163,34 @@ class ExecutionRegistry:
                     raise PacketValidationError("CONFLICTING_DUPLICATE")
             self._records[key] = IdempotencyRecord(packet_hash, copy.deepcopy(dict(result)), current)
 
+    def claim_once(
+        self,
+        key: str,
+        packet_hash: str,
+        result: Mapping[str, Any],
+        *,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Atomically claim a key exactly once within the registry TTL.
+
+        Unlike store(), same-key/same-hash replay is NOT accepted. This is for
+        one-shot authorities such as startup provider probes.
+        """
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        with self._lock:
+            existing = self._records.get(key)
+            if existing:
+                age = (current - existing.created_at).total_seconds()
+                if age <= self.ttl_seconds:
+                    return False
+                del self._records[key]
+            self._records[key] = IdempotencyRecord(
+                packet_hash,
+                copy.deepcopy(dict(result)),
+                current,
+            )
+            return True
+
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
