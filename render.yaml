@@ -12,6 +12,10 @@ services:
     envVars:
       - key: MCP_AUTH_TOKEN
         generateValue: true
+      - key: JAYTEC_MCP_ALLOWED_HOSTS_JSON
+        value: '["jaytec-orchestration-staging.onrender.com"]'
+      - key: JAYTEC_MCP_ALLOWED_ORIGINS_JSON
+        value: '[]'
       - key: OPENAI_API_KEY
         sync: false
       - key: ENGINEERING_MODEL
