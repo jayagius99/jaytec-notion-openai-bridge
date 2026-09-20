@@ -29,6 +29,11 @@ FORGE_TASK_ID = "FORGE-GENESIS-ACTIVATION-001"
 MAX_REQUEST_REFS = 128
 MAX_BROKER_CONTEXT_BYTES = 4500
 MAX_BROKER_REQUESTS = 2
+# WATCH cadence is 15 minutes. Require more than two missed cadence windows
+# before classifying a RUNNING callable worker as lost, so one transient
+# provider-status failure cannot consume a recovery fence/attempt.
+WATCH_HEARTBEAT_TIMEOUT_SECONDS = 35 * 60
+WATCH_HEALTH_REFRESH_TIMEOUT_SECONDS = 30
 BROKER_READ_OPERATIONS = frozenset({
     "read_file",
     "list_path",
@@ -715,6 +720,7 @@ def execute_watch_cycle(
                                     final.progress_marker if final else None
                                 ),
                                 "completed": final.completed if final else None,
+                                "last_error": final.last_error if final else None,
                             },
                         }
                     else:
@@ -742,6 +748,8 @@ def execute_watch_cycle(
         health_probe=ManusLiteHealthProbe(manus_runtime),
         notifier=JsonLogRecoveryNotifier(),
         instance_id="github-watch-cycle",
+        heartbeat_timeout_seconds=WATCH_HEARTBEAT_TIMEOUT_SECONDS,
+        health_refresh_timeout_seconds=WATCH_HEALTH_REFRESH_TIMEOUT_SECONDS,
     )
 
     refreshed = supervisor.refresh_worker_health(task_id)
@@ -769,6 +777,7 @@ def execute_watch_cycle(
             "fencing_token": final.fencing_token if final else None,
             "progress_marker": final.progress_marker if final else None,
             "completed": final.completed if final else None,
+            "last_error": final.last_error if final else None,
         },
     }
 

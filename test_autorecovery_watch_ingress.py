@@ -1,11 +1,13 @@
 import hashlib
 import json
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from autorecovery_watch_ingress import (
     FORGE_TASK_ID,
+    WATCH_HEARTBEAT_TIMEOUT_SECONDS,
     WatchIngressError,
     _broker_context,
     _observed_refs,
@@ -200,6 +202,12 @@ class FakeSuccessBrokerRuntime(FakeBrokerRuntime):
         return self.task_status_readonly(worker_id)
 
 
+class FakeTransientStatusFailureRuntime(FakeBrokerRuntime):
+    def task_status(self, worker_id):
+        assert worker_id == "worker-existing"
+        raise RuntimeError("transient provider read failure")
+
+
 class WatchIngressPolicyTests(unittest.TestCase):
     def test_only_canonical_forge_task_is_allowed_by_constant(self):
         self.assertEqual(FORGE_TASK_ID, "FORGE-GENESIS-ACTIVATION-001")
@@ -392,6 +400,63 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
         self.assertEqual(result["assignment"]["fencing_token"], 9)
         self.assertEqual(runtime.handoffs, [])
+
+
+
+    def test_one_transient_health_probe_failure_does_not_consume_recovery(self):
+        self.assertGreater(WATCH_HEARTBEAT_TIMEOUT_SECONDS, 30 * 60)
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        recent = datetime.now(timezone.utc) - timedelta(minutes=16)
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.RUNNING,
+                "last_heartbeat_at": recent,
+                "last_progress_at": recent,
+                "progress_marker": "JAYTEC_BROKER_HANDOFF:already-delivered",
+                "recovery_attempts": 0,
+                "last_error": None,
+                "updated_at": recent,
+            }
+        )
+        runtime = FakeTransientStatusFailureRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                {
+                    "task_id": FORGE_TASK_ID,
+                    "observed_refs": refs,
+                    "github_broker_context": broker_payload(refs),
+                },
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertFalse(result["health_refreshed"])
+        self.assertEqual(result["decision"]["action"], "NOOP_HEALTHY")
+        self.assertEqual(result["decision"]["reason"], "HEALTHY_WORKER_HEARTBEAT")
+        self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
+        self.assertEqual(result["assignment"]["fencing_token"], 9)
+        self.assertEqual(result["assignment"]["recovery_attempts"], 0)
+        self.assertEqual(result["assignment"]["stop_reason"], "RUNNING")
+        self.assertEqual(store.stops, [])
 
 
 
