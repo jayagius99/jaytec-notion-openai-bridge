@@ -9,6 +9,7 @@ from github_watch_oidc import (
     WATCH_SUBJECT,
     WATCH_WORKFLOW,
     WATCH_WORKFLOW_REF,
+    WATCH_OIDC_SCOPES,
     validate_watch_claims,
 )
 
@@ -77,6 +78,12 @@ class GitHubWatchOIDCTests(unittest.TestCase):
                 ok, reason = validate_watch_claims(claims(**{key: value}))
                 self.assertFalse(ok)
                 self.assertIn("OIDC_CLAIM_MISMATCH", reason)
+
+    def test_watch_identity_receives_only_watch_and_proving_grounds_scopes(self):
+        self.assertEqual(
+            set(WATCH_OIDC_SCOPES),
+            {"jaytec:watch-cycle", "jaytec:proving-grounds"},
+        )
 
     def test_pull_request_identity_cannot_drive_recovery(self):
         ok, reason = validate_watch_claims(claims(event_name="pull_request"))

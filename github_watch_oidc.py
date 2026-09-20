@@ -35,6 +35,7 @@ WATCH_WORKFLOW_REF = (
     ".github/workflows/jaytec-watch.yml@refs/heads/main"
 )
 ALLOWED_EVENTS = frozenset({"schedule", "issues", "workflow_dispatch"})
+WATCH_OIDC_SCOPES = ("jaytec:watch-cycle", "jaytec:proving-grounds")
 
 
 def validate_watch_claims(claims: Mapping[str, Any]) -> tuple[bool, str]:
@@ -90,7 +91,7 @@ class GitHubActionsWatchOIDCVerifier(JWTVerifier):
         return AccessToken(
             token=access.token,
             client_id="github-actions-watch:" + str(access.claims.get("run_id") or ""),
-            scopes=["jaytec:watch-cycle"],
+            scopes=list(WATCH_OIDC_SCOPES),
             expires_at=access.expires_at,
             claims=dict(access.claims),
         )
@@ -109,6 +110,7 @@ __all__ = [
     "WATCH_SUBJECT",
     "WATCH_WORKFLOW",
     "WATCH_WORKFLOW_REF",
+    "WATCH_OIDC_SCOPES",
     "GitHubActionsWatchOIDCVerifier",
     "validate_watch_claims",
 ]
