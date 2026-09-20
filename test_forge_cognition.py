@@ -23,6 +23,7 @@ def state(mode=ForgeMode.RUNNING, goals=()):
         specialist_roster={"SOL":{"role":"PRIMARY_ENGINEERING"}},
         world_model={"phase":"GENESIS"},
         capability_frontier={"execution":"LIMITED"},
+        working_memory={"focus":"current only"},
         goals=tuple(goals),
         unresolved_questions=(),
         current_focus=None,
@@ -78,6 +79,8 @@ class ForgeCognitionTests(unittest.TestCase):
         self.assertEqual(len(packet["recent_events"]),24)
         self.assertFalse(packet["performance_rules"]["full_history_replay"])
         self.assertTrue(packet["performance_rules"]["event_driven"])
+        self.assertNotIn("world_model",packet)
+        self.assertEqual(packet["working_memory"]["focus"],"current only")
 
 if __name__=="__main__":
     unittest.main()
