@@ -26,7 +26,11 @@ from forge_strategic_drives import (
 class StrategicDriveAdversarialTests(unittest.TestCase):
     def test_case_variant_root_registry_scope_is_still_blocked(self):
         self.assertTrue(touches_root_boundary(["SYSTEM_ROLE_REGISTRY:JAY_ROOT_OWNER"]))
+        self.assertTrue(touches_root_boundary(["SYSTEM_ROLE_REGISTRY:GOD_MODE_EXECUTIVE"]))
         self.assertTrue(touches_root_boundary([" Root_Owner:credential "]))
+        self.assertTrue(touches_root_boundary(["ADMIN_INGRESS:config"]))
+        self.assertTrue(touches_root_boundary(["OPAQUE_SIGNER_KMS_HSM:key"]))
+        self.assertTrue(touches_root_boundary(["ROLLBACK_EXECUTOR:backend"]))
 
     def test_forge_cannot_fabricate_verified_budget_authority(self):
         with self.assertRaises(StrategicDriveError):
