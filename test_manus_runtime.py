@@ -8,6 +8,7 @@ from manus_runtime import (
     ManusLiteRuntime,
     ManusRuntimeError,
     parse_start_request,
+    start_request_identity,
 )
 
 
@@ -141,6 +142,18 @@ class ManusLiteRuntimeTests(unittest.TestCase):
                     "MANUS_RUNTIME_PROFILE_SELECTION_FORBIDDEN",
                 ):
                     parse_start_request(start_payload(**{field: "standard"}))
+
+    def test_idempotency_identity_is_stable_and_scope_sensitive(self):
+        first_key, first_hash = start_request_identity(start_payload())
+        reordered = json.dumps(json.loads(start_payload()), sort_keys=True)
+        second_key, second_hash = start_request_identity(reordered)
+        self.assertEqual(first_key, "manus:task-1")
+        self.assertEqual((first_key, first_hash), (second_key, second_hash))
+
+        _, connector_hash = start_request_identity(
+            start_payload(connector_purposes={"github": "inspect"})
+        )
+        self.assertNotEqual(first_hash, connector_hash)
 
     def test_current_task_authority_is_required(self):
         with self.assertRaisesRegex(
