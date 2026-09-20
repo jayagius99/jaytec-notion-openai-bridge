@@ -46,6 +46,7 @@ from deepseek_reviewer import (
     build_deepseek_security_review_dispatch,
 )
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
+from jaytec_protocol_portal import PortalStore, safe_error as portal_safe_error
 from manus_adapter import MANUS_API_KEY, ManusClient
 from manus_runtime import ManusLiteRuntime, runtime_error_payload
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
@@ -89,6 +90,7 @@ DATABASE_URL = (
     os.environ.get("JAYTEC_STAGING_DATABASE_URL", "").strip()
     or os.environ.get("DATABASE_URL", "").strip()
 )
+PROTOCOL_DATABASE_URL = os.environ.get("JAYTEC_PROTOCOL_DATABASE_URL", "").strip()
 
 if not MCP_AUTH_TOKEN:
     raise RuntimeError("MCP_AUTH_TOKEN is required")
@@ -191,6 +193,15 @@ def orchestration_status() -> str:
         env=os.environ,
         database_url=DATABASE_URL,
     ).to_dict()
+    portal = (
+        PortalStore(PROTOCOL_DATABASE_URL).probe()
+        if PROTOCOL_DATABASE_URL
+        else {
+            "schema_version": "JAYTEC_PROTOCOL_PORTAL_V1",
+            "status": "BLOCKED",
+            "reason": "JAYTEC_PROTOCOL_DATABASE_URL_NOT_CONFIGURED",
+        }
+    )
     return json.dumps(
         {
             "status": "STAGING",
@@ -213,6 +224,7 @@ def orchestration_status() -> str:
             "manus_runtime": "JAYTEC_MANUS_LITE_RUNTIME_V1",
             "idempotency_store": IDEMPOTENCY_STORE,
             "autorecovery": autorecovery,
+            "protocol_portal": portal,
             "production_ready": False,
         },
         sort_keys=True,
@@ -290,6 +302,116 @@ def autorecovery_assignment_status(task_id: str) -> str:
     result["autorecovery_active"] = status.active
     result["ui_chat_autoresume_supported"] = False
     return json.dumps(result, sort_keys=True)
+
+
+def _protocol_portal() -> PortalStore:
+    if not PROTOCOL_DATABASE_URL:
+        raise RuntimeError("JAYTEC_PROTOCOL_DATABASE_URL_NOT_CONFIGURED")
+    return PortalStore(PROTOCOL_DATABASE_URL)
+
+
+@mcp.tool
+def jaytec_protocol_portal_status() -> str:
+    """Read protocol-portal readiness and active WATCH-addressable tasks."""
+    if not PROTOCOL_DATABASE_URL:
+        return json.dumps(
+            {
+                "schema_version": "JAYTEC_PROTOCOL_PORTAL_V1",
+                "status": "BLOCKED",
+                "reason": "JAYTEC_PROTOCOL_DATABASE_URL_NOT_CONFIGURED",
+            },
+            sort_keys=True,
+        )
+    try:
+        store = _protocol_portal()
+        return json.dumps(
+            {
+                **store.probe(),
+                "watch_tasks": store.list_watch_tasks(include_terminal=False),
+                "ui_chat_autoresume_supported": False,
+            },
+            sort_keys=True,
+        )
+    except Exception as exc:
+        return json.dumps(portal_safe_error(exc), sort_keys=True)
+
+
+@mcp.tool
+def jaytec_protocol_register_task(request_json: str) -> str:
+    """Register/update one current-authorized task in canonical JAYTEC jobs/events.
+
+    Registration creates continuity/WATCH state only. It grants no specialist,
+    connector, provider, spend, ROOT_OWNER, merge, or deployment authority.
+    """
+    try:
+        result = _protocol_portal().register(request_json)
+    except Exception as exc:
+        result = portal_safe_error(exc)
+    return json.dumps(result, default=str, sort_keys=True)
+
+
+@mcp.tool
+def jaytec_protocol_checkpoint_task(
+    task_id: str,
+    checkpoint_json: str,
+    expected_fence_token: int,
+) -> str:
+    """Append a durable checkpoint for one registered task using current fencing."""
+    try:
+        result = _protocol_portal().checkpoint(
+            task_id,
+            checkpoint_json,
+            expected_fence_token=expected_fence_token,
+        )
+    except Exception as exc:
+        result = portal_safe_error(exc)
+    return json.dumps(result, default=str, sort_keys=True)
+
+
+@mcp.tool
+def jaytec_protocol_task_status(task_id: str) -> str:
+    """Read one protocol task and its latest durable checkpoint."""
+    try:
+        result = _protocol_portal().status(task_id)
+    except Exception as exc:
+        result = portal_safe_error(exc)
+    return json.dumps(result, default=str, sort_keys=True)
+
+
+@mcp.tool
+def jaytec_protocol_list_watch_tasks(include_terminal: bool = False, limit: int = 128) -> str:
+    """List WATCH-enabled tasks from all chats without changing them."""
+    try:
+        result = {
+            "schema_version": "JAYTEC_PROTOCOL_PORTAL_V1",
+            "tasks": _protocol_portal().list_watch_tasks(
+                include_terminal=include_terminal,
+                limit=limit,
+            ),
+        }
+    except Exception as exc:
+        result = portal_safe_error(exc)
+    return json.dumps(result, default=str, sort_keys=True)
+
+
+@mcp.tool
+def jaytec_protocol_transition_task(
+    task_id: str,
+    action: str,
+    expected_fence_token: int,
+    reason: str = "",
+) -> str:
+    """PAUSE, RESUME or COMPLETE a portal task with stale-writer fencing."""
+    try:
+        result = _protocol_portal().transition(
+            task_id,
+            action=action,
+            expected_fence_token=expected_fence_token,
+            reason=reason,
+        )
+    except Exception as exc:
+        result = portal_safe_error(exc)
+    return json.dumps(result, default=str, sort_keys=True)
 
 
 @mcp.tool
