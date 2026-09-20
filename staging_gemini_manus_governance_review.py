@@ -100,9 +100,9 @@ Manus may autonomously improve only its own JAYTEC-controlled Manus layer.
 Manus may inspect/recommend JAYTEC changes but may not independently modify
 JAYTEC. Notion is transfer-only under current Jay-through-ChatGPT authority.
 Manus direct resources are exactly GitHub, Neon, Render; connector presence does
-not itself authorize mutation. Manus must be Lite unless Jay explicitly
-authorizes a paid profile for that single current task. Unknown paths fail
-closed.
+not itself authorize mutation. Manus is permanently Lite-only with no paid
+profile override under any authority or circumstance. Any route that cannot pin
+and verify Lite is unavailable to JAYTEC. Unknown paths fail closed.
 
 Return conclusion as an object with EXACT keys:
 - verdict: string
