@@ -387,6 +387,67 @@ def autorecovery_assignment_status(task_id: str) -> str:
     return json.dumps(result, sort_keys=True)
 
 
+@mcp.custom_route("/jaytec/proving-grounds", methods=["POST"])
+async def jaytec_proving_grounds(request: Request) -> JSONResponse:
+    """OIDC-authenticated WATCH door for one registered Proving Grounds suite."""
+
+    auth_header = str(request.headers.get("authorization") or "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_BEARER_REQUIRED"},
+            status_code=401,
+        )
+    raw_token = auth_header[len("Bearer "):].strip()
+    if not raw_token:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_BEARER_REQUIRED"},
+            status_code=401,
+        )
+    try:
+        access = await watch_oidc_auth.verify_token(raw_token)
+    except Exception:
+        access = None
+    if access is None or "jaytec:proving-grounds" not in set(access.scopes or []):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "PROVING_GROUNDS_OIDC_VERIFICATION_FAILED"},
+            status_code=403,
+        )
+    ok, reason = validate_watch_claims(access.claims)
+    if not ok:
+        return JSONResponse({"status": "DENIED", "reason": reason}, status_code=403)
+
+    raw = await request.body()
+    if len(raw) > 16_384:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "PROVING_GROUNDS_REQUEST_TOO_LARGE"},
+            status_code=413,
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "PROVING_GROUNDS_JSON_INVALID"},
+            status_code=400,
+        )
+    if not isinstance(payload, Mapping):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "PROVING_GROUNDS_ROOT_INVALID"},
+            status_code=400,
+        )
+    if str(payload.get("task_id") or "").strip() != "FORGE-GENESIS-ACTIVATION-001":
+        return JSONResponse(
+            {"status": "DENIED", "reason": "TASK_ID_NOT_PROVING_GROUNDS_AUTHORIZED"},
+            status_code=403,
+        )
+
+    result = proving_grounds_run_registered_suite(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        env=os.environ,
+    )
+    status_code = 200 if result.get("status") == "PASS" else 409
+    return JSONResponse(result, status_code=status_code)
+
+
 @mcp.custom_route("/jaytec/watch-cycle", methods=["POST"])
 async def jaytec_watch_cycle(request: Request) -> JSONResponse:
     """OIDC-authenticated, WATCH-only ingress for exactly one recovery cycle."""
