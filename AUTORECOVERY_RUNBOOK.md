@@ -58,8 +58,8 @@ these are independently proven:
    - human/input/authority blockers can reach Jay/GOD Mode.
    - notification does not itself grant execution authority.
 
-7. **Five-minute supervisor runner**
-   - runs one bounded supervisor tick approximately every five minutes.
+7. **Fifteen-minute supervisor runner**
+   - runs one bounded supervisor tick approximately every fifteen minutes.
    - duplicate runners are safe because only one recovery lease can win.
    - the runner is not allowed to buy compute/credits automatically.
 
@@ -155,3 +155,25 @@ authority, checkpoint and completion state survive them.
 The architecture is installed and testable, but the current assignment still
 belongs to a normal ChatGPT UI worker and there is not yet a certified callable
 GOD Mode execution endpoint registered for it.
+
+
+## Canonical 15-minute timing contract
+
+The canonical supervisor cadence is exactly **900 seconds / 15 minutes**.
+This value is code-enforced; alternate interval values are rejected.
+
+Timing safety remains layered rather than inferred from the scheduler:
+- callable workers must emit fenced heartbeats independently of the supervisor;
+- current worker-heartbeat staleness threshold remains 600 seconds;
+- health verification remains bounded to 120 seconds;
+- recovery leases remain bounded and fencing tokens are authoritative;
+- overlapping local cycles are skipped;
+- cross-process duplicate recoveries are rejected by the durable lease/fencing path;
+- cycle scheduling uses a monotonic clock and subtracts cycle execution time, preventing cumulative cadence drift.
+
+A deterministic 100-cycle soak test verifies that repeated cycles retain exact
+15-minute start spacing even when each cycle consumes simulated processing time.
+
+Changing the cadence does not grant execution authority. Automatic resurrection
+still requires a certified, registered `JAYTEC_CALLABLE` route and a canonical
+assignment migrated to that worker kind.

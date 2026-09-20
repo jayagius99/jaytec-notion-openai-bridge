@@ -42,7 +42,7 @@ class AutoRecoveryRuntimeTests(unittest.TestCase):
         self.assertEqual(status.mode, "DISABLED")
         self.assertFalse(status.ui_chat_autoresume_supported)
         self.assertEqual(status.max_recovery_attempts, 3)
-        self.assertEqual(status.supervisor_interval_seconds, 300)
+        self.assertEqual(status.supervisor_interval_seconds, 900)
         self.assertFalse(status.runtime_components_registered)
 
     def test_requested_activation_fails_closed_without_all_prerequisites(self):

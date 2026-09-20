@@ -4,6 +4,7 @@ import unittest
 from autorecovery_loop import (
     AutoRecoveryLoop,
     AutoRecoveryLoopError,
+    SUPERVISOR_INTERVAL_MINUTES,
     SUPERVISOR_INTERVAL_SECONDS,
 )
 from autorecovery_supervisor import (
@@ -35,16 +36,17 @@ class FakeSupervisor:
 
 
 class LoopTests(unittest.TestCase):
-    def test_interval_is_exactly_five_minutes(self):
-        self.assertEqual(SUPERVISOR_INTERVAL_SECONDS, 300)
+    def test_interval_is_exactly_fifteen_minutes(self):
+        self.assertEqual(SUPERVISOR_INTERVAL_MINUTES, 15)
+        self.assertEqual(SUPERVISOR_INTERVAL_SECONDS, 900)
         with self.assertRaisesRegex(
             AutoRecoveryLoopError,
-            "INTERVAL_MUST_BE_300_SECONDS",
+            "INTERVAL_MUST_MATCH_15_MINUTE_CADENCE",
         ):
             AutoRecoveryLoop(
                 supervisor=FakeSupervisor(),
                 task_source=lambda: [],
-                interval_seconds=299,
+                interval_seconds=899,
             )
 
     def test_cycle_deduplicates_task_ids(self):
@@ -112,6 +114,53 @@ class LoopTests(unittest.TestCase):
             events[-1]["reason"],
             "LOCAL_CYCLE_ALREADY_RUNNING",
         )
+
+    def test_one_hundred_cycles_hold_exact_fifteen_minute_start_cadence(self):
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+
+            def monotonic(self):
+                return self.value
+
+        class AdvancingSupervisor(FakeSupervisor):
+            def __init__(self, clock):
+                super().__init__()
+                self.clock = clock
+
+            def tick(self, task_id):
+                self.clock.value += 37.0
+                return super().tick(task_id)
+
+        class CountingStop:
+            def __init__(self, clock, waits):
+                self.clock = clock
+                self.waits = waits
+
+            def is_set(self):
+                return False
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+                self.clock.value += seconds
+                return len(self.waits) >= 100
+
+        clock = FakeClock()
+        waits = []
+        sup = AdvancingSupervisor(clock)
+        loop = AutoRecoveryLoop(
+            supervisor=sup,
+            task_source=lambda: ["task-a"],
+        )
+        loop.run_forever(
+            stop_event=CountingStop(clock, waits),
+            monotonic_fn=clock.monotonic,
+        )
+
+        self.assertEqual(len(sup.calls), 100)
+        self.assertEqual(len(waits), 100)
+        self.assertTrue(all(wait == 863.0 for wait in waits))
+        self.assertEqual(clock.value, 100 * SUPERVISOR_INTERVAL_SECONDS)
 
     def test_run_forever_runs_immediately_and_can_stop_after_first_cycle(self):
         sup = FakeSupervisor()

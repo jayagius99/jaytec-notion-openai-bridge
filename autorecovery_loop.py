@@ -1,4 +1,4 @@
-"""Five-minute runner for JAYTEC WATCH + AUTORECOVERY.
+"""Fifteen-minute runner for JAYTEC WATCH + AUTORECOVERY.
 
 The loop is deliberately generic: it needs an already-constructed supervisor
 whose verifier, invoker, health probe and notifier have passed runtime gates.
@@ -18,7 +18,8 @@ from autorecovery_supervisor import (
     SupervisorAction,
 )
 
-SUPERVISOR_INTERVAL_SECONDS = 300
+SUPERVISOR_INTERVAL_MINUTES = 15
+SUPERVISOR_INTERVAL_SECONDS = SUPERVISOR_INTERVAL_MINUTES * 60
 MAX_TASKS_PER_CYCLE = 128
 
 
@@ -55,7 +56,7 @@ def _normalize_task_ids(values: Iterable[str]) -> tuple[str, ...]:
 
 
 class AutoRecoveryLoop:
-    """Runs one bounded supervisor decision per canonical task every 300s.
+    """Runs one bounded supervisor decision per canonical task every 900s.
 
     Cross-process duplicate recovery remains safe because the supervisor must
     acquire the durable recovery lease/fencing token before invoking a worker.
@@ -71,7 +72,7 @@ class AutoRecoveryLoop:
     ):
         if interval_seconds != SUPERVISOR_INTERVAL_SECONDS:
             raise AutoRecoveryLoopError(
-                "INTERVAL_MUST_BE_300_SECONDS"
+                "INTERVAL_MUST_MATCH_15_MINUTE_CADENCE"
             )
         self.supervisor = supervisor
         self.task_source = task_source
@@ -147,7 +148,7 @@ class AutoRecoveryLoop:
         stop_event: threading.Event,
         monotonic_fn: Callable[[], float] = time.monotonic,
     ) -> None:
-        """Run immediately, then start each next cycle ~300s after prior start."""
+        """Run immediately, then start each next cycle ~900s after prior start."""
 
         while not stop_event.is_set():
             started = monotonic_fn()
@@ -163,5 +164,6 @@ __all__ = [
     "AutoRecoveryLoopError",
     "CycleResult",
     "MAX_TASKS_PER_CYCLE",
+    "SUPERVISOR_INTERVAL_MINUTES",
     "SUPERVISOR_INTERVAL_SECONDS",
 ]
