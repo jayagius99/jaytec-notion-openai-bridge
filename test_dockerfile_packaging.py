@@ -6,7 +6,8 @@ class TestDockerPackaging(unittest.TestCase):
         dockerfile = open("Dockerfile", "r", encoding="utf-8").read()
         self.assertIn("COPY . ./", dockerfile)
         self.assertIn('python jaytec_read_startup_selftest.py', dockerfile)
-        self.assertIn('exec python compat_server.py', dockerfile)
+        self.assertIn('exec python notion_courier_server.py', dockerfile)
+        self.assertNotIn('exec python compat_server.py', dockerfile)
 
     def test_dockerignore_blocks_sensitive_and_dev_files(self):
         dockerignore = open(".dockerignore", "r", encoding="utf-8").read()
