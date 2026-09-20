@@ -44,6 +44,17 @@ MANUS_MAX_MESSAGE_CHARS = min(max(int(os.environ.get("MANUS_MAX_MESSAGE_CHARS", 
 JAYTEC_MANUS_PROJECT_ID = os.environ.get("JAYTEC_MANUS_PROJECT_ID", "").strip()
 
 APPROVED_CONNECTOR_KEYS = ("github", "neon", "render")
+
+# Manus documents stable built-in connector UUIDs for GitHub and Neon. These
+# are a fail-closed discovery fallback only when connector.list itself is
+# unavailable with the provider's not_found response. task.create remains the
+# authority that proves the connector is actually installed/authorized for the
+# account. Render has no documented built-in UUID, so it never falls back.
+_DOCUMENTED_BUILTIN_CONNECTOR_IDS = {
+    "github": "bbb0df76-66bd-4a24-ae4f-2aac4750d90b",
+    "neon": "9a0c8590-c0d9-498b-9b3d-bd0df0dbc134",
+}
+
 _CONNECTOR_ALIASES = {
     "github": "github",
     "github connect": "github",
@@ -270,7 +281,29 @@ class ManusClient:
             return (), ()
 
         by_key: dict[str, list[str]] = {key: [] for key in canonical}
-        for row in _rows(self.list_connectors()):
+        try:
+            connector_rows = _rows(self.list_connectors())
+        except ManusError as exc:
+            # The provider currently documents connector.list, but some
+            # account/API surfaces may answer 404/not_found. Only documented
+            # built-in IDs may be used as a bounded fallback. Unknown/custom
+            # connectors, including Render, still fail closed.
+            if str(exc) != "MANUS_HTTP_404:not_found":
+                raise
+            unsupported = [
+                key for key in canonical
+                if key not in _DOCUMENTED_BUILTIN_CONNECTOR_IDS
+            ]
+            if unsupported:
+                raise ManusError(
+                    "MANUS_CONNECTOR_DISCOVERY_UNAVAILABLE:"
+                    + ",".join(unsupported)
+                ) from exc
+            names = tuple(canonical)
+            ids = tuple(_DOCUMENTED_BUILTIN_CONNECTOR_IDS[key] for key in names)
+            return names, ids
+
+        for row in connector_rows:
             normalized = _normalize_connector_name(row.get("name"))
             key = _CONNECTOR_ALIASES.get(normalized)
             if key not in by_key:
