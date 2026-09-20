@@ -28,7 +28,7 @@ from manus_dispatch_contract import (
     verify_manus_dispatch_result,
 )
 from manus_governance import AuthoritySource, ManusScope, render_directive
-from manus_policy import ManusProfilePolicyError, verify_manus_profile
+from manus_policy import ManusProfilePolicyError, authorize_manus_route, verify_manus_profile
 from participant_contracts import render_actor_contract
 from provider_endpoints import MANUS_API_BASE, validate_manus_endpoint
 from relationship_policy import Actor, MUTATING, Purpose, authorize_relationship
@@ -303,6 +303,14 @@ class ManusClient:
     ) -> BoundManusRoute:
         if type(connector_mutation_authorized) is not bool:
             raise ManusError("MANUS_CONNECTOR_MUTATION_AUTH_FLAG_INVALID")
+
+        # Fail closed on profile policy BEFORE any Manus network read. This
+        # prevents a non-Lite or unpinnable request from touching Manus at all.
+        lite_policy = authorize_manus_route(
+            requested_profile=lite_policy.requested_profile.value,
+            route_supports_profile_selector=True,
+        )
+
         project_id, project_name = self.resolve_manus_project()
         requested = dict(requested_connector_purposes or {})
         canonical_purposes: list[tuple[str, str]] = []
