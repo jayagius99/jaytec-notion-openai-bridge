@@ -38,3 +38,8 @@ A true bridge readiness result means **this bridge instance only** has satisfied
 - provider credentials remain server-side.
 
 ROOT_OWNER, hardware-key, production topology, signer custody, rollback, hostile-review and final owner-activation gates remain separate and must all pass independently.
+
+
+## Pre-activation execution boundary
+
+Production provider dispatch is deliberately fail-closed until the V2 dispatch-authority contract is implemented and verified end-to-end. The bridge may be tested and staged, but a production TaskPacket cannot reach a provider merely because the bridge has credentials or receives a valid MCP request. V2 cost/approval/provider authority must become the source of a packet-bound dispatch authorization before this gate can be changed.
