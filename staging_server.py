@@ -28,6 +28,7 @@ from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from http_security import load_host_origin_policy
 from deepseek_reviewer import (
     EXPECTED_DEEPSEEK_REVIEWER_MODEL,
     build_deepseek_security_review_dispatch,
@@ -813,10 +814,13 @@ if __name__ == "__main__":
         name="jaytec-deepseek-route-visibility",
         daemon=True,
     ).start()
+    http_policy = load_host_origin_policy(os.environ, require_hosts=True)
     mcp.run(
         transport="http",
         host="0.0.0.0",
         port=PORT,
         stateless_http=True,
-        host_origin_protection=False,
+        host_origin_protection=True,
+        allowed_hosts=list(http_policy.allowed_hosts),
+        allowed_origins=list(http_policy.allowed_origins),
     )

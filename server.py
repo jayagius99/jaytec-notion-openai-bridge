@@ -10,6 +10,7 @@ from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from http_security import load_host_origin_policy
 from orchestration import (
     ExecutionRegistry,
     PacketValidationError,
@@ -91,6 +92,8 @@ def _require_startup_prereqs() -> None:
             raise RuntimeError(
                 "RUNTIME_MODE=production requires DATABASE_URL for durable idempotency; refusing to start with process memory."
             )
+        # Production must not expose MCP without an explicit Host allowlist.
+        load_host_origin_policy(os.environ, require_hosts=True)
 
 
 
@@ -522,12 +525,15 @@ def create_mcp_app() -> FastMCP:
 
 def main() -> None:
     mcp = create_mcp_app()
+    http_policy = load_host_origin_policy(os.environ, require_hosts=True)
     mcp.run(
         transport="http",
         host="0.0.0.0",
         port=PORT,
         stateless_http=True,
-        host_origin_protection=False,
+        host_origin_protection=True,
+        allowed_hosts=list(http_policy.allowed_hosts),
+        allowed_origins=list(http_policy.allowed_origins),
     )
 
 
