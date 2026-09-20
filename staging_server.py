@@ -49,8 +49,10 @@ from specialist_adapters import (
     build_engineering_dispatch,
     build_gemini_dispatch,
     ENGINEERING_PROVIDER_ACTIVE,
+    OPENROUTER_PROVIDER_ACTIVE,
     resolve_engineering_model,
     resolve_engineering_provider_mode,
+    resolve_openrouter_provider_mode,
 )
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -62,6 +64,7 @@ OPENAI_BASE_URL = validate_openai_endpoint(
 ENGINEERING_MODEL = resolve_engineering_model()
 CODEX_MODEL = ENGINEERING_MODEL
 ENGINEERING_PROVIDER_MODE = resolve_engineering_provider_mode()
+OPENROUTER_PROVIDER_MODE = resolve_openrouter_provider_mode()
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = validate_openrouter_endpoint(
     os.environ.get("OPENROUTER_BASE_URL", OPENROUTER_API_BASE).strip()
@@ -124,7 +127,12 @@ OPENAI_CLIENT = (
     if ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE and OPENAI_API_KEY
     else None
 )
-OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
+OPENROUTER_CLIENT = (
+    OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+    if OPENROUTER_PROVIDER_MODE == OPENROUTER_PROVIDER_ACTIVE
+    and OPENROUTER_API_KEY
+    else None
+)
 
 # Build dispatchers ONCE to avoid runtime drift and repeated guards.
 ENGINEERING_DISPATCH = (
@@ -136,6 +144,12 @@ ENGINEERING_DISPATCH = (
 )
 CODEX_DISPATCH = ENGINEERING_DISPATCH  # TaskPacket v1 wire alias
 
+GEMINI_BLOCK_REASON = (
+    "OPENROUTER_PROVIDER_DOOR_LOCKED_RESERVE"
+    if OPENROUTER_PROVIDER_MODE != OPENROUTER_PROVIDER_ACTIVE
+    else "OPENROUTER_API_KEY is not configured on the staging bridge"
+)
+
 GEMINI_DISPATCH = (
     build_gemini_dispatch(
         openrouter_client=OPENROUTER_CLIENT,
@@ -144,7 +158,9 @@ GEMINI_DISPATCH = (
         circuit=GEMINI_CIRCUIT,
     )
     if OPENROUTER_CLIENT
-    else GEMINI_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on the staging bridge")))
+    else GEMINI_CIRCUIT.guard(
+        lambda _packet: (_ for _ in ()).throw(RuntimeError(GEMINI_BLOCK_REASON))
+    )
 )
 
 DEEPSEEK_REVIEW_DISPATCH = (
@@ -157,7 +173,7 @@ DEEPSEEK_REVIEW_DISPATCH = (
     if OPENROUTER_CLIENT
     else DEEPSEEK_REVIEWER_CIRCUIT.guard(
         lambda _packet: (_ for _ in ()).throw(
-            RuntimeError("OPENROUTER_API_KEY is not configured on the staging bridge")
+            RuntimeError(GEMINI_BLOCK_REASON)
         )
     )
 )
@@ -175,7 +191,8 @@ def orchestration_status() -> str:
             "codex_adapter_configured": bool(OPENAI_CLIENT),
             "codex_circuit": CODEX_CIRCUIT.snapshot(),
             "gemini_model": GEMINI_MODEL,
-            "gemini_adapter_configured": bool(OPENROUTER_API_KEY),
+            "openrouter_provider_mode": OPENROUTER_PROVIDER_MODE,
+            "gemini_adapter_configured": bool(OPENROUTER_CLIENT),
             "gemini_provider_routing": "price",
             "gemini_circuit": GEMINI_CIRCUIT.snapshot(),
             "deepseek_reviewer_model": DEEPSEEK_REVIEWER_MODEL,
