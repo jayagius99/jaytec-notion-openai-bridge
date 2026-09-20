@@ -410,11 +410,13 @@ async def jaytec_watch_cycle(request: Request) -> JSONResponse:
         )
 
     try:
+        components_registered = _autorecovery_components_registered()
         result = execute_watch_cycle(
             payload,
             database_url=DATABASE_URL,
-            manus_runtime=_manus_runtime(),
+            manus_runtime=(_manus_runtime() if components_registered else None),
             registry=REGISTRY,
+            runtime_components_registered=components_registered,
             env=os.environ,
         )
     except WatchIngressError as exc:

@@ -79,8 +79,9 @@ def execute_watch_cycle(
     payload: Mapping[str, Any],
     *,
     database_url: str,
-    manus_runtime: Any,
+    manus_runtime: Any | None,
     registry: Any,
+    runtime_components_registered: bool,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     source = dict(os.environ if env is None else env)
@@ -103,7 +104,7 @@ def execute_watch_cycle(
     status = runtime_status(
         env=source,
         database_url=database_url,
-        runtime_components_registered=True,
+        runtime_components_registered=runtime_components_registered,
     )
     if not status.active:
         return {
@@ -117,6 +118,13 @@ def execute_watch_cycle(
             "status": "BLOCKED_FAIL_CLOSED",
             "task_id": task_id,
             "reason": "CALLABLE_ROUTE_SET_MISMATCH",
+        }
+
+    if manus_runtime is None:
+        return {
+            "status": "BLOCKED_FAIL_CLOSED",
+            "task_id": task_id,
+            "reason": "CALLABLE_RUNTIME_COMPONENTS_UNAVAILABLE",
         }
 
     store = PostgresAssignmentStore(database_url)
