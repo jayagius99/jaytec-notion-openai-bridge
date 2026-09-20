@@ -5,8 +5,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 EXPECTED_DOCKER_DIGEST = "sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9"
-EXPECTED_CHECKOUT_SHA = "11d5960a326750d5838078e36cf38b85af677262"
-EXPECTED_SETUP_PYTHON_SHA = "a26af69be951a213d495a4c3e4e4022e16d87065"
+EXPECTED_CHECKOUT_SHA = "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09"
+EXPECTED_SETUP_PYTHON_SHA = "ece7cb06caefa5fff74198d8649806c4678c61a1"
 
 
 class SupplyChainPinTests(unittest.TestCase):
@@ -35,7 +35,11 @@ class SupplyChainPinTests(unittest.TestCase):
         for line in lines:
             with self.subTest(line=line):
                 self.assertRegex(line, r"^[A-Za-z0-9_.-]+==[A-Za-z0-9_.+-]+$")
-                self.assertNotRegex(line, r"[<>=!~]{1}(?!=)")
+                self.assertEqual(line.count("=="), 1)
+                name, version = line.split("==", 1)
+                self.assertTrue(name)
+                self.assertTrue(version)
+                self.assertFalse(any(op in name or op in version for op in ("<", ">", "!", "~", "=")))
 
     def test_lock_contains_exact_top_level_dependencies(self):
         lock = set(
@@ -62,8 +66,8 @@ class SupplyChainPinTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn(f"actions/checkout@{EXPECTED_CHECKOUT_SHA}", source)
         self.assertIn(f"actions/setup-python@{EXPECTED_SETUP_PYTHON_SHA}", source)
-        self.assertNotIn("actions/checkout@v4", source)
-        self.assertNotIn("actions/setup-python@v5", source)
+        self.assertNotRegex(source, r"actions/checkout@v\\d+")
+        self.assertNotRegex(source, r"actions/setup-python@v\\d+")
 
     def test_security_files_are_ci_trigger_paths(self):
         source = (
