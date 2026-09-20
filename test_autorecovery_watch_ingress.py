@@ -11,6 +11,7 @@ from autorecovery_watch_ingress import (
     _observed_refs,
     execute_watch_cycle,
 )
+from manus_governance import specialist_request
 from autorecovery_supervisor import (
     AssignmentCheckpoint,
     AssignmentState,
@@ -67,6 +68,16 @@ def broker_checkpoint():
         worker_specialist_preference=("manus-lite",),
         checkpoint_number=1,
     ).validate()
+
+
+def broker_specialist_request(context, *, specialist="github_broker"):
+    return specialist_request(
+        parent_task_id=FORGE_TASK_ID + ":recovery:2:fresh_worker_same_checkpoint",
+        specialist=specialist,
+        objective="Perform one bounded GitHub broker operation.",
+        reason="Private repository evidence is required.",
+        required_context=context,
+    )
 
 
 class FakeBrokerStore:
@@ -239,6 +250,150 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(store.state.worker_id, "worker-existing")
         self.assertEqual(store.state.fencing_token, 9)
         self.assertEqual(len(store.heartbeats), 2)
+
+
+    def test_broker_request_contract_rejects_unsupported_and_stale_mutations(self):
+        from autorecovery_watch_ingress import (
+            _normalize_broker_operation,
+            _broker_results_match_requests,
+        )
+
+        refs = {
+            "main": "a" * 40,
+            "security/root-owner-control-v1": "b" * 40,
+            "genesis/two-console-v1": "c" * 40,
+        }
+
+        valid_read = broker_specialist_request(
+            {
+                "operation": "read_file",
+                "path": "src/example.py",
+                "ref": "main",
+                "start_line": 1,
+                "end_line": 20,
+            }
+        )
+        normalized = _normalize_broker_operation(
+            valid_read,
+            refs=refs,
+            fencing_token=9,
+            mutation_authorized=False,
+        )
+        self.assertEqual(normalized["operation"], "read_file")
+        self.assertEqual(normalized["args"]["ref"], "main")
+
+        bad_op = broker_specialist_request(
+            {"operation": "merge_pr", "number": 17}
+        )
+        with self.assertRaisesRegex(WatchIngressError, "OPERATION_INVALID"):
+            _normalize_broker_operation(
+                bad_op,
+                refs=refs,
+                fencing_token=9,
+                mutation_authorized=True,
+            )
+
+        stale_branch = broker_specialist_request(
+            {
+                "operation": "create_branch",
+                "base_ref": "main",
+                "new_branch": "watch/worker-8-stale",
+            }
+        )
+        with self.assertRaisesRegex(WatchIngressError, "NEW_BRANCH_INVALID"):
+            _normalize_broker_operation(
+                stale_branch,
+                refs=refs,
+                fencing_token=9,
+                mutation_authorized=True,
+            )
+
+        protected_write = broker_specialist_request(
+            {
+                "operation": "write_file",
+                "branch": "main",
+                "path": "safe.py",
+                "content": "print('x')",
+            }
+        )
+        with self.assertRaises(WatchIngressError):
+            _normalize_broker_operation(
+                protected_write,
+                refs=refs,
+                fencing_token=9,
+                mutation_authorized=True,
+            )
+
+        request = {
+            "request_id": "r1",
+            "operation": "read_issue",
+            "args": {"number": 59},
+        }
+        self.assertTrue(
+            _broker_results_match_requests(
+                {
+                    "kind": "SPECIALIST_REQUEST_RESULTS",
+                    "request_results": [
+                        {
+                            "request_id": "r1",
+                            "operation": "read_issue",
+                            "status": "SUCCESS",
+                            "evidence": {},
+                        }
+                    ],
+                },
+                [request],
+            )
+        )
+        self.assertFalse(
+            _broker_results_match_requests(
+                {
+                    "kind": "SPECIALIST_REQUEST_RESULTS",
+                    "request_results": [
+                        {
+                            "request_id": "different",
+                            "operation": "read_issue",
+                            "status": "SUCCESS",
+                            "evidence": {},
+                        }
+                    ],
+                },
+                [request],
+            )
+        )
+
+    def test_existing_checkpoint_must_be_re_attested_before_handoff(self):
+        refs = {"security/root-owner-control-v1": "d" * 40}
+        store = FakeBrokerStore()
+        runtime = FakeBrokerRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                {
+                    "task_id": FORGE_TASK_ID,
+                    "observed_refs": refs,
+                    "github_broker_context": broker_payload(refs),
+                },
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+        self.assertEqual(result["status"], "BLOCKED_FAIL_CLOSED")
+        self.assertEqual(result["reason"], "CURRENT_CHECKPOINT_NOT_ATTESTED")
+        self.assertEqual(runtime.handoffs, [])
 
     def test_disabled_runtime_does_not_require_manus_components(self):
         with patch(
