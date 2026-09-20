@@ -257,6 +257,11 @@ contracts. Connector scope is explicit and minimal. They do not create a new
 authority path, do not bypass the current-task authorization requirement, and
 do not permit Manus to self-dispatch another specialist.
 
+Task creation is idempotent through the JAYTEC execution registry. Repeating the
+same normalized task id/request replays the original start result instead of
+creating a second Manus task. Reusing a task id with a changed request fails
+closed as `MANUS_RUNTIME_CONFLICTING_DUPLICATE`.
+
 Production use is additionally subject to the same V2 dispatch-authority gate
 as JAYTEC provider execution. Until that production authority contract is
 integrated, the production Manus runtime returns `POLICY_BLOCKED`; staging may
