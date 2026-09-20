@@ -33,6 +33,7 @@ def test_visibility_probe_logs_only_safe_metadata():
         '"base_host"',
         '"model_visible"',
         '"models_count"',
+        '"visible_deepseek_models"',
         '"error_class"',
     ]:
         assert required in body
@@ -48,3 +49,10 @@ def test_visibility_probe_is_started_as_daemon_only():
     text = SOURCE.read_text(encoding="utf-8")
     assert 'target=_run_deepseek_route_visibility_probe' in text
     assert 'name="jaytec-deepseek-route-visibility"' in text
+
+
+def test_visibility_probe_only_exposes_deepseek_vendor_ids():
+    body = _probe_source()
+    assert 'model_id.startswith("deepseek/")' in body
+    assert "sorted(" in body
+    assert ")[:50]" in body
