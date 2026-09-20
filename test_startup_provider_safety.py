@@ -61,6 +61,20 @@ class StartupProviderSafetyTests(unittest.TestCase):
                     source.replace("\n        ", ""),
                 )
 
+
+    def test_manual_provider_probes_require_one_shot_authorization_before_call(self):
+        for name in (
+            "staging_codex_429_diagnostic.py",
+            "staging_engineering_provider_probe.py",
+        ):
+            with self.subTest(name=name):
+                source = (ROOT / name).read_text(encoding="utf-8")
+                guard = source.find("_startup_probe_authorized(")
+                provider = source.find("responses.create(")
+                self.assertGreaterEqual(guard, 0)
+                self.assertGreater(provider, guard)
+                self.assertIn("ONE_SHOT_AUTH_REQUIRED", source)
+
     def test_jaytec_read_requires_separate_enable_flag(self):
         source = (ROOT / "staging_server.py").read_text(encoding="utf-8")
         self.assertIn("JAYTEC_READ_BOOTSTRAP_ENABLED", source)

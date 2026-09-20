@@ -10,10 +10,18 @@ import json
 from typing import Any, Mapping
 
 from orchestration import redact
-from staging_server import ENGINEERING_MODEL, IDEMPOTENCY_STORE, OPENAI_CLIENT, REGISTRY
+from startup_probe_guard import sha256_text
+from staging_server import (
+    ENGINEERING_MODEL,
+    IDEMPOTENCY_STORE,
+    OPENAI_CLIENT,
+    REGISTRY,
+    _startup_probe_authorized,
+)
 
 KEY = "engineering-provider-access-v1-gpt-5.6-sol"
 DIGEST = KEY
+AUTH_DIGEST = sha256_text("engineering-provider-probe:v2:" + ENGINEERING_MODEL + ":ENGINEERING_PROBE_OK")
 
 
 def _safe_error(exc: Exception) -> dict[str, Any]:
@@ -68,6 +76,21 @@ def main() -> int:
             "idempotency_store": IDEMPOTENCY_STORE,
             "prior": prior,
         }), sort_keys=True), flush=True)
+        return 0
+
+    if not _startup_probe_authorized("engineering_provider_probe", AUTH_DIGEST):
+        print(
+            json.dumps(
+                {
+                    "event": "JAYTEC_ENGINEERING_PROVIDER_PROBE",
+                    "status": "BLOCKED",
+                    "reason": "ONE_SHOT_AUTH_REQUIRED",
+                    "engineering_model": ENGINEERING_MODEL,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         return 0
 
     summary: dict[str, Any] = {
