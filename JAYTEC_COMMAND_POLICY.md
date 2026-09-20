@@ -159,15 +159,26 @@ permission.
 
 ## Manus profile hard gate
 
-JAYTEC must treat Manus as **Lite-only by default**.
+JAYTEC must treat Manus as **Lite-only, permanently and without exception**.
 
 Rules:
-- Default Manus profile: `lite`.
-- Manus 1.6 / standard and Manus Max are paid-profile routes and are blocked unless Jay explicitly requests that paid profile for the current task.
-- Any Manus route must expose an explicit profile selector before dispatch. If the route cannot explicitly pin Lite, return `BLOCKED_ROUTE / MANUS_PROFILE_SELECTOR_UNAVAILABLE` and do not call Manus.
-- Manus participation is not verified unless the observed profile can be checked against the requested profile. Missing profile identity fails closed.
-- Never automatically fall back from Lite to 1.6/standard/Max because of quality, task complexity, timeout, availability, or retry conditions.
-- A paid-profile override is one-task-only and does not change this standing default.
+- The only permitted Manus profile is `lite`.
+- Manus 1.6 / standard, Manus Max, unsuffixed/default paid profiles, and every
+  future non-Lite Manus profile are permanently blocked.
+- No owner message, override flag, urgency, task complexity, quality need,
+  retry, timeout, availability condition, or prior approval can authorize a
+  non-Lite Manus profile.
+- Any Manus route must expose an explicit profile selector before dispatch. If
+  the route cannot explicitly pin Lite, return
+  `BLOCKED_ROUTE / MANUS_PROFILE_SELECTOR_UNAVAILABLE` and do not call Manus.
+- Any generic ChatGPT/third-party Manus surface that does not expose a Lite
+  selector and observable profile verification is unavailable to JAYTEC. Do
+  not call it first and attempt to infer or repair the profile afterwards.
+- Manus participation is not verified unless the provider-observed profile is
+  explicitly visible and verifies as Lite. Missing profile identity fails
+  closed and the task must not be continued.
+- Never fall back, upgrade, migrate, or retry from Lite to another Manus
+  profile under any circumstance.
 
 Executable profile enforcement lives in `manus_policy.py`.
 
@@ -313,5 +324,5 @@ Manus Lite is treated as a free profile in JAYTEC. A Manus API `credit_usage`
 field is usage telemetry, not proof of monetary spend. If the Manus API returns
 an insufficient-credit/quota-style error while JAYTEC has pinned and verified
 Lite, report it as a **Manus Lite availability/quota blocker**, not as a request
-for Jay to purchase or top up Manus credits. Paid Manus profiles remain blocked
-unless Jay explicitly authorizes one in the current user message.
+for Jay to purchase or top up Manus credits. Paid Manus profiles are permanently blocked. A Lite availability/quota error
+must never be converted into a paid Manus fallback or top-up path.
