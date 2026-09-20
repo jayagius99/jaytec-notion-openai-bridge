@@ -110,6 +110,14 @@ def _finish_reason(choice: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
+def _provider_route_unavailable(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status == 404:
+        return True
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) == 404
+
+
 def _safe_diagnostics(
     *,
     content: str,
@@ -117,6 +125,7 @@ def _safe_diagnostics(
     provider_model: str | None,
     attempt: int,
     extracted_object: bool,
+    provider_fallbacks: bool,
 ) -> dict[str, Any]:
     encoded = (content or "").encode("utf-8", errors="replace")
     return {
@@ -129,10 +138,8 @@ def _safe_diagnostics(
         "finish_reason": finish_reason,
         "extracted_balanced_object": bool(extracted_object),
         "max_output_tokens": DEEPSEEK_REVIEW_MAX_OUTPUT_TOKENS,
-        "reasoning_effort": "low",
-        "reasoning_excluded_from_response": True,
         "model_fallbacks": False,
-        "provider_fallbacks": False,
+        "provider_fallbacks": bool(provider_fallbacks),
         "side_effect_capability": False,
     }
 
@@ -170,7 +177,13 @@ def build_deepseek_security_review_dispatch(
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         )
 
-    def _single(packet: Mapping[str, Any], *, retry_format: bool, attempt: int) -> Mapping[str, Any]:
+    def _single(
+        packet: Mapping[str, Any],
+        *,
+        retry_format: bool,
+        attempt: int,
+        allow_provider_fallbacks: bool,
+    ) -> Mapping[str, Any]:
         request_kwargs: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -193,12 +206,8 @@ def build_deepseek_security_review_dispatch(
             },
             "extra_body": {
                 "provider": {
-                    "allow_fallbacks": False,
+                    "allow_fallbacks": allow_provider_fallbacks,
                     "require_parameters": True,
-                },
-                "reasoning": {
-                    "effort": "low",
-                    "exclude": True,
                 },
             },
         }
@@ -244,6 +253,7 @@ def build_deepseek_security_review_dispatch(
             provider_model=returned_model,
             attempt=attempt,
             extracted_object=diagnostics.extracted_object,
+            provider_fallbacks=allow_provider_fallbacks,
         )
         return result
 
@@ -258,10 +268,21 @@ def build_deepseek_security_review_dispatch(
             raise RuntimeError("deepseek_reviewer_retry_budget_invalid")
 
         try:
-            return _single(packet, retry_format=False, attempt=1)
-        except WorkerJsonError:
-            if max_retries < 1:
+            return _single(
+                packet,
+                retry_format=False,
+                attempt=1,
+                allow_provider_fallbacks=False,
+            )
+        except Exception as exc:
+            retryable = isinstance(exc, WorkerJsonError) or _provider_route_unavailable(exc)
+            if max_retries < 1 or not retryable:
                 raise
-            return _single(packet, retry_format=True, attempt=2)
+            return _single(
+                packet,
+                retry_format=True,
+                attempt=2,
+                allow_provider_fallbacks=True,
+            )
 
     return circuit.guard(_dispatch)

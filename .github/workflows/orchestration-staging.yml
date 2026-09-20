@@ -10,6 +10,8 @@ on:
       - 'circuit_breaker.py'
       - 'worker_json.py'
       - 'specialist_adapters.py'
+      - 'deepseek_reviewer.py'
+      - 'test_deepseek_reviewer.py'
       - 'server.py'
       - 'Dockerfile'
       - '.dockerignore'
@@ -71,7 +73,7 @@ jobs:
       - name: Compile modules (including production entrypoint)
         run: |
           python -m py_compile \
-            orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py \
+            orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py deepseek_reviewer.py test_deepseek_reviewer.py \
             server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py \
             staging_engineering_provider_probe.py staging_gemini_migration_review.py staging_gemini_manus_governance_review.py staging_manus_review_readback.py staging_manus_governance_acceptance.py staging_manus_usability_eval.py manus_adapter.py \
             manus_policy.py manus_governance.py manus_dispatch_contract.py relationship_policy.py participant_contracts.py \
