@@ -1,9 +1,12 @@
 import unittest
 
 from github_watch_oidc import (
+    WATCH_OWNER,
+    WATCH_OWNER_ID,
     WATCH_REF,
     WATCH_REPOSITORY,
     WATCH_REPOSITORY_ID,
+    WATCH_SUBJECT,
     WATCH_WORKFLOW,
     WATCH_WORKFLOW_REF,
     validate_watch_claims,
@@ -12,9 +15,11 @@ from github_watch_oidc import (
 
 def claims(**overrides):
     value = {
-        "sub": f"repo:{WATCH_REPOSITORY}:ref:{WATCH_REF}",
+        "sub": WATCH_SUBJECT,
         "repository": WATCH_REPOSITORY,
         "repository_id": WATCH_REPOSITORY_ID,
+        "repository_owner": WATCH_OWNER,
+        "repository_owner_id": WATCH_OWNER_ID,
         "repository_visibility": "private",
         "ref": WATCH_REF,
         "workflow": WATCH_WORKFLOW,
@@ -56,6 +61,22 @@ class GitHubWatchOIDCTests(unittest.TestCase):
         ):
             with self.subTest(key=key):
                 self.assertFalse(validate_watch_claims(claims(**{key: value}))[0])
+
+    def test_legacy_mutable_subject_is_rejected_for_this_new_repository(self):
+        legacy = f"repo:{WATCH_REPOSITORY}:ref:{WATCH_REF}"
+        ok, reason = validate_watch_claims(claims(sub=legacy))
+        self.assertFalse(ok)
+        self.assertEqual(reason, "OIDC_SUBJECT_INVALID")
+
+    def test_owner_identity_is_immutably_pinned(self):
+        for key, value in (
+            ("repository_owner", "renamed-owner"),
+            ("repository_owner_id", "1"),
+        ):
+            with self.subTest(key=key):
+                ok, reason = validate_watch_claims(claims(**{key: value}))
+                self.assertFalse(ok)
+                self.assertIn("OIDC_CLAIM_MISMATCH", reason)
 
     def test_pull_request_identity_cannot_drive_recovery(self):
         ok, reason = validate_watch_claims(claims(event_name="pull_request"))

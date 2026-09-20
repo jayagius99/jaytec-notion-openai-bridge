@@ -16,7 +16,19 @@ GITHUB_OIDC_JWKS = "https://token.actions.githubusercontent.com/.well-known/jwks
 WATCH_OIDC_AUDIENCE = "jaytec-watch-attestation-v1"
 WATCH_REPOSITORY = "jayagius99/jaytec-work-engine-v2-g1"
 WATCH_REPOSITORY_ID = "1375381712"
+WATCH_OWNER = "jayagius99"
+WATCH_OWNER_ID = "328786611"
 WATCH_REF = "refs/heads/main"
+WATCH_SUBJECT = (
+    "repo:"
+    + WATCH_OWNER
+    + "@"
+    + WATCH_OWNER_ID
+    + "/jaytec-work-engine-v2-g1@"
+    + WATCH_REPOSITORY_ID
+    + ":ref:"
+    + WATCH_REF
+)
 WATCH_WORKFLOW = "JAYTEC WATCH"
 WATCH_WORKFLOW_REF = (
     "jayagius99/jaytec-work-engine-v2-g1/"
@@ -29,6 +41,8 @@ def validate_watch_claims(claims: Mapping[str, Any]) -> tuple[bool, str]:
     required = {
         "repository": WATCH_REPOSITORY,
         "repository_id": WATCH_REPOSITORY_ID,
+        "repository_owner": WATCH_OWNER,
+        "repository_owner_id": WATCH_OWNER_ID,
         "ref": WATCH_REF,
         "workflow": WATCH_WORKFLOW,
         "workflow_ref": WATCH_WORKFLOW_REF,
@@ -49,7 +63,7 @@ def validate_watch_claims(claims: Mapping[str, Any]) -> tuple[bool, str]:
             return False, "OIDC_CLAIM_MISSING:" + key
 
     sub = str(claims.get("sub") or "")
-    if not sub.startswith("repo:" + WATCH_REPOSITORY + ":"):
+    if sub != WATCH_SUBJECT:
         return False, "OIDC_SUBJECT_INVALID"
 
     return True, "WATCH_OIDC_IDENTITY_VERIFIED"
@@ -87,9 +101,12 @@ __all__ = [
     "GITHUB_OIDC_ISSUER",
     "GITHUB_OIDC_JWKS",
     "WATCH_OIDC_AUDIENCE",
+    "WATCH_OWNER",
+    "WATCH_OWNER_ID",
     "WATCH_REF",
     "WATCH_REPOSITORY",
     "WATCH_REPOSITORY_ID",
+    "WATCH_SUBJECT",
     "WATCH_WORKFLOW",
     "WATCH_WORKFLOW_REF",
     "GitHubActionsWatchOIDCVerifier",
