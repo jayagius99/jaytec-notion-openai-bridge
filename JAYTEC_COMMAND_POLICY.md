@@ -100,6 +100,61 @@ A "way to fix" means the factual failed condition and technical requirement
 needed to restore the intended route. It does NOT authorize an alternative
 solution or autonomous repair.
 
+## JAYTEC:WATCH
+
+`JAYTEC:WATCH` is the owner-facing command for JAYTEC's isolated progress
+observer. It does not create execution authority and it does not use ChatGPT's
+native recurring automation scheduler.
+
+The command layer must:
+
+1. resolve exactly one current active assignment from the authoritative
+   checkpoint/context;
+2. identify the registered WATCH target for that assignment;
+3. fail closed and ask Jay if the target is ambiguous, unsupported, or cannot
+   be observed without broader permissions;
+4. enable that registered observer and mark the target expected-active;
+5. report exactly what is being watched, the requested nominal cadence, and
+   the first observable state when available.
+
+Current WATCH v1 implementation:
+- observer repository: `jayagius99/jaytec-work-engine-v2-g1`;
+- control record: GitHub issue `#53 — JAYTEC WATCH CONTROL`;
+- scheduler: GitHub Actions `JAYTEC WATCH`;
+- nominal cadence: every five minutes (`*/5 * * * *`);
+- cadence is platform-scheduled and may be delayed by GitHub load;
+- current registered target: ROOT_OWNER/GOD Mode PR #17.
+
+`JAYTEC:WATCH STATUS` reads the most recent completed WATCH result and returns:
+- what the timer is watching;
+- current/previous observable head;
+- WATCH state;
+- CI/workflow state;
+- last observable movement;
+- time since observable movement;
+- whether Jay must act;
+- the exact safe next step;
+- observer limitations/uncertainty.
+
+`JAYTEC:WATCH STOP` disables only the observer control record. It MUST NOT
+stop, pause, restart, resume, rerun, cancel, merge, edit, deploy, or otherwise
+change the assignment being watched.
+
+WATCH is observation-only. Lack of GitHub movement is not proof that a chat or
+agent is frozen. Watcher/API failure is `UNKNOWN`, never assignment failure.
+An `ATTENTION` result asks Jay to inspect the owning chat; it never
+automatically sends a continue/restart instruction.
+
+The external five-minute observer emits a structured status packet. It does not
+bypass ChatGPT's native recurring-automation delivery limit and it does not
+claim that ChatGPT can originate a new chat message every five minutes. A
+separate explicitly authorized notification adapter may consume WATCH status in
+future without changing WATCH execution authority.
+
+A repository outside the registered WATCH scope must not be silently watched
+with broader credentials. Install an equivalent least-privilege observer in
+that repository or return `WATCH_TARGET_UNSUPPORTED`.
+
 ## JAYTEC:READ
 
 JAYTEC:READ is hard-locked to:
