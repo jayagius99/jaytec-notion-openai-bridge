@@ -54,5 +54,21 @@ services:
         fromDatabase:
           name: jaytec-orchestration-state
           property: connectionString
+      - key: JAYTEC_AUTORECOVERY_ENABLED
+        value: "0"
+      - key: JAYTEC_AUTORECOVERY_SCHEMA_BOOTSTRAP
+        value: "1"
+      - key: JAYTEC_AUTORECOVERY_SCHEMA_READY
+        value: "0"
+      - key: JAYTEC_AUTORECOVERY_CALLABLE_ROUTES
+        value: '["jaytec-manus-lite-v1"]'
+      - key: JAYTEC_AUTORECOVERY_CHECKPOINT_VERIFIER
+        value: github_exact_head_v1
+      - key: JAYTEC_AUTORECOVERY_HEARTBEAT_MODE
+        value: fenced_postgres_v1
+      - key: JAYTEC_AUTORECOVERY_NOTIFICATION_MODE
+        value: event_log_v1
+      - key: JAYTEC_AUTORECOVERY_RUNTIME_COMPONENTS
+        value: manus_lite_v1
       - key: JAYTEC_PROTOCOL_DATABASE_URL
         sync: false
