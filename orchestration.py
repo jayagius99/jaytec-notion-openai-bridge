@@ -132,6 +132,22 @@ class ExecutionRegistry:
     _records: MutableMapping[str, IdempotencyRecord] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
+    def peek_result(
+        self,
+        key: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Read one unexpired stored result without changing idempotency state."""
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        with self._lock:
+            existing = self._records.get(key)
+            if not existing:
+                return None
+            if (current - existing.created_at).total_seconds() > self.ttl_seconds:
+                return None
+            return copy.deepcopy(existing.result)
+
     def lookup(
         self, key: str, packet_hash: str, *, now: Optional[datetime] = None
     ) -> Optional[Dict[str, Any]]:
