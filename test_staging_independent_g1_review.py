@@ -68,6 +68,15 @@ class TestIndependentG1Review(unittest.TestCase):
         self.assertNotIn("tools=", text)
         self.assertNotIn("OPENAI_API_KEY", text)
 
+    def test_unobservable_provider_model_fails_closed_in_source(self):
+        source = Path("staging_independent_g1_review.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "INDEPENDENT_REVIEW_MODEL_IDENTITY_UNOBSERVABLE",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
