@@ -55,11 +55,11 @@ services:
           name: jaytec-orchestration-state
           property: connectionString
       - key: JAYTEC_AUTORECOVERY_ENABLED
-        value: "0"
-      - key: JAYTEC_AUTORECOVERY_SCHEMA_BOOTSTRAP
         value: "1"
-      - key: JAYTEC_AUTORECOVERY_SCHEMA_READY
+      - key: JAYTEC_AUTORECOVERY_SCHEMA_BOOTSTRAP
         value: "0"
+      - key: JAYTEC_AUTORECOVERY_SCHEMA_READY
+        value: "1"
       - key: JAYTEC_AUTORECOVERY_CALLABLE_ROUTES
         value: '["jaytec-manus-lite-v1"]'
       - key: JAYTEC_AUTORECOVERY_CHECKPOINT_VERIFIER
