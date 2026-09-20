@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 from circuit_breaker import CircuitBreaker
-from jaytec_read import build_jaytec_read_packet
+from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report
 from specialist_adapters import (
     EXPECTED_GEMINI_MODEL,
     build_gemini_dispatch,
@@ -161,6 +161,32 @@ class TestJaytecReadStagingReconcile(unittest.TestCase):
         ]
         self.assertEqual(["openrouter", "exa", "parallel"], engines)
         self.assertFalse(result["bridge_diagnostics"]["notion_fallback"])
+
+
+class TestJaytecReadEnvelope(unittest.TestCase):
+    def test_verified_specialist_result_projects_from_success_envelope(self):
+        specialist = _read_report(verified=True)
+        wrapped = {
+            "execution_id": "exec-1",
+            "overall_status": "SUCCESS",
+            "packet_hash": "abc",
+            "gemini_result": specialist,
+        }
+        out = enforce_orchestrated_read_report(wrapped, SOURCE_URL)
+        self.assertEqual("SUCCESS", out["status"])
+        self.assertEqual("exec-1", out["execution_id"])
+        self.assertTrue(out["conclusion"]["READ_REPORT"]["VERIFIED"])
+
+    def test_failed_envelope_stays_failed(self):
+        specialist = _read_report(verified=True)
+        wrapped = {
+            "execution_id": "exec-2",
+            "overall_status": "FAILED_CLOSED",
+            "gemini_result": specialist,
+        }
+        out = enforce_orchestrated_read_report(wrapped, SOURCE_URL)
+        self.assertEqual("FAILED_CLOSED", out["status"])
+        self.assertFalse(out["conclusion"]["READ_REPORT"]["VERIFIED"])
 
 
 if __name__ == "__main__":
