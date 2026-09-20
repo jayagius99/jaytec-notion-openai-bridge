@@ -40,6 +40,15 @@ class TestIndependentG1Review(unittest.TestCase):
         self.assertIn("INDEPENDENT_REVIEW_PACKET_HASH_MISMATCH", text)
         self.assertIn('"packet_sha256": packet_sha', text)
 
+    def test_reviewer_has_bounded_same_model_format_retry_and_fail_closed_result(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("for retry_format in (False, True):", text)
+        self.assertIn('"status": "FAILED_CLOSED"', text)
+        self.assertIn('"safe_to_unlock_v2": False', text)
+        self.assertIn('"provider": {"allow_fallbacks": False}', text)
+        self.assertIn("max_tokens=4096", text)
+        self.assertIn("INDEPENDENT_REVIEW_TRUNCATED_OR_BLOCKED", text)
+
     def test_only_zero_cost_review_models_are_allowlisted(self):
         module = _load()
         self.assertEqual(
