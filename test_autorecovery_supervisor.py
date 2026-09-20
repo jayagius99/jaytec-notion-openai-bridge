@@ -264,6 +264,47 @@ class AutoRecoveryPolicyTests(unittest.TestCase):
 
 
 class AutoRecoveryExecutionTests(unittest.TestCase):
+    def test_bootstrapped_callable_without_worker_or_heartbeat_recovers_once(self):
+        seeded = state(
+            stop_reason=StopReason.RUNNING,
+            worker_kind=WorkerKind.JAYTEC_CALLABLE,
+            heartbeat_age_seconds=None,
+            recovery_attempts=0,
+            fencing_token=0,
+        )
+        seeded = AssignmentState(
+            **{
+                **seeded.__dict__,
+                "worker_id": None,
+                "worker_route": "jaytec-manus-lite-v1",
+                "last_heartbeat_at": None,
+                "last_progress_at": None,
+                "progress_marker": None,
+            }
+        )
+        store = MemoryAssignmentStore(seeded)
+        invoker = FakeInvoker()
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=invoker,
+            health_probe=FakeHealth(),
+            instance_id="watch-bootstrap",
+        )
+
+        self.assertFalse(
+            supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW)
+        )
+        result = supervisor.tick("GOD-PREP-0017", now=NOW)
+
+        self.assertEqual(result.action, SupervisorAction.RECOVERY_STARTED)
+        self.assertEqual(len(invoker.calls), 1)
+        self.assertEqual(invoker.calls[0]["token"], 1)
+        self.assertEqual(store.state.worker_id, "worker-b")
+        self.assertEqual(store.state.fencing_token, 1)
+        self.assertEqual(store.state.stop_reason, StopReason.RUNNING)
+        self.assertIsNone(store.state.lease_owner)
+
     def test_callable_worker_recovers_with_exclusive_fencing_token(self):
         store = MemoryAssignmentStore(
             state(stop_reason=StopReason.WORKER_LOST, recovery_attempts=0)
