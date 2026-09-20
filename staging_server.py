@@ -19,6 +19,7 @@ import json
 import os
 import threading
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
@@ -660,6 +661,54 @@ def _run_deepseek_transport_matrix_probe() -> None:
     )
 
 
+def _run_deepseek_route_visibility_probe() -> None:
+    """STAGING-ONLY metadata probe for reviewer model visibility.
+
+    Logs only the configured OpenRouter host, exact model identity, visibility,
+    model count, and error class. It never logs API keys, prompts, responses,
+    provider secrets, or account metadata.
+    """
+    enabled = (
+        os.environ.get("JAYTEC_DEEPSEEK_ROUTE_VISIBILITY_ENABLED", "").strip()
+        == "1"
+    )
+    if not enabled:
+        return
+
+    parsed = urlparse(OPENROUTER_BASE_URL)
+    out = {
+        "status": "FAILED_CLOSED",
+        "model": DEEPSEEK_REVIEWER_MODEL,
+        "base_host": parsed.netloc or None,
+        "model_visible": False,
+        "models_count": None,
+        "error_class": None,
+    }
+
+    if OPENROUTER_CLIENT is None:
+        out["error_class"] = "OPENROUTER_NOT_CONFIGURED"
+    else:
+        try:
+            page = OPENROUTER_CLIENT.models.list()
+            data = list(getattr(page, "data", []) or [])
+            model_ids = [
+                getattr(item, "id", None)
+                for item in data
+                if isinstance(getattr(item, "id", None), str)
+            ]
+            out["models_count"] = len(model_ids)
+            out["model_visible"] = DEEPSEEK_REVIEWER_MODEL in model_ids
+            out["status"] = "SUCCESS" if out["model_visible"] else "MODEL_NOT_VISIBLE"
+        except Exception as exc:
+            out["error_class"] = type(exc).__name__
+
+    print(
+        "JAYTEC_DEEPSEEK_ROUTE_VISIBILITY_RESULT="
+        + json.dumps(out, ensure_ascii=False, sort_keys=True),
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
     _run_jaytec_read_bootstrap_probe()
     threading.Thread(
@@ -675,6 +724,11 @@ if __name__ == "__main__":
     threading.Thread(
         target=_run_deepseek_transport_matrix_probe,
         name="jaytec-deepseek-transport-matrix",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_run_deepseek_route_visibility_probe,
+        name="jaytec-deepseek-route-visibility",
         daemon=True,
     ).start()
     mcp.run(
