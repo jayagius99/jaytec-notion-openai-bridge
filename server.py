@@ -31,8 +31,10 @@ from specialist_adapters import (
     build_engineering_dispatch,
     build_gemini_dispatch,
     ENGINEERING_PROVIDER_ACTIVE,
+    OPENROUTER_PROVIDER_ACTIVE,
     resolve_engineering_model,
     resolve_engineering_provider_mode,
+    resolve_openrouter_provider_mode,
 )
 
 # --- Runtime configuration (NO secrets in code) ---
@@ -46,6 +48,7 @@ OPENAI_BASE_URL = validate_openai_endpoint(
 ENGINEERING_MODEL = resolve_engineering_model()
 CODEX_MODEL = ENGINEERING_MODEL
 ENGINEERING_PROVIDER_MODE = resolve_engineering_provider_mode()
+OPENROUTER_PROVIDER_MODE = resolve_openrouter_provider_mode()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 
 # OpenRouter route for Gemini research (optional; disabled unless configured).
@@ -101,6 +104,10 @@ def _require_startup_prereqs() -> None:
     )
     if ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE and not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set while ENGINEERING_PROVIDER_MODE=ACTIVE.")
+    if OPENROUTER_PROVIDER_MODE == OPENROUTER_PROVIDER_ACTIVE and not OPENROUTER_API_KEY:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not set while OPENROUTER_PROVIDER_MODE=ACTIVE."
+        )
 
     # Fail closed: production requires durable idempotency.
     if RUNTIME_MODE == "production":
@@ -165,6 +172,10 @@ def compute_production_ready(
     if not openai_api_key_present:
         return False
     if not openrouter_api_key_present:
+        return False
+    if engineering_provider_mode != ENGINEERING_PROVIDER_ACTIVE:
+        return False
+    if openrouter_provider_mode != OPENROUTER_PROVIDER_ACTIVE:
         return False
     if legacy_direct_tools_enabled:
         return False
@@ -258,6 +269,7 @@ def _orchestration_status_json(
             "operation": "execute_task_packet",
             "engineering_model": codex_model,
             "engineering_provider_mode": ENGINEERING_PROVIDER_MODE,
+            "openrouter_provider_mode": OPENROUTER_PROVIDER_MODE,
             "codex_model": codex_model,  # legacy compatibility field
             "gemini_model": gemini_model,
             "codex_circuit": codex_circuit,
@@ -430,7 +442,8 @@ def create_mcp_app() -> FastMCP:
     )
     openrouter_client = (
         OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
-        if OPENROUTER_API_KEY
+        if OPENROUTER_PROVIDER_MODE == OPENROUTER_PROVIDER_ACTIVE
+        and OPENROUTER_API_KEY
         else None
     )
 
@@ -461,6 +474,8 @@ def create_mcp_app() -> FastMCP:
         mcp_auth_token_strong=is_strong_mcp_auth_token(MCP_AUTH_TOKEN),
         openai_api_key_present=bool(OPENAI_API_KEY),
         openrouter_api_key_present=bool(OPENROUTER_API_KEY),
+        engineering_provider_mode=ENGINEERING_PROVIDER_MODE,
+        openrouter_provider_mode=OPENROUTER_PROVIDER_MODE,
         legacy_direct_tools_enabled=legacy_direct_enabled,
         mcp_auth_subject=MCP_AUTH_SUBJECT,
         mcp_auth_client_id=MCP_AUTH_CLIENT_ID,
@@ -498,8 +513,13 @@ def create_mcp_app() -> FastMCP:
             circuit=gemini_circuit,
         )
     else:
+        gemini_block_reason = (
+            "OPENROUTER_PROVIDER_DOOR_LOCKED_RESERVE"
+            if OPENROUTER_PROVIDER_MODE != OPENROUTER_PROVIDER_ACTIVE
+            else "OPENROUTER_API_KEY is not configured on this bridge"
+        )
         gemini_dispatch = gemini_circuit.guard(
-            lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
+            lambda _packet: (_ for _ in ()).throw(RuntimeError(gemini_block_reason))
         )
 
     def _status_json() -> str:
