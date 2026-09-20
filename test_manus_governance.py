@@ -198,7 +198,7 @@ class ManusGovernanceTests(unittest.TestCase):
             '"JAYTEC" always means the JAYTEC system/control',
             "strict pass-through transport only",
             "GitHub, Neon, and Render only",
-            "Manus Lite is the default and required profile",
+            "Manus Lite is the ONLY permitted profile",
             "Never claim success because an action merely ran",
             "you may not alter, bypass, reinterpret, or supersede it yourself",
         ):
