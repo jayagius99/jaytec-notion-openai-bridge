@@ -15,6 +15,7 @@ from forge_strategic_drives import (
     ValueOpportunity,
     LearningEvidence,
     ReinvestmentTarget,
+    ExecutionAuthorityContext,
     build_aggressive_reinvestment_plan,
     build_strategic_drive_packet,
     evaluate_improvement,
@@ -38,6 +39,14 @@ def root():
         "offline_recovery_required":True,
         "distinct_hardware_authenticators_required":2,
         "root_registry_digest":"sha256:abc",
+    })
+
+def budget_authority():
+    return ExecutionAuthorityContext.parse({
+        "source":"JAYTEC_EXECUTION_AUTHORITY",
+        "current_task_authorized":True,
+        "budget_authority_verified":True,
+        "budget_authority_ref":"budget:current-task:001",
     })
 
 class StrategicDriveTests(unittest.TestCase):
@@ -167,7 +176,17 @@ class StrategicDriveTests(unittest.TestCase):
             "required_scopes":["forge:compute"],"requires_external_spend":True,"within_preapproved_budget":True,
             "requires_new_legal_entity_or_account":False,"known_obligations_covered":True,"funds_or_resources_available":True,
         })
-        self.assertEqual(evaluate_value_opportunity(o),OpportunityDecision.EXECUTE)
+        self.assertEqual(evaluate_value_opportunity(o),OpportunityDecision.OWNER_REVIEW)
+        self.assertEqual(evaluate_value_opportunity(o,budget_authority()),OpportunityDecision.EXECUTE)
+
+    def test_budget_authority_cannot_be_self_asserted_without_jaytec_source(self):
+        with self.assertRaises(StrategicDriveError):
+            ExecutionAuthorityContext.parse({
+                "source":"FORGE",
+                "current_task_authorized":True,
+                "budget_authority_verified":True,
+                "budget_authority_ref":"made-up",
+            })
 
     def test_continual_learning_requires_transfer_and_retention(self):
         good=LearningEvidence.parse({
@@ -202,9 +221,9 @@ class StrategicDriveTests(unittest.TestCase):
             "required_scopes":["forge:tools"],"requires_external_spend":True,
             "within_preapproved_budget":False,"funds_available":True,"known_obligations_covered":True,
         })
-        self.assertEqual(reinvestment_target_decision(a),OpportunityDecision.EXECUTE)
+        self.assertEqual(reinvestment_target_decision(a),OpportunityDecision.OWNER_REVIEW)
         self.assertEqual(reinvestment_target_decision(b),OpportunityDecision.OWNER_REVIEW)
-        plan=build_aggressive_reinvestment_plan([b,a])
+        plan=build_aggressive_reinvestment_plan([b,a],budget_authority())
         self.assertEqual(plan[0]["target_id"],"sol-evals")
         self.assertAlmostEqual(sum(x["surplus_allocation_weight"] for x in plan),1.0,places=5)
 
