@@ -77,6 +77,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 mcp_auth_token_present=True,
+                mcp_auth_token_strong=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=True,
                 legacy_direct_tools_enabled=True,
@@ -101,6 +102,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 mcp_auth_token_present=True,
+                mcp_auth_token_strong=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=False,
             )
@@ -124,6 +126,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 mcp_auth_token_present=True,
+                mcp_auth_token_strong=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=bool(server.OPENROUTER_API_KEY),
             )
