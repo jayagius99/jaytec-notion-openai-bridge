@@ -778,6 +778,9 @@ class ForgeMindStore:
                     RETURNING mode,state_version,cycle_number,fencing_token,updated_at
                 """,(next_mode.value,json.dumps(state),new_version,new_cycle,forge_id))
                 updated=dict(cur.fetchone())
+                telemetry=result.get("telemetry") or {}
+                if not isinstance(telemetry,Mapping):
+                    raise ForgeCognitionError("CYCLE_TELEMETRY_INVALID")
                 event_payload={
                     "schema_version":RESULT_VERSION,
                     "summary":summary,
@@ -786,6 +789,7 @@ class ForgeMindStore:
                     "goal_count":len(final_goals),
                     "worker_id":worker_id,
                     "fencing_token":fencing_token,
+                    "telemetry":_json(dict(telemetry)),
                 }
                 cur.execute("""
                     INSERT INTO forge_mind_events(forge_id,state_version,cycle_number,event_type,payload)
