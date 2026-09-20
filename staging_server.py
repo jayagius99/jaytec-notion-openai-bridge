@@ -512,6 +512,154 @@ def _run_deepseek_security_review_probe() -> None:
     )
 
 
+def _run_deepseek_transport_matrix_probe() -> None:
+    """STAGING-ONLY transport compatibility probe for the exact DeepSeek reviewer model.
+
+    Logs only case names, success/failure status, HTTP/provider error class and
+    returned model identity. It never logs prompts, responses, API keys, or secrets.
+    """
+    enabled = (
+        os.environ.get("JAYTEC_DEEPSEEK_TRANSPORT_MATRIX_ENABLED", "").strip()
+        == "1"
+    )
+    if not enabled:
+        return
+
+    cases = [
+        {
+            "name": "json_schema_require_params_reasoning",
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "jaytec_transport_probe",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"],
+                    },
+                },
+            },
+            "provider": {"allow_fallbacks": False, "require_parameters": True},
+            "reasoning": {"effort": "low", "exclude": True},
+        },
+        {
+            "name": "json_schema_no_require_params_reasoning",
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "jaytec_transport_probe",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"],
+                    },
+                },
+            },
+            "provider": {"allow_fallbacks": False},
+            "reasoning": {"effort": "low", "exclude": True},
+        },
+        {
+            "name": "json_schema_no_require_params_no_reasoning",
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "jaytec_transport_probe",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {"ok": {"type": "boolean"}},
+                        "required": ["ok"],
+                    },
+                },
+            },
+            "provider": {"allow_fallbacks": False},
+            "reasoning": None,
+        },
+        {
+            "name": "json_object_no_require_params_no_reasoning",
+            "response_format": {"type": "json_object"},
+            "provider": {"allow_fallbacks": False},
+            "reasoning": None,
+        },
+    ]
+
+    results = []
+    if OPENROUTER_CLIENT is None:
+        results.append(
+            {
+                "case": "setup",
+                "status": "FAILED_CLOSED",
+                "error_class": "OPENROUTER_NOT_CONFIGURED",
+                "model": DEEPSEEK_REVIEWER_MODEL,
+            }
+        )
+    else:
+        for case in cases:
+            item = {
+                "case": case["name"],
+                "status": "FAILED_CLOSED",
+                "error_class": None,
+                "model": DEEPSEEK_REVIEWER_MODEL,
+                "returned_model": None,
+            }
+            try:
+                extra_body = {"provider": case["provider"]}
+                if case["reasoning"] is not None:
+                    extra_body["reasoning"] = case["reasoning"]
+                response = OPENROUTER_CLIENT.chat.completions.create(
+                    model=DEEPSEEK_REVIEWER_MODEL,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": (
+                                "Return exactly one JSON object matching the requested schema. "
+                                "Set ok to true."
+                            ),
+                        }
+                    ],
+                    temperature=0,
+                    max_tokens=128,
+                    timeout=30,
+                    stream=False,
+                    response_format=case["response_format"],
+                    extra_body=extra_body,
+                )
+                returned_model = getattr(response, "model", None)
+                item["returned_model"] = returned_model
+                if returned_model not in (None, DEEPSEEK_REVIEWER_MODEL):
+                    item["error_class"] = "MODEL_MISMATCH"
+                elif not getattr(response, "choices", None):
+                    item["error_class"] = "NO_CHOICES"
+                else:
+                    content = response.choices[0].message.content or ""
+                    parsed = json.loads(content)
+                    if parsed == {"ok": True}:
+                        item["status"] = "SUCCESS"
+                    else:
+                        item["error_class"] = "UNEXPECTED_PAYLOAD"
+            except Exception as exc:
+                item["error_class"] = type(exc).__name__
+            results.append(item)
+
+    print(
+        "JAYTEC_DEEPSEEK_TRANSPORT_MATRIX_RESULT="
+        + json.dumps(
+            {
+                "model": DEEPSEEK_REVIEWER_MODEL,
+                "results": results,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
     _run_jaytec_read_bootstrap_probe()
     threading.Thread(
@@ -522,6 +670,11 @@ if __name__ == "__main__":
     threading.Thread(
         target=_run_deepseek_security_review_probe,
         name="jaytec-deepseek-security-review",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_run_deepseek_transport_matrix_probe,
+        name="jaytec-deepseek-transport-matrix",
         daemon=True,
     ).start()
     mcp.run(
