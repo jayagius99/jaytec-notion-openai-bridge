@@ -551,6 +551,44 @@ class AutoRecoveryExecutionTests(unittest.TestCase):
         self.assertEqual(decision.action, SupervisorAction.NOTIFY_JAY)
         self.assertEqual(decision.effective_stop_reason, StopReason.WAITING_FOR_REQUIRED_INPUT)
 
+
+    def test_needs_jaytec_terminal_result_is_internal_dependency_not_owner_notification(self):
+        seeded = state(
+            stop_reason=StopReason.RUNNING,
+            worker_kind=WorkerKind.JAYTEC_CALLABLE,
+            heartbeat_age_seconds=900,
+        )
+        store = MemoryAssignmentStore(seeded)
+
+        class NeedsJaytecHealth(FakeHealth):
+            def wait_for_healthy(self, *, task_id, fencing_token, worker_id, timeout_seconds):
+                return WorkerHealth(
+                    healthy=True,
+                    worker_id=worker_id,
+                    heartbeat_at=NOW,
+                    progress_marker="MANUS_TERMINAL:NEEDS_JAYTEC:abc123",
+                    detail="verified complete",
+                )
+
+        notifier = FakeNotifier()
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=FakeInvoker(),
+            health_probe=NeedsJaytecHealth(),
+            notifier=notifier,
+            instance_id="watch-a",
+        )
+        self.assertTrue(supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW))
+        self.assertEqual(store.state.stop_reason, StopReason.WAITING_FOR_DEPENDENCY)
+        self.assertTrue(str(store.state.last_error).startswith("MANUS_TERMINAL:NEEDS_JAYTEC:"))
+        decision = supervisor.tick("GOD-PREP-0017", now=NOW)
+        self.assertEqual(decision.action, SupervisorAction.HOLD)
+        self.assertEqual(decision.reason, "JAYTEC_INTERNAL_HANDOFF_REQUIRED")
+        self.assertFalse(
+            any(e.get("owner_notification_required") is True for e in notifier.events)
+        )
+
     def test_ui_chat_never_calls_invoker(self):
         store = MemoryAssignmentStore(
             state(
