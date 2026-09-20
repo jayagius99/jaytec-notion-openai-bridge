@@ -57,3 +57,16 @@ def test_watch_status_terminal_inspection_is_read_only():
     assert "stop_task(" not in route
     assert "execute_watch_cycle(" not in route
     assert "acquire_recovery_lease" not in route
+
+
+def test_proving_grounds_watch_route_is_oidc_only_and_no_arbitrary_execution_path():
+    assert '@mcp.custom_route("/jaytec/proving-grounds", methods=["POST"])' in SERVER
+    route = SERVER.split('@mcp.custom_route("/jaytec/proving-grounds", methods=["POST"])', 1)[1]
+    route = route.split('@mcp.custom_route("/jaytec/watch-cycle"', 1)[0]
+    assert 'watch_oidc_auth.verify_token(raw_token)' in route
+    assert '"jaytec:proving-grounds"' in route
+    assert 'proving_grounds_run_registered_suite(' in route
+    assert 'FORGE-GENESIS-ACTIVATION-001' in route
+    assert "subprocess" not in route
+    assert "MCP_AUTH_TOKEN" not in route
+    assert "static_auth" not in route
