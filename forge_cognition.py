@@ -563,28 +563,73 @@ class ForgeMindStore:
                 return _mind_state_from_row(row)
 
     def prepare_cycle(self, forge_id: str, worker_id: str, *, lease_seconds: int = 180, event_limit: int = 24) -> dict[str, Any]:
-        claim=self.claim_cycle(forge_id,worker_id,lease_seconds=lease_seconds)
-        try:
-            state=self.load_state(forge_id)
-            events=self.recent_events(forge_id,limit=event_limit)
-            signals=self.pending_signals(forge_id,limit=16)
-            packet=build_delta_context(state,recent_events=events,max_events=event_limit)
-            packet["pending_signals"]=signals
-            packet["signal_ids"]=[int(s["signal_id"]) for s in signals]
-            packet["wake_reason"]="SIGNAL" if signals else "GOAL_OR_REFLECTION"
-            if signals and min(int(s["priority"]) for s in signals) <= 10:
-                packet["selected_action"]=CycleAction.REFLECT_AND_PLAN.value
-                packet["selected_goal"]=None
-                packet["reasoning_tier"]=ReasoningTier.STANDARD.value
-                packet["selection_reason"]="URGENT_SIGNAL_PREEMPTS_CURRENT_GOAL"
-                packet["next_cycle_delay_seconds"]=0
-            packet["lease_owner"]=worker_id
-            packet["lease_expires_at"]=claim["lease_expires_at"]
-            packet["requires_model_call"]=packet["reasoning_tier"] != ReasoningTier.REFLEX.value or packet["selected_action"] == CycleAction.REFLECT_AND_PLAN.value
-            return packet
-        except Exception:
-            self.release_cycle(forge_id,worker_id=worker_id,fencing_token=int(claim["fencing_token"]))
-            raise
+        """Atomically claim the cycle and assemble its compact working packet."""
+        worker=_text(worker_id,"WORKER_ID",maximum=200)
+        if isinstance(lease_seconds,bool) or not isinstance(lease_seconds,int) or not 30 <= lease_seconds <= 1800:
+            raise ForgeCognitionError("LEASE_SECONDS_INVALID")
+        if isinstance(event_limit,bool) or not isinstance(event_limit,int) or not 1 <= event_limit <= 100:
+            raise ForgeCognitionError("EVENT_LIMIT_INVALID")
+        now=utcnow()
+        expires=now+timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("forge-mind:"+forge_id,))
+                cur.execute("SELECT * FROM forge_mind_state WHERE forge_id=%s FOR UPDATE",(forge_id,))
+                row=cur.fetchone()
+                if row is None:
+                    raise ForgeCognitionError("FORGE_STATE_NOT_FOUND")
+                mode=ForgeMode(str(row["mode"]))
+                if mode is not ForgeMode.RUNNING:
+                    raise ForgeCognitionError("FORGE_NOT_RUNNING:"+mode.value)
+                if row["lease_owner"] and row["lease_expires_at"] and row["lease_expires_at"] > now:
+                    raise ForgeCognitionError("COGNITION_LEASE_HELD")
+                token=int(row["fencing_token"])+1
+                cur.execute("""
+                    UPDATE forge_mind_state
+                       SET fencing_token=%s,lease_owner=%s,lease_expires_at=%s,updated_at=now()
+                     WHERE forge_id=%s
+                    RETURNING *
+                """,(token,worker,expires,forge_id))
+                claimed=cur.fetchone()
+                state=_mind_state_from_row(claimed)
+
+                cur.execute("""
+                    SELECT event_id,event_type,state_version,cycle_number,payload,created_at
+                      FROM forge_mind_events WHERE forge_id=%s
+                     ORDER BY event_id DESC LIMIT %s
+                """,(forge_id,event_limit))
+                events=[]
+                for event in reversed(cur.fetchall()):
+                    item=dict(event); item["created_at"]=item["created_at"].isoformat(); events.append(item)
+
+                cur.execute("""
+                    SELECT signal_id,source,event_type,priority,payload,created_at
+                      FROM forge_cognition_inbox
+                     WHERE forge_id=%s AND status='PENDING'
+                     ORDER BY priority ASC, signal_id ASC
+                     LIMIT 16
+                """,(forge_id,))
+                signals=[]
+                for signal in cur.fetchall():
+                    item=dict(signal); item["created_at"]=item["created_at"].isoformat(); signals.append(item)
+
+                packet=build_delta_context(state,recent_events=events,max_events=event_limit)
+                packet["pending_signals"]=signals
+                packet["signal_ids"]=[int(s["signal_id"]) for s in signals]
+                packet["wake_reason"]="SIGNAL" if signals else "GOAL_OR_REFLECTION"
+                if signals and min(int(s["priority"]) for s in signals) <= 10:
+                    packet["selected_action"]=CycleAction.REFLECT_AND_PLAN.value
+                    packet["selected_goal"]=None
+                    packet["reasoning_tier"]=ReasoningTier.STANDARD.value
+                    packet["selection_reason"]="URGENT_SIGNAL_PREEMPTS_CURRENT_GOAL"
+                    packet["next_cycle_delay_seconds"]=0
+                packet["lease_owner"]=worker
+                packet["lease_expires_at"]=expires.isoformat()
+                packet["requires_model_call"]=(
+                    packet["reasoning_tier"] != ReasoningTier.REFLEX.value
+                    or packet["selected_action"] == CycleAction.REFLECT_AND_PLAN.value
+                )
+                return packet
 
     def release_cycle(self, forge_id: str, *, worker_id: str, fencing_token: int) -> None:
         with self._connect() as conn:
