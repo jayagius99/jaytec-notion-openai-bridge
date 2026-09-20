@@ -78,9 +78,11 @@ class SupplyChainPinTests(unittest.TestCase):
             "provider_endpoints.py",
             "http_security.py",
             "auth_security.py",
+            "dispatch_authority_boundary.py",
             "test_provider_endpoints.py",
             "test_http_security.py",
             "test_auth_security.py",
+            "test_dispatch_authority_boundary.py",
             "test_supply_chain_pins.py",
         ):
             with self.subTest(path=path):
