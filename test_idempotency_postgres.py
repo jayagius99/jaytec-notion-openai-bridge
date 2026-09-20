@@ -45,6 +45,53 @@ class TestPostgresRegistrySemantics(unittest.TestCase):
         out = self.reg.lookup("k2", "h2", now=now)
         self.assertEqual({"ok": True}, out)
 
+
+    def test_claim_once_is_atomic_replay_reject(self):
+        now = datetime.now(timezone.utc)
+        self.assertTrue(
+            self.reg.claim_once(
+                "claim-once",
+                "claim-hash",
+                {"status": "CONSUMED"},
+                now=now,
+            )
+        )
+        self.assertFalse(
+            self.reg.claim_once(
+                "claim-once",
+                "claim-hash",
+                {"status": "CONSUMED"},
+                now=now,
+            )
+        )
+
+    def test_claim_once_rejects_different_hash_until_ttl_expiry(self):
+        now = datetime.now(timezone.utc)
+        self.assertTrue(
+            self.reg.claim_once(
+                "claim-once-different",
+                "hash-a",
+                {"status": "CONSUMED"},
+                now=now,
+            )
+        )
+        self.assertFalse(
+            self.reg.claim_once(
+                "claim-once-different",
+                "hash-b",
+                {"status": "CONSUMED"},
+                now=now + timedelta(seconds=5),
+            )
+        )
+        self.assertTrue(
+            self.reg.claim_once(
+                "claim-once-different",
+                "hash-b",
+                {"status": "CONSUMED"},
+                now=now + timedelta(seconds=11),
+            )
+        )
+
     def test_ttl_expiry_allows_replacement(self):
         now = datetime.now(timezone.utc)
         self.reg.store("k3", "h3", {"ok": True}, now=now)
