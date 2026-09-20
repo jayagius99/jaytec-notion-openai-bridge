@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from autorecovery_components import (
+    HARD_RECOVERY_CONSTRAINTS,
     ManusLiteHealthProbe,
     ManusLiteRecoveryInvoker,
     ObservedRefsCheckpointVerifier,
@@ -62,10 +63,20 @@ class FakeRuntime:
         }
         self.status = status or {"status": "PENDING"}
         self.requests = []
+        self.handoffs = []
 
     def start_task_idempotent(self, raw, registry):
         self.requests.append(raw)
         return dict(self.start)
+
+    def continue_task_handoff(self, *args, **kwargs):
+        self.handoffs.append((args, kwargs))
+        return {
+            "status": "CONTINUED",
+            "provider_task_id": args[0] if args else "",
+            "requested_profile": "lite",
+            "observed_profile_verified": True,
+        }
 
     def task_status(self, worker_id):
         return dict(self.status)
@@ -167,6 +178,48 @@ class RuntimeComponentTests(unittest.TestCase):
             fencing_token=1,
         )
         self.assertFalse(result.accepted)
+
+
+    def test_hard_recovery_constraints_explicitly_forbid_notion_agent(self):
+        joined = "\n".join(HARD_RECOVERY_CONSTRAINTS)
+        self.assertIn("Use GitHub only for this recovery task", joined)
+        self.assertIn("do not use Notion Agent", joined)
+
+    def test_fresh_recovery_rejects_notion_scope_before_manus_call(self):
+        runtime = FakeRuntime()
+        cp = checkpoint({
+            "root_owner": "Jay",
+            "allowed_actions": ["inspect"],
+            "connector_purposes": {"github": "read", "notion": "mcp"},
+            "connector_mutation_authorized": False,
+        })
+        result = ManusLiteRecoveryInvoker(runtime, FakeRegistry()).invoke(
+            checkpoint=cp,
+            continuation_packet={},
+            route=RecoveryRoute.SAME_WORKER_PROVIDER,
+            fencing_token=1,
+        )
+        self.assertFalse(result.accepted)
+        self.assertEqual(runtime.requests, [])
+        self.assertEqual(runtime.handoffs, [])
+
+    def test_same_worker_handoff_rejects_notion_scope_before_manus_call(self):
+        runtime = FakeRuntime()
+        cp = checkpoint({
+            "root_owner": "Jay",
+            "allowed_actions": ["inspect"],
+            "connector_purposes": {"github": "read", "notion": "mcp"},
+            "connector_mutation_authorized": False,
+        })
+        result = ManusLiteRecoveryInvoker(runtime, FakeRegistry()).continue_existing(
+            checkpoint=cp,
+            worker_id="manus-existing",
+            fencing_token=4,
+            broker_context={"kind": "PRIVATE_REPO_BOOTSTRAP"},
+        )
+        self.assertFalse(result.accepted)
+        self.assertEqual(runtime.requests, [])
+        self.assertEqual(runtime.handoffs, [])
 
     def test_rejected_manus_start_preserves_safe_provider_error(self):
         runtime = FakeRuntime(start={
