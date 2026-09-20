@@ -81,5 +81,22 @@ class StartupProviderSafetyTests(unittest.TestCase):
         self.assertIn('== "1"', source)
 
 
+    def test_live_manus_certification_is_explicitly_flag_gated(self):
+        source = (ROOT / "staging_adversarial_probe.py").read_text(encoding="utf-8")
+        governance_flag = source.find('RUN_LIVE_MANUS_GOVERNANCE_ACCEPTANCE')
+        governance_import = source.find(
+            'from staging_manus_governance_acceptance import main as manus_governance_main'
+        )
+        usability_flag = source.find('RUN_LIVE_MANUS_USABILITY_EVAL')
+        usability_import = source.find(
+            'from staging_manus_usability_eval import main as manus_usability_main'
+        )
+        self.assertGreaterEqual(governance_flag, 0)
+        self.assertGreater(governance_import, governance_flag)
+        self.assertGreaterEqual(usability_flag, 0)
+        self.assertGreater(usability_import, usability_flag)
+        self.assertIn('== "1"', source)
+
+
 if __name__ == "__main__":
     unittest.main()
