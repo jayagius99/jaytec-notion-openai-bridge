@@ -176,6 +176,40 @@ class TestDeepSeekSecurityReviewer(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "provider_model_mismatch"):
             dispatch({"max_retries": 1, "objective": "review"})
 
+
+    def test_missing_provider_model_fails_closed(self):
+        class MissingModelCompletions(_FakeCompletions):
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                item = self.responses.pop(0)
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason=item.get("finish_reason", "stop"),
+                            message=SimpleNamespace(
+                                content=item.get("content", "")
+                            ),
+                        )
+                    ],
+                )
+
+        client = _FakeClient([])
+        client.completions = MissingModelCompletions(
+            [{"content": json.dumps(_valid_result())}]
+        )
+        client.chat = SimpleNamespace(completions=client.completions)
+        dispatch = build_deepseek_security_review_dispatch(
+            openrouter_client=client,
+            model=EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+            timeout_s=30,
+            circuit=CircuitBreaker(
+                failure_threshold=3,
+                reset_after_seconds=60,
+            ),
+        )
+        with self.assertRaisesRegex(RuntimeError, "provider_model_unobservable"):
+            dispatch({"max_retries": 0, "objective": "review"})
+
     def test_side_effect_claim_is_rejected(self):
         payload = _valid_result()
         payload["side_effects_attempted"] = ["write"]
