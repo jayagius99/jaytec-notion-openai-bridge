@@ -47,3 +47,13 @@ def test_watch_status_only_peeks_existing_invocation_record():
     assert '"last_invocation_record"' in route
     assert "_manus_runtime()" not in route
     assert "execute_watch_cycle(" not in route
+
+
+def test_watch_status_terminal_inspection_is_read_only():
+    route = SERVER.split('@mcp.custom_route("/jaytec/watch-status", methods=["POST"])', 1)[1]
+    route = route.split("def _protocol_portal", 1)[0]
+    assert "task_status_readonly(worker_id)" in route
+    assert '"current_worker_result"' in route
+    assert "stop_task(" not in route
+    assert "execute_watch_cycle(" not in route
+    assert "acquire_recovery_lease" not in route
