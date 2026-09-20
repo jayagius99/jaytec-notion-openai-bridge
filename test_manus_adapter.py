@@ -252,15 +252,14 @@ class ManusAdapterTests(unittest.TestCase):
 
     def test_prepare_route_cannot_select_paid_profile(self):
         client = ma.ManusClient(api_key="x")
-        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
-            client, "resolve_manus_project", return_value=("project-manus", "MANUS")
-        ), mock.patch.object(
-            client,
-            "resolve_approved_connector_ids",
-            return_value=(("github", "neon", "render"), ("gh", "neon", "render")),
-        ):
+        with mock.patch.object(
+            client, "resolve_manus_project"
+        ) as resolve_project, mock.patch.object(
+            client, "resolve_approved_connector_ids"
+        ) as resolve_connectors:
             with self.assertRaisesRegex(
-                ManusProfilePolicyError, "MANUS_PAID_PROFILE_BLOCKED"
+                ManusProfilePolicyError,
+                "MANUS_NON_LITE_PROFILE_PERMANENTLY_BLOCKED",
             ):
                 client.prepare_route(
                     scope="jaytec_delegated_task",
@@ -268,6 +267,8 @@ class ManusAdapterTests(unittest.TestCase):
                     current_task_authorized=True,
                     requested_profile="standard",
                 )
+        resolve_project.assert_not_called()
+        resolve_connectors.assert_not_called()
 
     def test_governed_message_always_injects_role_and_directive(self):
         message = ma.ManusClient._governed_message(_route(), "Return a test result.")
