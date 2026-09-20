@@ -29,6 +29,12 @@ from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
 from http_security import load_host_origin_policy
+from provider_endpoints import (
+    OPENAI_API_BASE,
+    OPENROUTER_API_BASE,
+    validate_openai_endpoint,
+    validate_openrouter_endpoint,
+)
 from deepseek_reviewer import (
     EXPECTED_DEEPSEEK_REVIEWER_MODEL,
     build_deepseek_security_review_dispatch,
@@ -49,11 +55,16 @@ from specialist_adapters import (
 PORT = int(os.environ.get("PORT", "8000"))
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_BASE_URL = validate_openai_endpoint(
+    os.environ.get("OPENAI_BASE_URL", OPENAI_API_BASE).strip()
+)
 ENGINEERING_MODEL = resolve_engineering_model()
 CODEX_MODEL = ENGINEERING_MODEL
 ENGINEERING_PROVIDER_MODE = resolve_engineering_provider_mode()
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
-OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+OPENROUTER_BASE_URL = validate_openrouter_endpoint(
+    os.environ.get("OPENROUTER_BASE_URL", OPENROUTER_API_BASE).strip()
+)
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 DEEPSEEK_REVIEWER_MODEL = os.environ.get(
@@ -108,7 +119,7 @@ DEEPSEEK_REVIEWER_CIRCUIT = CircuitBreaker(
 )
 
 OPENAI_CLIENT = (
-    OpenAI(api_key=OPENAI_API_KEY)
+    OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
     if ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE and OPENAI_API_KEY
     else None
 )

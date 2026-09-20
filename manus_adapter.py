@@ -30,9 +30,12 @@ from manus_dispatch_contract import (
 from manus_governance import AuthoritySource, ManusScope, render_directive
 from manus_policy import ManusProfilePolicyError, verify_manus_profile
 from participant_contracts import render_actor_contract
+from provider_endpoints import MANUS_API_BASE, validate_manus_endpoint
 from relationship_policy import Actor, MUTATING, Purpose, authorize_relationship
 
-MANUS_BASE_URL = os.environ.get("MANUS_BASE_URL", "https://api.manus.ai/v2").rstrip("/")
+MANUS_BASE_URL = validate_manus_endpoint(
+    os.environ.get("MANUS_BASE_URL", MANUS_API_BASE).strip()
+)
 MANUS_API_KEY = os.environ.get("MANUS_API_KEY", "").strip()
 MANUS_TIMEOUT_S = float(os.environ.get("MANUS_TIMEOUT_S", "20"))
 MANUS_MAX_RETRIES = min(max(int(os.environ.get("MANUS_MAX_RETRIES", "1")), 0), 3)
@@ -126,7 +129,7 @@ def _normalize_connector_name(value: Any) -> str:
 class ManusClient:
     def __init__(self, api_key: str = MANUS_API_KEY, base_url: str = MANUS_BASE_URL) -> None:
         self._api_key = api_key.strip()
-        self._base_url = base_url.rstrip("/")
+        self._base_url = validate_manus_endpoint(base_url)
         if not self._api_key:
             raise ManusError("MANUS_API_KEY_NOT_CONFIGURED")
 
