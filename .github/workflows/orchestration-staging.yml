@@ -6,6 +6,7 @@ on:
       - 'staging/**'
   pull_request:
     paths:
+      - '.github/workflows/orchestration-staging.yml'
       - 'orchestration.py'
       - 'circuit_breaker.py'
       - 'worker_json.py'
