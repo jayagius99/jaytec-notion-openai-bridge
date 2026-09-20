@@ -51,11 +51,25 @@ class ManusDispatchContractTests(unittest.TestCase):
                 **self.base(connectors=["github", "notion"])
             )
 
-    def test_paid_profile_is_blocked_without_current_jay_override(self):
+    def test_non_lite_profile_is_permanently_blocked(self):
         with self.assertRaisesRegex(
-            ManusProfilePolicyError, "MANUS_PAID_PROFILE_BLOCKED"
+            ManusProfilePolicyError,
+            "MANUS_NON_LITE_PROFILE_PERMANENTLY_BLOCKED",
         ):
             authorize_manus_dispatch(**self.base(requested_profile="standard"))
+
+    def test_legacy_paid_override_cannot_reopen_non_lite_route(self):
+        with self.assertRaisesRegex(
+            ManusProfilePolicyError,
+            "MANUS_PAID_OVERRIDE_PERMANENTLY_DISABLED",
+        ):
+            authorize_manus_dispatch(
+                **self.base(
+                    requested_profile="standard",
+                    explicit_paid_override=True,
+                    paid_override_authority="current_user_message",
+                )
+            )
 
     def test_route_that_cannot_pin_profile_is_blocked(self):
         with self.assertRaisesRegex(
