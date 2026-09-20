@@ -12,7 +12,7 @@ class TestProductionReady(unittest.TestCase):
     def test_production_ready_true_only_when_all_prereqs_met(self):
         os.environ["RUNTIME_MODE"] = "production"
         os.environ["DATABASE_URL"] = "postgres://user:pass@localhost:5432/db"
-        os.environ["MCP_AUTH_TOKEN"] = "test"
+        os.environ["MCP_AUTH_TOKEN"] = "Ab9_xY7-Qp2Lm8Nv4Rs6Tu1Wx3Za5BcD"
         os.environ["MCP_AUTH_SUBJECT"] = "jaytec-control-plane"
         os.environ["MCP_AUTH_CLIENT_ID"] = "jaytec-control-plane"
         os.environ["OPENAI_API_KEY"] = "test"
@@ -29,6 +29,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 mcp_auth_token_present=True,
+                mcp_auth_token_strong=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=True,
                 mcp_auth_subject="jaytec-control-plane",
@@ -37,10 +38,28 @@ class TestProductionReady(unittest.TestCase):
         )
 
 
+
+    def test_production_ready_rejects_weak_mcp_token(self):
+        server = self._reload()
+        self.assertFalse(
+            server.compute_production_ready(
+                runtime_mode="production",
+                idempotency_store="postgres",
+                codex_model="gpt-5.6-sol",
+                gemini_model="google/gemini-3.1-pro-preview",
+                mcp_auth_token_present=True,
+                mcp_auth_token_strong=False,
+                openai_api_key_present=True,
+                openrouter_api_key_present=True,
+                mcp_auth_subject="jaytec-control-plane",
+                mcp_auth_client_id="jaytec-control-plane",
+            )
+        )
+
     def test_production_ready_false_when_legacy_direct_provider_tools_enabled(self):
         os.environ["RUNTIME_MODE"] = "production"
         os.environ["DATABASE_URL"] = "postgres://user:pass@localhost:5432/db"
-        os.environ["MCP_AUTH_TOKEN"] = "test"
+        os.environ["MCP_AUTH_TOKEN"] = "Ab9_xY7-Qp2Lm8Nv4Rs6Tu1Wx3Za5BcD"
         os.environ["MCP_AUTH_SUBJECT"] = "jaytec-control-plane"
         os.environ["MCP_AUTH_CLIENT_ID"] = "jaytec-control-plane"
         os.environ["OPENAI_API_KEY"] = "test"
@@ -57,6 +76,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 mcp_auth_token_present=True,
+                mcp_auth_token_strong=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=True,
                 legacy_direct_tools_enabled=True,
@@ -73,6 +93,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model="gpt-5.6-sol",
                 gemini_model="google/gemini-3.1-pro-preview",
                 mcp_auth_token_present=True,
+                mcp_auth_token_strong=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=True,
                 mcp_auth_subject="notion-agent",
@@ -102,6 +123,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 mcp_auth_token_present=True,
+                mcp_auth_token_strong=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=False,
             )
@@ -110,7 +132,7 @@ class TestProductionReady(unittest.TestCase):
     def test_production_missing_openrouter_does_not_claim_ready(self):
         os.environ["RUNTIME_MODE"] = "production"
         os.environ["DATABASE_URL"] = "postgres://user:pass@localhost:5432/db"
-        os.environ["MCP_AUTH_TOKEN"] = "test"
+        os.environ["MCP_AUTH_TOKEN"] = "Ab9_xY7-Qp2Lm8Nv4Rs6Tu1Wx3Za5BcD"
         os.environ["MCP_AUTH_SUBJECT"] = "jaytec-control-plane"
         os.environ["MCP_AUTH_CLIENT_ID"] = "jaytec-control-plane"
         os.environ["OPENAI_API_KEY"] = "test"
@@ -127,6 +149,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 mcp_auth_token_present=True,
+                mcp_auth_token_strong=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=bool(server.OPENROUTER_API_KEY),
             )
