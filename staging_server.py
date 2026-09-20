@@ -97,6 +97,20 @@ auth = StaticTokenVerifier(
 )
 mcp = FastMCP("JAYTEC Orchestration Staging", auth=auth)
 
+# Safe startup telemetry: never print credentials, only whether the governed
+# Lite-only Manus route is configured.
+print(
+    json.dumps(
+        {
+            "event": "JAYTEC_MANUS_RUNTIME_STATUS",
+            "configured": bool(MANUS_API_KEY),
+            "profile_policy": "lite_only_no_exceptions",
+        },
+        sort_keys=True,
+    ),
+    flush=True,
+)
+
 # --- Idempotency registry selection (staging only) ---
 if DATABASE_URL:
     from idempotency_postgres import PostgresExecutionRegistry
