@@ -28,7 +28,7 @@ from autorecovery_supervisor import (
 FORGE_TASK_ID = "FORGE-GENESIS-ACTIVATION-001"
 MAX_REQUEST_REFS = 128
 MAX_BROKER_CONTEXT_BYTES = 4500
-MAX_BROKER_REQUESTS = 3
+MAX_BROKER_REQUESTS = 2
 BROKER_READ_OPERATIONS = frozenset({
     "read_file",
     "list_path",
