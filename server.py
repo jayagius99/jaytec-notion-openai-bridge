@@ -139,6 +139,8 @@ def compute_production_ready(
     mcp_auth_token_strong: bool,
     openai_api_key_present: bool,
     openrouter_api_key_present: bool,
+    engineering_provider_mode: str = "",
+    openrouter_provider_mode: str = "",
     legacy_direct_tools_enabled: bool = False,
     mcp_auth_subject: str = "",
     mcp_auth_client_id: str = "",
@@ -152,6 +154,7 @@ def compute_production_ready(
     - durable idempotency store is 'postgres'
     - exact specialist model identities match the required locks
     - MCP auth + provider startup prerequisites are satisfied
+    - required provider doors are explicitly ACTIVE
     - Gemini production adapter is actually configured (OPENROUTER_API_KEY present)
 
     NOTE: Startup may still be allowed in some partially-configured states; this flag
