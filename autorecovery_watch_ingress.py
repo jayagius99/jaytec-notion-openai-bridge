@@ -16,6 +16,7 @@ from autorecovery_components import (
     ObservedRefsCheckpointVerifier,
 )
 from autorecovery_runtime import runtime_status, schema_probe
+from manus_governance import validate_specialist_request
 from autorecovery_supervisor import (
     AssignmentCheckpoint,
     AutoRecoverySupervisor,
@@ -27,6 +28,27 @@ from autorecovery_supervisor import (
 FORGE_TASK_ID = "FORGE-GENESIS-ACTIVATION-001"
 MAX_REQUEST_REFS = 128
 MAX_BROKER_CONTEXT_BYTES = 4500
+MAX_BROKER_REQUESTS = 3
+BROKER_READ_OPERATIONS = frozenset({
+    "read_file",
+    "list_path",
+    "read_issue",
+    "read_pr",
+    "read_workflow_runs",
+})
+BROKER_WRITE_OPERATIONS = frozenset({
+    "create_branch",
+    "write_file",
+    "create_pr",
+})
+BROKER_OPERATIONS = BROKER_READ_OPERATIONS | BROKER_WRITE_OPERATIONS
+_BROKER_WORKER_BRANCH = re.compile(r"^watch/worker-[0-9]+-[a-z0-9._-]{1,80}$")
+_BROKER_SAFE_PATH = re.compile(r"^[A-Za-z0-9._/@+-][A-Za-z0-9._/@+ -]{0,299}$")
+_BROKER_BLOCKED_PATH = re.compile(
+    r"(^|/)(?:\.env(?:\.|$)|.*(?:secret|credential|private[_-]?key).*|"
+    r"id_rsa(?:\.|$)|.*\.(?:pem|key|p12|pfx))",
+    re.I,
+)
 _BROKER_SECRET_KEY = re.compile(
     r"(api[_-]?key|authorization|bearer|password|secret|credential|token)",
     re.I,
@@ -86,26 +108,29 @@ def _broker_context(value: Any, refs: Mapping[str, str]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise WatchIngressError("GITHUB_BROKER_CONTEXT_INVALID")
     context = dict(value)
-    required = {
+    kind = context.get("kind")
+    base_required = {
         "schema_version",
         "kind",
         "repo",
         "refs",
-        "issues",
-        "pull_requests",
-        "open_pull_requests",
         "authority",
         "sha256",
     }
+    if kind == "PRIVATE_REPO_BOOTSTRAP":
+        required = base_required | {
+            "issues",
+            "pull_requests",
+            "open_pull_requests",
+        }
+    elif kind == "SPECIALIST_REQUEST_RESULTS":
+        required = base_required | {"request_results"}
+    else:
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_KIND_INVALID")
     if set(context) != required:
         raise WatchIngressError("GITHUB_BROKER_CONTEXT_FIELDS_INVALID")
     if context.get("schema_version") != "JAYTEC_GITHUB_BROKER_CONTEXT_V1":
         raise WatchIngressError("GITHUB_BROKER_CONTEXT_VERSION_INVALID")
-    if context.get("kind") not in {
-        "PRIVATE_REPO_BOOTSTRAP",
-        "SPECIALIST_REQUEST_RESULTS",
-    }:
-        raise WatchIngressError("GITHUB_BROKER_CONTEXT_KIND_INVALID")
     if context.get("repo") != "jayagius99/jaytec-work-engine-v2-g1":
         raise WatchIngressError("GITHUB_BROKER_CONTEXT_REPO_MISMATCH")
     if context.get("authority") != "READ_EVIDENCE_ONLY_NO_TOKEN_EXPORT":
@@ -143,6 +168,225 @@ def _needs_jaytec_state(state: Any) -> bool:
         return False
     marker = str(getattr(state, "last_error", "") or "")
     return marker.startswith("MANUS_TERMINAL:NEEDS_JAYTEC:")
+
+
+
+
+def _safe_broker_path(value: Any) -> str:
+    path = str(value or "").strip()
+    if (
+        not path
+        or not _BROKER_SAFE_PATH.fullmatch(path)
+        or path.startswith("/")
+        or "\\" in path
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+        or _BROKER_BLOCKED_PATH.search(path)
+    ):
+        raise WatchIngressError("GITHUB_BROKER_PATH_INVALID")
+    return path
+
+
+def _safe_broker_ref(value: Any, refs: Mapping[str, str], fencing_token: int) -> str:
+    ref = str(value or "").strip()
+    if ref in refs:
+        return ref
+    if re.fullmatch(r"[0-9a-f]{40}", ref):
+        if ref not in set(refs.values()):
+            raise WatchIngressError("GITHUB_BROKER_SHA_NOT_ATTESTED")
+        return ref
+    if _BROKER_WORKER_BRANCH.fullmatch(ref):
+        expected = f"watch/worker-{fencing_token}-"
+        if not ref.startswith(expected):
+            raise WatchIngressError("GITHUB_BROKER_BRANCH_FENCE_MISMATCH")
+        return ref
+    raise WatchIngressError("GITHUB_BROKER_REF_INVALID")
+
+
+def _normalize_broker_operation(
+    request: Mapping[str, Any],
+    *,
+    refs: Mapping[str, str],
+    fencing_token: int,
+    mutation_authorized: bool,
+) -> dict[str, Any]:
+    validate_specialist_request(request)
+    if request.get("specialist") != "github_broker":
+        raise WatchIngressError("GITHUB_BROKER_SPECIALIST_INVALID")
+    parent = str(request.get("parent_task_id") or "")
+    if not parent.startswith(FORGE_TASK_ID):
+        raise WatchIngressError("GITHUB_BROKER_PARENT_TASK_INVALID")
+    context = request.get("required_context")
+    if not isinstance(context, Mapping):
+        raise WatchIngressError("GITHUB_BROKER_REQUEST_CONTEXT_INVALID")
+    op = str(context.get("operation") or "").strip()
+    if op not in BROKER_OPERATIONS:
+        raise WatchIngressError("GITHUB_BROKER_OPERATION_INVALID")
+    if op in BROKER_WRITE_OPERATIONS and not mutation_authorized:
+        raise WatchIngressError("GITHUB_BROKER_MUTATION_NOT_AUTHORIZED")
+
+    request_id = str(request.get("request_id") or "").strip()
+    args: dict[str, Any] = {}
+
+    if op == "read_file":
+        allowed = {"operation", "path", "ref", "start_line", "end_line"}
+        if set(context) - allowed:
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+        args["path"] = _safe_broker_path(context.get("path"))
+        args["ref"] = _safe_broker_ref(context.get("ref"), refs, fencing_token)
+        start_line = int(context.get("start_line") or 1)
+        end_line = int(context.get("end_line") or min(start_line + 119, 5000))
+        if start_line < 1 or end_line < start_line or end_line - start_line > 199:
+            raise WatchIngressError("GITHUB_BROKER_LINE_RANGE_INVALID")
+        args["start_line"] = start_line
+        args["end_line"] = end_line
+    elif op == "list_path":
+        allowed = {"operation", "path", "ref"}
+        if set(context) - allowed:
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+        raw_path = str(context.get("path") or "").strip()
+        args["path"] = _safe_broker_path(raw_path) if raw_path else ""
+        args["ref"] = _safe_broker_ref(context.get("ref"), refs, fencing_token)
+    elif op in {"read_issue", "read_pr"}:
+        allowed = {"operation", "number"}
+        if set(context) - allowed:
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+        number = int(context.get("number") or 0)
+        if number < 1 or number > 1000000:
+            raise WatchIngressError("GITHUB_BROKER_NUMBER_INVALID")
+        args["number"] = number
+    elif op == "read_workflow_runs":
+        allowed = {"operation", "branch"}
+        if set(context) - allowed:
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+        branch_value = str(context.get("branch") or "").strip()
+        if branch_value:
+            args["branch"] = _safe_broker_ref(branch_value, refs, fencing_token)
+    elif op == "create_branch":
+        allowed = {"operation", "base_ref", "new_branch"}
+        if set(context) != allowed:
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+        args["base_ref"] = _safe_broker_ref(
+            context.get("base_ref"), refs, fencing_token
+        )
+        new_branch = str(context.get("new_branch") or "").strip()
+        if (
+            not _BROKER_WORKER_BRANCH.fullmatch(new_branch)
+            or not new_branch.startswith(f"watch/worker-{fencing_token}-")
+        ):
+            raise WatchIngressError("GITHUB_BROKER_NEW_BRANCH_INVALID")
+        args["new_branch"] = new_branch
+    elif op == "write_file":
+        allowed = {
+            "operation",
+            "branch",
+            "path",
+            "content",
+            "commit_message",
+            "expected_sha",
+        }
+        if set(context) - allowed or not {"operation", "branch", "path", "content"} <= set(context):
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+        branch_name = _safe_broker_ref(
+            context.get("branch"), refs, fencing_token
+        )
+        if not _BROKER_WORKER_BRANCH.fullmatch(branch_name):
+            raise WatchIngressError("GITHUB_BROKER_WRITE_BRANCH_INVALID")
+        content = str(context.get("content") or "")
+        if not content or len(content.encode("utf-8")) > 12000:
+            raise WatchIngressError("GITHUB_BROKER_WRITE_CONTENT_INVALID")
+        commit_message = str(
+            context.get("commit_message") or "JAYTEC broker update"
+        ).strip()
+        if not commit_message or len(commit_message) > 200:
+            raise WatchIngressError("GITHUB_BROKER_COMMIT_MESSAGE_INVALID")
+        expected_sha = str(context.get("expected_sha") or "").strip().lower()
+        if expected_sha and not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+            raise WatchIngressError("GITHUB_BROKER_EXPECTED_SHA_INVALID")
+        args.update(
+            {
+                "branch": branch_name,
+                "path": _safe_broker_path(context.get("path")),
+                "content": content,
+                "commit_message": commit_message,
+                "expected_sha": expected_sha or None,
+            }
+        )
+    elif op == "create_pr":
+        allowed = {"operation", "head", "base", "title", "body"}
+        if set(context) != allowed:
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+        head = _safe_broker_ref(context.get("head"), refs, fencing_token)
+        if not _BROKER_WORKER_BRANCH.fullmatch(head):
+            raise WatchIngressError("GITHUB_BROKER_PR_HEAD_INVALID")
+        base = str(context.get("base") or "").strip()
+        if base not in refs or _BROKER_WORKER_BRANCH.fullmatch(base):
+            raise WatchIngressError("GITHUB_BROKER_PR_BASE_INVALID")
+        title = str(context.get("title") or "").strip()
+        body = str(context.get("body") or "").strip()
+        if not title or len(title) > 240 or len(body) > 4000:
+            raise WatchIngressError("GITHUB_BROKER_PR_TEXT_INVALID")
+        args.update({"head": head, "base": base, "title": title, "body": body})
+
+    return {
+        "request_id": request_id,
+        "operation": op,
+        "args": args,
+    }
+
+
+def _broker_requests(
+    terminal: Mapping[str, Any],
+    *,
+    refs: Mapping[str, str],
+    fencing_token: int,
+    mutation_authorized: bool,
+) -> list[dict[str, Any]]:
+    raw_requests = terminal.get("specialist_requests")
+    if raw_requests in (None, []):
+        return []
+    if not isinstance(raw_requests, list) or len(raw_requests) > MAX_BROKER_REQUESTS:
+        raise WatchIngressError("GITHUB_BROKER_REQUEST_COUNT_INVALID")
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in raw_requests:
+        if not isinstance(raw, str) or not raw.strip():
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_INVALID")
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_JSON_INVALID") from exc
+        if not isinstance(decoded, Mapping):
+            raise WatchIngressError("GITHUB_BROKER_REQUEST_INVALID")
+        normalized = _normalize_broker_operation(
+            decoded,
+            refs=refs,
+            fencing_token=fencing_token,
+            mutation_authorized=mutation_authorized,
+        )
+        rid = normalized["request_id"]
+        if rid in seen:
+            raise WatchIngressError("GITHUB_BROKER_DUPLICATE_REQUEST_ID")
+        seen.add(rid)
+        out.append(normalized)
+    return out
+
+
+def _broker_results_match_requests(
+    context: Mapping[str, Any],
+    requests: list[Mapping[str, Any]],
+) -> bool:
+    if context.get("kind") != "SPECIALIST_REQUEST_RESULTS":
+        return False
+    results = context.get("request_results")
+    if not isinstance(results, list) or len(results) != len(requests):
+        return False
+    expected = [str(r.get("request_id") or "") for r in requests]
+    observed = [
+        str(row.get("request_id") or "")
+        for row in results
+        if isinstance(row, Mapping)
+    ]
+    return observed == expected
 
 
 
@@ -308,6 +552,66 @@ def execute_watch_cycle(
                     "status": "BLOCKED_FAIL_CLOSED",
                     "task_id": task_id,
                     "reason": "NEEDS_JAYTEC_TERMINAL_RESULT_NOT_VERIFIED",
+                }
+
+            envelope = dict(state.checkpoint.authority_envelope or {})
+            connector_purposes = envelope.get("connector_purposes")
+            mutation_authorized = bool(
+                envelope.get("connector_mutation_authorized") is True
+                and isinstance(connector_purposes, Mapping)
+                and str(connector_purposes.get("github") or "").casefold() == "write"
+            )
+            requests = _broker_requests(
+                terminal,
+                refs=refs,
+                fencing_token=state.fencing_token,
+                mutation_authorized=mutation_authorized,
+            )
+            if requests and broker_context.get("kind") != "SPECIALIST_REQUEST_RESULTS":
+                final = store.get(task_id)
+                return {
+                    "status": "PASS",
+                    "task_id": task_id,
+                    "bootstrapped": bootstrapped,
+                    "health_refreshed": False,
+                    "github_broker": "REQUESTS_REQUIRED",
+                    "github_broker_requests": requests,
+                    "decision": {
+                        "action": "HOLD",
+                        "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
+                        "reason": "JAYTEC_GITHUB_BROKER_REQUESTS_REQUIRED",
+                        "recovery_route": None,
+                    },
+                    "assignment": {
+                        "stop_reason": final.stop_reason.value if final else None,
+                        "worker_kind": final.worker_kind.value if final else None,
+                        "worker_id": final.worker_id if final else None,
+                        "worker_route": final.worker_route if final else None,
+                        "checkpoint_number": (
+                            final.checkpoint.checkpoint_number if final else None
+                        ),
+                        "repo": final.checkpoint.repo if final else None,
+                        "branch": final.checkpoint.branch if final else None,
+                        "verified_head": (
+                            final.checkpoint.commit_head if final else None
+                        ),
+                        "recovery_attempts": (
+                            final.recovery_attempts if final else None
+                        ),
+                        "fencing_token": final.fencing_token if final else None,
+                        "progress_marker": (
+                            final.progress_marker if final else None
+                        ),
+                        "completed": final.completed if final else None,
+                    },
+                }
+            if requests and not _broker_results_match_requests(
+                broker_context, requests
+            ):
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": "GITHUB_BROKER_RESULTS_REQUEST_MISMATCH",
                 }
 
             handoff_digest = str(broker_context.get("sha256") or "")[:16]
