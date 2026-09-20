@@ -59,6 +59,7 @@ from jaytec_protocol_portal import PortalStore, safe_error as portal_safe_error
 from forge_cognition import ForgeMindStore, safe_error as forge_cognition_safe_error
 from manus_adapter import MANUS_API_KEY, ManusClient
 from manus_runtime import ManusLiteRuntime, runtime_error_payload
+from manus_recovery_diagnostics import read_saved_manus_recovery_result
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
 from startup_probe_guard import authorize_startup_probe, sha256_json, sha256_text
 from specialist_adapters import (
@@ -506,6 +507,13 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
     )
     result["autorecovery_active"] = runtime.active
     result["runtime_components_registered"] = runtime.runtime_components_registered
+    attempt = result.get("recovery_attempts")
+    if result.get("status") == "FOUND" and type(attempt) is int and attempt > 0:
+        result["last_manus_attempt_result"] = read_saved_manus_recovery_result(
+            DATABASE_URL,
+            task_id=task_id,
+            attempt=attempt,
+        )
     result["read_only"] = True
     result["lease_acquired"] = False
     result["worker_invoked"] = False
