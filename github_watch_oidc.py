@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.providers.jwt import JWTVerifier
 
 GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
@@ -54,25 +55,31 @@ def validate_watch_claims(claims: Mapping[str, Any]) -> tuple[bool, str]:
     return True, "WATCH_OIDC_IDENTITY_VERIFIED"
 
 
-class GitHubActionsWatchOIDCVerifier:
-    """Verify GitHub's JWT and then enforce the exact WATCH workflow identity."""
+class GitHubActionsWatchOIDCVerifier(JWTVerifier):
+    """JWT verifier that grants only the isolated WATCH-cycle scope."""
 
     def __init__(self) -> None:
-        self._jwt = JWTVerifier(
+        super().__init__(
             jwks_uri=GITHUB_OIDC_JWKS,
             issuer=GITHUB_OIDC_ISSUER,
             audience=WATCH_OIDC_AUDIENCE,
             algorithm="RS256",
         )
 
-    async def verify(self, token: str):
-        access = await self._jwt.verify_token(token)
+    async def verify_token(self, token: str) -> AccessToken | None:
+        access = await super().verify_token(token)
         if access is None:
-            return None, "OIDC_JWT_INVALID"
-        ok, reason = validate_watch_claims(access.claims)
+            return None
+        ok, _reason = validate_watch_claims(access.claims)
         if not ok:
-            return None, reason
-        return access, reason
+            return None
+        return AccessToken(
+            token=access.token,
+            client_id="github-actions-watch:" + str(access.claims.get("run_id") or ""),
+            scopes=["jaytec:watch-cycle"],
+            expires_at=access.expires_at,
+            claims=dict(access.claims),
+        )
 
 
 __all__ = [
