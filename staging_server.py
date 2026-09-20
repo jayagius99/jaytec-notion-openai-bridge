@@ -40,6 +40,8 @@ from deepseek_reviewer import (
     build_deepseek_security_review_dispatch,
 )
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
+from manus_adapter import MANUS_API_KEY, ManusClient
+from manus_runtime import ManusLiteRuntime, runtime_error_payload
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
 from startup_probe_guard import authorize_startup_probe, sha256_json, sha256_text
 from specialist_adapters import (
@@ -182,11 +184,40 @@ def orchestration_status() -> str:
             "deepseek_reviewer_configured": bool(OPENROUTER_API_KEY),
             "deepseek_reviewer_circuit": DEEPSEEK_REVIEWER_CIRCUIT.snapshot(),
             "deepseek_reviewer_route_policy": "exact_model_bounded_same_model_provider_retry",
+            "manus_adapter_configured": bool(MANUS_API_KEY),
+            "manus_profile_policy": "lite_only_no_exceptions",
+            "manus_runtime": "JAYTEC_MANUS_LITE_RUNTIME_V1",
             "idempotency_store": IDEMPOTENCY_STORE,
             "production_ready": False,
         },
         sort_keys=True,
     )
+
+
+def _manus_runtime() -> ManusLiteRuntime:
+    if not MANUS_API_KEY:
+        raise RuntimeError("MANUS_API_KEY_NOT_CONFIGURED")
+    return ManusLiteRuntime(ManusClient())
+
+
+@mcp.tool
+def manus_start_task(request_json: str) -> str:
+    """Start one bounded JAYTEC-owned Manus task. Profile is permanently Lite."""
+    try:
+        result = _manus_runtime().start_task(request_json)
+    except Exception as exc:
+        result = runtime_error_payload(exc)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
+
+
+@mcp.tool
+def manus_task_status(provider_task_id: str) -> str:
+    """Read/verify one Manus task. Non-Lite identity fails closed and is stopped."""
+    try:
+        result = _manus_runtime().task_status(provider_task_id)
+    except Exception as exc:
+        result = runtime_error_payload(exc)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 @mcp.tool
