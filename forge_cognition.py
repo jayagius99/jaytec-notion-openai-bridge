@@ -308,6 +308,81 @@ def build_delta_context(state: ForgeMindState, *, recent_events: list[Mapping[st
     }
 
 
+SELF_SETTABLE_MODES = frozenset({
+    ForgeMode.RUNNING,
+    ForgeMode.WAITING_FOR_AUTHORITY,
+    ForgeMode.WAITING_FOR_REQUIRED_INPUT,
+    ForgeMode.WAITING_FOR_RESOURCE,
+    ForgeMode.WAITING_FOR_DEPENDENCY,
+})
+
+
+def _mapping(value: Any, name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ForgeCognitionError(name + "_INVALID")
+    return _json(dict(value))
+
+
+def _mind_state_from_row(row: Mapping[str, Any]) -> ForgeMindState:
+    state = row.get("state_json")
+    if not isinstance(state, Mapping):
+        raise ForgeCognitionError("STATE_JSON_INVALID")
+    goals_raw = state.get("goals") or []
+    if not isinstance(goals_raw, list):
+        raise ForgeCognitionError("STATE_GOALS_INVALID")
+    updated = row.get("updated_at")
+    if not isinstance(updated, datetime):
+        raise ForgeCognitionError("STATE_UPDATED_AT_INVALID")
+    return ForgeMindState(
+        forge_id=_text(row.get("forge_id"), "FORGE_ID", maximum=100),
+        mode=ForgeMode(str(row.get("mode"))),
+        genesis_event_id=_text(row.get("genesis_event_id"), "GENESIS_EVENT_ID", maximum=100),
+        life_goal=_text(state.get("life_goal"), "LIFE_GOAL"),
+        constitutional_invariants=_list(state.get("constitutional_invariants"), "CONSTITUTIONAL_INVARIANTS"),
+        long_horizon_objectives=_list(state.get("long_horizon_objectives"), "LONG_HORIZON_OBJECTIVES"),
+        human_specialist_doctrine=_mapping(state.get("human_specialist_doctrine"), "HUMAN_SPECIALIST_DOCTRINE"),
+        root_owner_continuity=_mapping(state.get("root_owner_continuity"), "ROOT_OWNER_CONTINUITY"),
+        specialist_roster=_mapping(state.get("specialist_roster"), "SPECIALIST_ROSTER"),
+        world_model=_mapping(state.get("world_model"), "WORLD_MODEL"),
+        capability_frontier=_mapping(state.get("capability_frontier"), "CAPABILITY_FRONTIER"),
+        working_memory=_mapping(state.get("working_memory"), "WORKING_MEMORY"),
+        goals=tuple(ForgeGoal.parse(x) for x in goals_raw),
+        unresolved_questions=_list(state.get("unresolved_questions"), "UNRESOLVED_QUESTIONS"),
+        current_focus=(str(state.get("current_focus")).strip() if state.get("current_focus") is not None else None),
+        last_cycle_summary=(str(state.get("last_cycle_summary")).strip() if state.get("last_cycle_summary") is not None else None),
+        cycle_number=int(row.get("cycle_number") or 0),
+        fencing_token=int(row.get("fencing_token") or 0),
+        state_version=int(row.get("state_version") or 0),
+        updated_at=updated,
+    )
+
+
+def _validate_goal_graph(goals: list[ForgeGoal]) -> None:
+    by_id={g.goal_id:g for g in goals}
+    if len(by_id) != len(goals):
+        raise ForgeCognitionError("DUPLICATE_GOAL_ID")
+    for goal in goals:
+        for dep in goal.dependencies:
+            if dep not in by_id:
+                raise ForgeCognitionError("GOAL_DEPENDENCY_UNKNOWN:" + dep)
+    visiting:set[str]=set()
+    visited:set[str]=set()
+    def visit(gid: str) -> None:
+        if gid in visited:
+            return
+        if gid in visiting:
+            raise ForgeCognitionError("GOAL_DEPENDENCY_CYCLE")
+        visiting.add(gid)
+        for dep in by_id[gid].dependencies:
+            visit(dep)
+        visiting.remove(gid)
+        visited.add(gid)
+    for gid in by_id:
+        visit(gid)
+
+
 class ForgeMindStore:
     def __init__(self, database_url: str):
         self.database_url = _text(database_url, "DATABASE_URL", maximum=10_000)
@@ -461,6 +536,170 @@ class ForgeMindStore:
                 out=dict(cur.fetchone())
                 out["lease_expires_at"]=out["lease_expires_at"].isoformat()
                 return out
+
+    def load_state(self, forge_id: str) -> ForgeMindState:
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM forge_mind_state WHERE forge_id=%s",(forge_id,))
+                row=cur.fetchone()
+                if row is None:
+                    raise ForgeCognitionError("FORGE_STATE_NOT_FOUND")
+                return _mind_state_from_row(row)
+
+    def prepare_cycle(self, forge_id: str, worker_id: str, *, lease_seconds: int = 180, event_limit: int = 24) -> dict[str, Any]:
+        claim=self.claim_cycle(forge_id,worker_id,lease_seconds=lease_seconds)
+        try:
+            state=self.load_state(forge_id)
+            events=self.recent_events(forge_id,limit=event_limit)
+            packet=build_delta_context(state,recent_events=events,max_events=event_limit)
+            packet["lease_owner"]=worker_id
+            packet["lease_expires_at"]=claim["lease_expires_at"]
+            packet["requires_model_call"]=packet["reasoning_tier"] != ReasoningTier.REFLEX.value or packet["selected_action"] == CycleAction.REFLECT_AND_PLAN.value
+            return packet
+        except Exception:
+            self.release_cycle(forge_id,worker_id=worker_id,fencing_token=int(claim["fencing_token"]))
+            raise
+
+    def release_cycle(self, forge_id: str, *, worker_id: str, fencing_token: int) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("forge-mind:"+forge_id,))
+                cur.execute("""
+                    UPDATE forge_mind_state
+                       SET lease_owner=NULL,lease_expires_at=NULL,updated_at=now()
+                     WHERE forge_id=%s AND lease_owner=%s AND fencing_token=%s
+                """,(forge_id,worker_id,fencing_token))
+                if cur.rowcount != 1:
+                    raise ForgeCognitionError("STALE_OR_FOREIGN_CYCLE_LEASE")
+
+    def commit_cycle_result(
+        self,
+        forge_id: str,
+        *,
+        worker_id: str,
+        fencing_token: int,
+        expected_state_version: int,
+        result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(result,Mapping):
+            raise ForgeCognitionError("CYCLE_RESULT_INVALID")
+        if str(result.get("schema_version") or RESULT_VERSION) != RESULT_VERSION:
+            raise ForgeCognitionError("CYCLE_RESULT_VERSION_INVALID")
+        summary=_text(result.get("summary"),"CYCLE_SUMMARY",maximum=8000)
+        next_mode_raw=str(result.get("next_mode") or ForgeMode.RUNNING.value)
+        try:
+            next_mode=ForgeMode(next_mode_raw)
+        except ValueError as exc:
+            raise ForgeCognitionError("NEXT_MODE_INVALID") from exc
+        if next_mode not in SELF_SETTABLE_MODES:
+            raise ForgeCognitionError("NEXT_MODE_NOT_SELF_SETTABLE")
+
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("forge-mind:"+forge_id,))
+                cur.execute("SELECT * FROM forge_mind_state WHERE forge_id=%s FOR UPDATE",(forge_id,))
+                row=cur.fetchone()
+                if row is None:
+                    raise ForgeCognitionError("FORGE_STATE_NOT_FOUND")
+                if row["lease_owner"] != worker_id or int(row["fencing_token"]) != fencing_token:
+                    raise ForgeCognitionError("STALE_OR_FOREIGN_CYCLE_LEASE")
+                if int(row["state_version"]) != expected_state_version:
+                    raise ForgeCognitionError("STATE_VERSION_CONFLICT")
+                if ForgeMode(str(row["mode"])) is not ForgeMode.RUNNING:
+                    raise ForgeCognitionError("FORGE_NOT_RUNNING")
+
+                state=dict(row["state_json"] or {})
+                goals=[ForgeGoal.parse(x) for x in (state.get("goals") or [])]
+                by_id={g.goal_id:g for g in goals}
+
+                updates=result.get("goal_updates") or []
+                if not isinstance(updates,list) or len(updates)>MAX_ITEMS:
+                    raise ForgeCognitionError("GOAL_UPDATES_INVALID")
+                for update in updates:
+                    if not isinstance(update,Mapping):
+                        raise ForgeCognitionError("GOAL_UPDATE_INVALID")
+                    gid=_text(update.get("goal_id"),"GOAL_ID",maximum=200)
+                    old=by_id.get(gid)
+                    if old is None:
+                        raise ForgeCognitionError("GOAL_UPDATE_UNKNOWN:"+gid)
+                    status=old.status
+                    if "status" in update:
+                        try:
+                            status=GoalStatus(str(update["status"]))
+                        except ValueError as exc:
+                            raise ForgeCognitionError("GOAL_STATUS_INVALID") from exc
+                    by_id[gid]=ForgeGoal(
+                        goal_id=old.goal_id,
+                        objective=old.objective,
+                        priority=int(update.get("priority",old.priority)),
+                        status=status,
+                        dependencies=old.dependencies,
+                        complexity=int(update.get("complexity",old.complexity)),
+                        uncertainty=int(update.get("uncertainty",old.uncertainty)),
+                        parallel_safe=old.parallel_safe,
+                    )
+
+                new_goals=result.get("new_goals") or []
+                if not isinstance(new_goals,list) or len(new_goals)>MAX_ITEMS:
+                    raise ForgeCognitionError("NEW_GOALS_INVALID")
+                for raw in new_goals:
+                    if not isinstance(raw,Mapping):
+                        raise ForgeCognitionError("NEW_GOAL_INVALID")
+                    goal=ForgeGoal.parse(raw)
+                    if goal.goal_id in by_id:
+                        raise ForgeCognitionError("NEW_GOAL_DUPLICATE:"+goal.goal_id)
+                    by_id[goal.goal_id]=goal
+
+                final_goals=list(by_id.values())
+                _validate_goal_graph(final_goals)
+
+                for field,name in (("world_model_patch","WORLD_MODEL_PATCH"),("capability_frontier_patch","CAPABILITY_FRONTIER_PATCH")):
+                    patch=result.get(field) or {}
+                    if not isinstance(patch,Mapping):
+                        raise ForgeCognitionError(name+"_INVALID")
+                    target="world_model" if field=="world_model_patch" else "capability_frontier"
+                    current=dict(state.get(target) or {})
+                    current.update(_json(dict(patch)))
+                    state[target]=_json(current)
+
+                if "working_memory" in result:
+                    state["working_memory"]=_mapping(result.get("working_memory"),"WORKING_MEMORY")
+                if "unresolved_questions" in result:
+                    state["unresolved_questions"]=list(_list(result.get("unresolved_questions"),"UNRESOLVED_QUESTIONS"))
+                if "current_focus" in result:
+                    focus=result.get("current_focus")
+                    state["current_focus"]=_text(focus,"CURRENT_FOCUS",required=False,maximum=2000) or None
+
+                state["goals"]=[g.to_dict() for g in final_goals]
+                state["last_cycle_summary"]=summary
+                new_version=int(row["state_version"])+1
+                new_cycle=int(row["cycle_number"])+1
+                state=_json(state)
+                cur.execute("""
+                    UPDATE forge_mind_state
+                       SET mode=%s,state_json=%s::jsonb,state_version=%s,cycle_number=%s,
+                           lease_owner=NULL,lease_expires_at=NULL,updated_at=now()
+                     WHERE forge_id=%s
+                    RETURNING mode,state_version,cycle_number,fencing_token,updated_at
+                """,(next_mode.value,json.dumps(state),new_version,new_cycle,forge_id))
+                updated=dict(cur.fetchone())
+                event_payload={
+                    "schema_version":RESULT_VERSION,
+                    "summary":summary,
+                    "next_mode":next_mode.value,
+                    "state_digest":digest(state),
+                    "goal_count":len(final_goals),
+                    "worker_id":worker_id,
+                    "fencing_token":fencing_token,
+                }
+                cur.execute("""
+                    INSERT INTO forge_mind_events(forge_id,state_version,cycle_number,event_type,payload)
+                    VALUES (%s,%s,%s,'FORGE_COGNITION_CYCLE_COMMITTED',%s::jsonb)
+                    RETURNING event_id
+                """,(forge_id,new_version,new_cycle,json.dumps(event_payload)))
+                updated["event_id"]=int(cur.fetchone()["event_id"])
+                updated["updated_at"]=updated["updated_at"].isoformat()
+                return updated
 
     def recent_events(self, forge_id: str, *, limit: int = 24) -> list[dict[str, Any]]:
         if isinstance(limit,bool) or not isinstance(limit,int) or not 1 <= limit <= 100:
