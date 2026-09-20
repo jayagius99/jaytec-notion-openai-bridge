@@ -177,6 +177,40 @@ class TestOrchestration(unittest.TestCase):
         self.assertEqual("FAILED_CLOSED", out["overall_status"])
         self.assertIn("CONFLICTING_DUPLICATE", out["unresolved_items"])
 
+
+    def test_claim_once_rejects_same_key_replay_even_same_hash(self):
+        now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+        reg = ExecutionRegistry(ttl_seconds=60)
+        self.assertTrue(
+            reg.claim_once("one-shot", "hash", {"ok": True}, now=now)
+        )
+        self.assertFalse(
+            reg.claim_once("one-shot", "hash", {"ok": True}, now=now)
+        )
+
+    def test_claim_once_allows_reuse_only_after_registry_ttl(self):
+        now = datetime(2026, 9, 20, tzinfo=timezone.utc)
+        reg = ExecutionRegistry(ttl_seconds=10)
+        self.assertTrue(
+            reg.claim_once("one-shot-expiring", "hash-a", {"ok": True}, now=now)
+        )
+        self.assertFalse(
+            reg.claim_once(
+                "one-shot-expiring",
+                "hash-b",
+                {"ok": False},
+                now=now + timedelta(seconds=5),
+            )
+        )
+        self.assertTrue(
+            reg.claim_once(
+                "one-shot-expiring",
+                "hash-b",
+                {"ok": "new"},
+                now=now + timedelta(seconds=11),
+            )
+        )
+
     def test_model_mismatch_fails_closed(self):
         p = base_packet(); p["specialist_plan"] = ["codex"]; p["max_fanout"] = 1
         out = execute_task_packet_core(p, {"codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.6-terra", "findings": [], "evidence": []}}, ExecutionRegistry(), sleep_fn=lambda _: None)

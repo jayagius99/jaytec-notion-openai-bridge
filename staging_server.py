@@ -41,6 +41,7 @@ from deepseek_reviewer import (
 )
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
+from startup_probe_guard import authorize_startup_probe, sha256_text
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
@@ -251,14 +252,63 @@ def execute_task_packet(packet_json: str) -> str:
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
+def _startup_probe_authorized(probe_name: str, payload_sha256: str) -> bool:
+    decision = authorize_startup_probe(
+        env=os.environ,
+        registry=REGISTRY,
+        idempotency_store=IDEMPOTENCY_STORE,
+        probe_name=probe_name,
+        payload_sha256=payload_sha256,
+    )
+    if not decision.allowed:
+        print(
+            "JAYTEC_STARTUP_PROBE_AUTH="
+            + json.dumps(
+                {
+                    "status": "BLOCKED",
+                    "probe_name": decision.probe_name,
+                    "payload_sha256": decision.payload_sha256,
+                    "reason": decision.reason,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return False
+    print(
+        "JAYTEC_STARTUP_PROBE_AUTH="
+        + json.dumps(
+            {
+                "status": "AUTHORIZED_ONCE",
+                "probe_name": decision.probe_name,
+                "payload_sha256": decision.payload_sha256,
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+    return True
+
+
 def _run_jaytec_read_bootstrap_probe() -> None:
     """STAGING-ONLY one-shot JAYTEC:READ diagnostic.
 
     Activated only when JAYTEC_READ_BOOTSTRAP_URL is set in the staging
     environment. It performs no writes and logs only the validated READ result.
     """
+    enabled = (
+        os.environ.get("JAYTEC_READ_BOOTSTRAP_ENABLED", "0").strip() == "1"
+    )
+    if not enabled:
+        return
     target = os.environ.get("JAYTEC_READ_BOOTSTRAP_URL", "").strip()
     if not target:
+        print(
+            'JAYTEC_READ_BOOTSTRAP_RESULT={"status":"BLOCKED","reason":"URL_REQUIRED"}',
+            flush=True,
+        )
+        return
+    if not _startup_probe_authorized("jaytec_read", sha256_text(target)):
         return
     packet = build_jaytec_read_packet(
         target,
@@ -289,6 +339,8 @@ def _run_god_project_review_probe() -> None:
     expected_sha = os.environ.get("JAYTEC_GOD_PROJECT_REVIEW_PACKET_SHA256", "").strip()
     enabled = os.environ.get("JAYTEC_GOD_PROJECT_REVIEW_ENABLED", "").strip() == "1"
     if not enabled:
+        return
+    if not _startup_probe_authorized("god_project_review", expected_sha):
         return
 
     result = {
@@ -424,6 +476,8 @@ def _run_deepseek_security_review_probe() -> None:
     expected_sha = os.environ.get(
         "JAYTEC_DEEPSEEK_SECURITY_REVIEW_PACKET_SHA256", ""
     ).strip()
+    if not _startup_probe_authorized("deepseek_security_review", expected_sha):
+        return
 
     out = {
         "status": "FAILED_CLOSED",
@@ -538,6 +592,14 @@ def _run_deepseek_transport_matrix_probe() -> None:
         == "1"
     )
     if not enabled:
+        return
+    transport_digest = sha256_text(
+        "deepseek_transport_matrix:v1:" + DEEPSEEK_REVIEWER_MODEL
+    )
+    if not _startup_probe_authorized(
+        "deepseek_transport_matrix",
+        transport_digest,
+    ):
         return
 
     cases = [
@@ -688,6 +750,17 @@ def _run_deepseek_route_visibility_probe() -> None:
     )
     if not enabled:
         return
+    visibility_digest = sha256_text(
+        "deepseek_route_visibility:v1:"
+        + DEEPSEEK_REVIEWER_MODEL
+        + ":"
+        + OPENROUTER_BASE_URL
+    )
+    if not _startup_probe_authorized(
+        "deepseek_route_visibility",
+        visibility_digest,
+    ):
+        return
 
     parsed = urlparse(OPENROUTER_BASE_URL)
     out = {
@@ -745,6 +818,15 @@ def _run_independent_g1_review_server_oneshot() -> None:
             "0",
         ).strip()
         != "1"
+    ):
+        return
+
+    expected_sha = os.environ.get(
+        "JAYTEC_G1_REVIEW_PACKET_SHA256", ""
+    ).strip()
+    if not _startup_probe_authorized(
+        "independent_g1_review",
+        expected_sha,
     ):
         return
 
