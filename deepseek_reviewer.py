@@ -10,10 +10,10 @@ from circuit_breaker import CircuitBreaker
 from worker_json import WorkerJsonError, json_object_with_diagnostics
 
 
-EXPECTED_DEEPSEEK_REVIEWER_MODEL = "deepseek/deepseek-r1:free"
+EXPECTED_DEEPSEEK_REVIEWER_MODEL = "deepseek/deepseek-v4-flash-0731"
 DEEPSEEK_REVIEW_MAX_OUTPUT_TOKENS = 4096
 
-DEEPSEEK_REVIEWER_CONTRACT = """ROLE: JAYTEC INDEPENDENT ADVERSARIAL SECURITY REVIEWER — DEEPSEEK V4 FLASH 0731 FREE.
+DEEPSEEK_REVIEWER_CONTRACT = """ROLE: JAYTEC INDEPENDENT ADVERSARIAL SECURITY REVIEWER — DEEPSEEK V4 FLASH 0731.
 
 You are subordinate to Jay/ChatGPT/JAYTEC and have REVIEW-ONLY authority.
 You MUST NOT perform writes, deployments, merges, external contacts, credential operations, or tool actions.
@@ -33,7 +33,7 @@ Return ONLY one JSON object with exactly the JAYTEC specialist result fields:
 - requested_operations
 
 Rules:
-- model MUST be exactly deepseek/deepseek-r1:free
+- model MUST be exactly deepseek/deepseek-v4-flash-0731
 - side_effects_attempted MUST be []
 - requested_operations MUST be []
 - findings/evidence/unresolved_items MUST be arrays of strings
