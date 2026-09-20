@@ -55,6 +55,8 @@ OPENROUTER_BASE_URL = validate_openrouter_endpoint(
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+MCP_AUTH_SUBJECT = "jaytec-control-plane-client"
+MCP_AUTH_CLIENT_ID = "jaytec-control-plane-bridge"
 PORT = int(os.environ.get("PORT", "8000"))
 
 # Timeouts / retries (bounded)
@@ -386,8 +388,8 @@ def create_mcp_app() -> FastMCP:
     auth = StaticTokenVerifier(
         tokens={
             MCP_AUTH_TOKEN: {
-                "sub": "jaytec-control-plane-client",
-                "client_id": "jaytec-control-plane-bridge",
+                "sub": MCP_AUTH_SUBJECT,
+                "client_id": MCP_AUTH_CLIENT_ID,
             }
         }
     )
