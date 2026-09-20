@@ -6,6 +6,9 @@ from autorecovery_components import (
     ManusLiteRecoveryInvoker,
     ObservedRefsCheckpointVerifier,
 )
+from manus_adapter import MANUS_MAX_MESSAGE_CHARS
+from manus_governance import build_minimal_task_packet
+from manus_runtime import _prompt, parse_start_request
 from autorecovery_supervisor import (
     AssignmentCheckpoint,
     RecoveryRoute,
@@ -103,6 +106,52 @@ class RuntimeComponentTests(unittest.TestCase):
         self.assertIn("recovery:9", runtime.requests[0])
         self.assertIn('"github": "write"', runtime.requests[0])
         self.assertIn("Do not activate Forge", runtime.requests[0])
+
+
+    def test_large_private_broker_snapshot_is_compacted_below_manus_message_ceiling(self):
+        runtime = FakeRuntime()
+        huge_broker = {
+            "schema_version": "JAYTEC_GITHUB_BROKER_CONTEXT_V1",
+            "kind": "PRIVATE_REPO_BOOTSTRAP",
+            "repo": "jayagius99/jaytec-work-engine-v2-g1",
+            "sha256": "f" * 64,
+            "padding": "X" * 4200,
+        }
+        invoker = ManusLiteRecoveryInvoker(
+            runtime,
+            FakeRegistry(),
+            broker_context=huge_broker,
+        )
+        result = invoker.invoke(
+            checkpoint=checkpoint(),
+            continuation_packet={
+                "instruction": "Resume — do not recreate completed work",
+                "completed_work": ["x" * 500],
+                "remaining_work": ["y" * 500],
+            },
+            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+            fencing_token=4,
+        )
+        self.assertTrue(result.accepted)
+        raw = runtime.requests[0]
+        self.assertNotIn("X" * 200, raw)
+        self.assertIn('"available": true', raw)
+        self.assertIn('"sha256": "' + ("f" * 64) + '"', raw)
+        self.assertIn("return NEEDS_JAYTEC", raw)
+
+        req = parse_start_request(raw)
+        packet = build_minimal_task_packet(
+            task_id=req.task_id,
+            objective=req.objective,
+            scope=req.scope,
+            authority_source=req.authority_source,
+            allowed_actions=list(req.allowed_actions),
+            required_context=req.required_context,
+            constraints=list(req.constraints),
+            reference_ids=list(req.reference_ids),
+        )
+        rendered = _prompt(packet)
+        self.assertLessEqual(len(rendered), MANUS_MAX_MESSAGE_CHARS)
 
     def test_invoker_rejects_broad_connector_scope(self):
         cp = checkpoint({
