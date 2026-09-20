@@ -33,6 +33,10 @@ def _valid_result():
     }
 
 
+class _NotFound(Exception):
+    status_code = 404
+
+
 class _FakeCompletions:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -88,8 +92,7 @@ class TestDeepSeekSecurityReviewer(unittest.TestCase):
         self.assertTrue(call["response_format"]["json_schema"]["strict"])
         self.assertFalse(call["extra_body"]["provider"]["allow_fallbacks"])
         self.assertTrue(call["extra_body"]["provider"]["require_parameters"])
-        self.assertEqual("low", call["extra_body"]["reasoning"]["effort"])
-        self.assertTrue(call["extra_body"]["reasoning"]["exclude"])
+        self.assertNotIn("reasoning", call["extra_body"])
 
     def test_empty_first_response_gets_exactly_one_format_retry(self):
         client, dispatch = _dispatch([
@@ -109,6 +112,13 @@ class TestDeepSeekSecurityReviewer(unittest.TestCase):
             client.completions.calls[1]["messages"][0]["content"],
         )
         self.assertEqual(2, result["bridge_diagnostics"]["attempt"])
+        self.assertTrue(result["bridge_diagnostics"]["provider_fallbacks"])
+        self.assertFalse(
+            client.completions.calls[0]["extra_body"]["provider"]["allow_fallbacks"]
+        )
+        self.assertTrue(
+            client.completions.calls[1]["extra_body"]["provider"]["allow_fallbacks"]
+        )
 
     def test_second_empty_response_fails_closed(self):
         _, dispatch = _dispatch([
@@ -122,6 +132,38 @@ class TestDeepSeekSecurityReviewer(unittest.TestCase):
         client, dispatch = _dispatch([{"content": ""}])
         with self.assertRaises(WorkerJsonError):
             dispatch({"max_retries": 0, "objective": "review"})
+        self.assertEqual(1, len(client.completions.calls))
+
+
+    def test_provider_route_404_gets_one_same_model_fallback_attempt(self):
+        client, dispatch = _dispatch([
+            _NotFound("provider route unavailable"),
+            {"content": json.dumps(_valid_result())},
+        ])
+        result = dispatch({"max_retries": 1, "objective": "review"})
+
+        self.assertEqual("SUCCESS", result["status"])
+        self.assertEqual(2, len(client.completions.calls))
+        self.assertEqual(
+            EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+            client.completions.calls[0]["model"],
+        )
+        self.assertEqual(
+            EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+            client.completions.calls[1]["model"],
+        )
+        self.assertFalse(
+            client.completions.calls[0]["extra_body"]["provider"]["allow_fallbacks"]
+        )
+        self.assertTrue(
+            client.completions.calls[1]["extra_body"]["provider"]["allow_fallbacks"]
+        )
+        self.assertTrue(result["bridge_diagnostics"]["provider_fallbacks"])
+
+    def test_non_404_provider_error_does_not_retry(self):
+        client, dispatch = _dispatch([RuntimeError("boom")])
+        with self.assertRaisesRegex(RuntimeError, "boom"):
+            dispatch({"max_retries": 1, "objective": "review"})
         self.assertEqual(1, len(client.completions.calls))
 
     def test_wrong_provider_model_fails_closed(self):
