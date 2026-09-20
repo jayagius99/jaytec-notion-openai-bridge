@@ -300,3 +300,50 @@ def enforce_read_report(result: Mapping[str, Any], source_url: str) -> dict[str,
             new_conclusion["READ_REPORT"] = report_dict
         out["conclusion"] = new_conclusion or None
     return out
+
+
+def enforce_orchestrated_read_report(
+    result: Mapping[str, Any],
+    source_url: str,
+) -> dict[str, Any]:
+    """Validate a JAYTEC:READ orchestration envelope using its Gemini specialist result.
+
+    execute_task_packet_core returns the specialist payload under gemini_result.
+    The READ_REPORT contract belongs to that specialist payload, not the outer
+    orchestration envelope. Preserve orchestration metadata while projecting the
+    validated READ result to the top level for one-shot/bootstrap callers.
+    """
+
+    out = dict(result)
+    specialist = out.get("gemini_result")
+    if not isinstance(specialist, Mapping):
+        return enforce_read_report(out, source_url)
+
+    validated = enforce_read_report(specialist, source_url)
+    out["gemini_result"] = validated
+    out["findings"] = list(validated.get("findings") or [])
+    out["evidence"] = list(validated.get("evidence") or [])
+    out["confidence"] = validated.get("confidence")
+    out["conclusion"] = validated.get("conclusion")
+    out["unresolved_items"] = list(validated.get("unresolved_items") or [])
+
+    orchestration_status = out.get("overall_status")
+    if orchestration_status == "SUCCESS" and validated.get("status") == "SUCCESS":
+        out["status"] = "SUCCESS"
+        return out
+
+    out["status"] = "FAILED_CLOSED"
+    if orchestration_status != "SUCCESS":
+        out["unresolved_items"].append(
+            "jaytec_read_orchestration_not_success:" + str(orchestration_status)
+        )
+        conclusion = out.get("conclusion")
+        if isinstance(conclusion, Mapping):
+            new_conclusion = dict(conclusion)
+            report = new_conclusion.get("READ_REPORT")
+            if isinstance(report, Mapping):
+                new_report = dict(report)
+                new_report["VERIFIED"] = False
+                new_conclusion["READ_REPORT"] = new_report
+            out["conclusion"] = new_conclusion
+    return out

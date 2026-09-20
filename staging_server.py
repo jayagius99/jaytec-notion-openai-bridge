@@ -25,7 +25,7 @@ from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
-from jaytec_read import build_jaytec_read_packet, enforce_read_report
+from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
@@ -221,7 +221,7 @@ def _run_jaytec_read_bootstrap_probe() -> None:
         {"gemini": GEMINI_DISPATCH},
         REGISTRY,
     )
-    validated = enforce_read_report(result, target)
+    validated = enforce_orchestrated_read_report(result, target)
     print(
         "JAYTEC_READ_BOOTSTRAP_RESULT="
         + json.dumps(validated, ensure_ascii=False, sort_keys=True),
