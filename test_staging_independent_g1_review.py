@@ -26,6 +26,29 @@ class TestIndependentG1Review(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "TOO_LARGE"):
             module._validate_packet({"evidence": "x" * (module.MAX_PACKET_CHARS + 1)})
 
+    def test_packet_hash_is_canonical_and_stable(self):
+        module = _load()
+        left = {"b": 2, "a": {"y": 2, "x": 1}}
+        right = {"a": {"x": 1, "y": 2}, "b": 2}
+        self.assertEqual(module._canonical_packet_json(left), module._canonical_packet_json(right))
+        self.assertEqual(module._packet_sha256(left), module._packet_sha256(right))
+        self.assertEqual(64, len(module._packet_sha256(left)))
+
+    def test_hash_pin_is_required_for_enabled_review(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("JAYTEC_G1_REVIEW_PACKET_SHA256", text)
+        self.assertIn("INDEPENDENT_REVIEW_PACKET_HASH_MISMATCH", text)
+        self.assertIn('"packet_sha256": packet_sha', text)
+
+    def test_reviewer_has_bounded_same_model_format_retry_and_fail_closed_result(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("for retry_format in (False, True):", text)
+        self.assertIn('"status": "FAILED_CLOSED"', text)
+        self.assertIn('"safe_to_unlock_v2": False', text)
+        self.assertIn('"provider": {"allow_fallbacks": False}', text)
+        self.assertIn("max_tokens=4096", text)
+        self.assertIn("INDEPENDENT_REVIEW_TRUNCATED_OR_BLOCKED", text)
+
     def test_only_zero_cost_review_models_are_allowlisted(self):
         module = _load()
         self.assertEqual(
