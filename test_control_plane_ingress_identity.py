@@ -16,13 +16,18 @@ class ControlPlaneIngressIdentityTests(unittest.TestCase):
         instructions = (ROOT / "NOTION_AGENT_INSTRUCTIONS.md").read_text(
             encoding="utf-8"
         )
-        for retired in (
-            "call `ask_openai`",
-            "call `review_notion_answer`",
+        positive_directives = (
+            "For difficult factual or technical questions, call `ask_openai`",
+            "When you have already drafted an important answer, call `review_notion_answer`",
             "For complex project work where two-agent collaboration is useful, call `collaborate`",
-        ):
+        )
+        for retired in positive_directives:
             with self.subTest(retired=retired):
                 self.assertNotIn(retired, instructions)
+        self.assertIn(
+            "- call `ask_openai`, `review_notion_answer`, or free-form `collaborate`;",
+            instructions,
+        )
         self.assertIn("strict pass-through", instructions.casefold())
         self.assertIn("not an executor", instructions.casefold())
 
