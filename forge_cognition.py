@@ -29,6 +29,7 @@ from typing import Any, Mapping, Optional
 import psycopg2
 import psycopg2.extras
 from forge_strategic_drives import RootOwnerBoundary, StrategicDriveConfig
+from proving_grounds import ProvingGroundsError, validate_roster_entry as validate_proving_grounds_roster_entry
 
 SCHEMA_VERSION = "FORGE_COGNITIVE_CONTINUITY_V1"
 PACKET_VERSION = "FORGE_COGNITION_CYCLE_PACKET_V1"
@@ -546,6 +547,12 @@ class ForgeMindStore:
         roster=packet.get("specialist_roster")
         if not isinstance(roster,Mapping) or not isinstance(roster.get("SOL"),Mapping):
             raise ForgeCognitionError("SOL_PRIMARY_REQUIRED")
+        if not isinstance(roster.get("PROVING_GROUNDS"), Mapping):
+            raise ForgeCognitionError("PROVING_GROUNDS_REQUIRED")
+        try:
+            validate_proving_grounds_roster_entry(roster["PROVING_GROUNDS"])
+        except ProvingGroundsError as exc:
+            raise ForgeCognitionError("PROVING_GROUNDS_INVALID:" + str(exc)) from exc
         goals_raw = packet.get("goals")
         if not isinstance(goals_raw, list):
             raise ForgeCognitionError("GOALS_INVALID")

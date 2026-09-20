@@ -57,6 +57,10 @@ from deepseek_reviewer import (
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from jaytec_protocol_portal import PortalStore, safe_error as portal_safe_error
 from forge_cognition import ForgeMindStore, safe_error as forge_cognition_safe_error
+from proving_grounds import (
+    catalog as proving_grounds_catalog_data,
+    run_registered_suite as proving_grounds_run_registered_suite,
+)
 from manus_adapter import MANUS_API_KEY, ManusClient
 from manus_runtime import ManusLiteRuntime, runtime_error_payload
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
@@ -280,10 +284,32 @@ def orchestration_status() -> str:
             "autorecovery": autorecovery,
             "protocol_portal": portal,
             "forge_cognition": forge_cognition,
+            "proving_grounds": proving_grounds_catalog_data(os.environ),
             "production_ready": False,
         },
         sort_keys=True,
     )
+
+
+
+@mcp.tool
+def proving_grounds_catalog() -> str:
+    """List the bounded JAYTEC Proving Grounds resource and registered suites."""
+    return json.dumps(
+        proving_grounds_catalog_data(os.environ),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+@mcp.tool
+def proving_grounds_run(request_json: str) -> str:
+    """Run one exact registered Proving Grounds suite; never arbitrary commands."""
+    result = proving_grounds_run_registered_suite(
+        request_json,
+        env=os.environ,
+    )
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
 def _manus_runtime() -> ManusLiteRuntime:

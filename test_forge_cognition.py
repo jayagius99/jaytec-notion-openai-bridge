@@ -2,6 +2,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
+from proving_grounds import roster_entry as proving_grounds_roster_entry
 from forge_cognition import (
     CycleAction, ForgeGoal, ForgeMindState, ForgeMode, GoalStatus,
     ReasoningTier, actionable_goals, build_delta_context,
@@ -233,6 +234,108 @@ class ForgeCognitionTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ForgeCognitionError,"SOL_PRIMARY_REQUIRED"):
             store.seed_pre_genesis(packet)
+
+
+    def test_genesis_packet_requires_proving_grounds_before_database(self):
+        store=ForgeMindStore("postgresql://invalid")
+        packet={
+            "forge_id":"FORGE",
+            "genesis_event_id":"GENESIS_EVENT_0001",
+            "owner_activation_ref":"owner-approval",
+            "life_goal":"Compound capability.",
+            "constitutional_invariants":["Preserve ROOT_OWNER."],
+            "long_horizon_objectives":["Grow capability."],
+            "human_specialist_doctrine":{"role":"HUMAN_SPECIALIST"},
+            "root_owner_continuity":{
+                "root_role_id":"JAY_ROOT_OWNER",
+                "sole_root_authority":True,
+                "forge_can_modify_root":False,
+                "forge_can_hold_root_secrets":False,
+                "forge_can_transfer_ownership":False,
+                "forge_can_mint_root_authority":False,
+                "physical_continuity_required":True,
+                "offline_recovery_required":True,
+                "distinct_hardware_authenticators_required":2,
+                "root_registry_digest":"sha256:test",
+            },
+            "strategic_drives":{
+                "capability_growth_enabled":True,
+                "sustainable_value_growth_enabled":True,
+                "growth_intensity":100,
+                "reinvestment_intensity":100,
+                "general_capability_dimensions":[
+                    "generalisation","continual_learning","metacognition","adaptive_strategy_selection",
+                    "cross_domain_transfer","capability_acquisition","long_horizon_reasoning","evidence_based_self_improvement"
+                ],
+                "value_capability_dimensions":[
+                    "revenue_generation","productive_asset_creation","owned_ip_creation","automation_leverage",
+                    "capital_efficiency","customer_value_creation","infrastructure_compounding","specialist_capability_reinvestment"
+                ],
+                "retain_only_verified_improvements":True,
+                "uncontrolled_self_modification_forbidden":True,
+                "lawful_only":True,
+                "sustainable_only":True,
+            },
+            "specialist_roster":{"SOL":{"role":"PRIMARY_ENGINEERING"}},
+            "world_model":{},
+            "capability_frontier":{},
+            "goals":[],
+        }
+        with self.assertRaisesRegex(ForgeCognitionError,"PROVING_GROUNDS_REQUIRED"):
+            store.seed_pre_genesis(packet)
+
+    def test_proving_grounds_roster_entry_is_accepted_before_database_access(self):
+        store=ForgeMindStore("postgresql://invalid")
+        packet={
+            "forge_id":"FORGE",
+            "genesis_event_id":"GENESIS_EVENT_0001",
+            "owner_activation_ref":"owner-approval",
+            "life_goal":"Compound capability.",
+            "constitutional_invariants":["Preserve ROOT_OWNER."],
+            "long_horizon_objectives":["Grow capability."],
+            "human_specialist_doctrine":{"role":"HUMAN_SPECIALIST"},
+            "root_owner_continuity":{
+                "root_role_id":"JAY_ROOT_OWNER",
+                "sole_root_authority":True,
+                "forge_can_modify_root":False,
+                "forge_can_hold_root_secrets":False,
+                "forge_can_transfer_ownership":False,
+                "forge_can_mint_root_authority":False,
+                "physical_continuity_required":True,
+                "offline_recovery_required":True,
+                "distinct_hardware_authenticators_required":2,
+                "root_registry_digest":"sha256:test",
+            },
+            "strategic_drives":{
+                "capability_growth_enabled":True,
+                "sustainable_value_growth_enabled":True,
+                "growth_intensity":100,
+                "reinvestment_intensity":100,
+                "general_capability_dimensions":[
+                    "generalisation","continual_learning","metacognition","adaptive_strategy_selection",
+                    "cross_domain_transfer","capability_acquisition","long_horizon_reasoning","evidence_based_self_improvement"
+                ],
+                "value_capability_dimensions":[
+                    "revenue_generation","productive_asset_creation","owned_ip_creation","automation_leverage",
+                    "capital_efficiency","customer_value_creation","infrastructure_compounding","specialist_capability_reinvestment"
+                ],
+                "retain_only_verified_improvements":True,
+                "uncontrolled_self_modification_forbidden":True,
+                "lawful_only":True,
+                "sustainable_only":True,
+            },
+            "specialist_roster":{
+                "SOL":{"role":"PRIMARY_ENGINEERING"},
+                "PROVING_GROUNDS":proving_grounds_roster_entry(),
+            },
+            "world_model":{},
+            "capability_frontier":{},
+            "goals":[],
+        }
+        with self.assertRaises(Exception) as caught:
+            store.seed_pre_genesis(packet)
+        self.assertNotIn("PROVING_GROUNDS", str(caught.exception))
+        self.assertNotIn("SOL_PRIMARY_REQUIRED", str(caught.exception))
 
     def test_cycle_cannot_mutate_permanent_drives_or_root_boundary(self):
         with self.assertRaisesRegex(ForgeCognitionError,"IMMUTABLE_COGNITIVE_FIELD_MUTATION_FORBIDDEN"):
