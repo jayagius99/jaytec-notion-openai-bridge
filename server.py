@@ -473,6 +473,7 @@ def create_mcp_app() -> FastMCP:
         codex_model=CODEX_MODEL,
         gemini_model=GEMINI_MODEL,
         engineering_provider_active=ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE,
+        openrouter_provider_active=OPENROUTER_PROVIDER_MODE == OPENROUTER_PROVIDER_ACTIVE,
         mcp_auth_token_present=bool(MCP_AUTH_TOKEN),
         mcp_auth_token_strong=is_strong_mcp_auth_token(MCP_AUTH_TOKEN),
         openai_api_key_present=bool(OPENAI_API_KEY),
