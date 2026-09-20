@@ -12,10 +12,18 @@ from typing import Any, Mapping
 from openai import RateLimitError as OpenAIRateLimitError
 
 from orchestration import redact
-from staging_server import CODEX_MODEL, IDEMPOTENCY_STORE, OPENAI_CLIENT, REGISTRY
+from startup_probe_guard import sha256_text
+from staging_server import (
+    CODEX_MODEL,
+    IDEMPOTENCY_STORE,
+    OPENAI_CLIENT,
+    REGISTRY,
+    _startup_probe_authorized,
+)
 
 KEY = "codex-429-diagnostic-v2"
 DIGEST = "codex-429-diagnostic-v2"
+AUTH_DIGEST = sha256_text("codex-429-diagnostic:v3:" + CODEX_MODEL + ":Reply exactly OK.")
 
 
 def _safe_429_details(exc: Exception) -> dict[str, Any]:
@@ -85,6 +93,22 @@ def main() -> int:
                         "prior": prior,
                     }
                 ),
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        return 0
+
+    if not _startup_probe_authorized("codex_429_diagnostic", AUTH_DIGEST):
+        print(
+            "JAYTEC_CODEX_429_DIAGNOSTIC "
+            + json.dumps(
+                {
+                    "phase": "tiny_provider_probe",
+                    "status": "BLOCKED",
+                    "reason": "ONE_SHOT_AUTH_REQUIRED",
+                    "model": CODEX_MODEL,
+                },
                 sort_keys=True,
             ),
             flush=True,
