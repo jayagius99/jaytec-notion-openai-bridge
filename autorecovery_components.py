@@ -285,7 +285,11 @@ class ManusLiteRecoveryInvoker:
             accepted=True,
             worker_id=worker_id,
             route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
-            detail="MANUS_JAYTEC_HANDOFF_CONTINUED",
+            detail=(
+                "MANUS_JAYTEC_HANDOFF_REPLAY"
+                if result.get("idempotent_replay") is True
+                else "MANUS_JAYTEC_HANDOFF_CONTINUED"
+            ),
         )
 
 
