@@ -307,7 +307,7 @@ class ManusClient:
         # Fail closed on profile policy BEFORE any Manus network read. This
         # prevents a non-Lite or unpinnable request from touching Manus at all.
         lite_policy = authorize_manus_route(
-            requested_profile=lite_policy.requested_profile.value,
+            requested_profile=requested_profile,
             route_supports_profile_selector=True,
         )
 
@@ -364,7 +364,7 @@ class ManusClient:
             scope=scope,
             authority_source=authority_source,
             current_task_authorized=current_task_authorized,
-            requested_profile=requested_profile,
+            requested_profile=lite_policy.requested_profile.value,
             route_supports_profile_selector=True,
             notion_authorized_by_jay_via_chatgpt=notion_authorized_by_jay_via_chatgpt,
         )
