@@ -165,6 +165,7 @@ def orchestration_status() -> str:
             "deepseek_reviewer_model": DEEPSEEK_REVIEWER_MODEL,
             "deepseek_reviewer_configured": bool(OPENROUTER_API_KEY),
             "deepseek_reviewer_circuit": DEEPSEEK_REVIEWER_CIRCUIT.snapshot(),
+            "deepseek_reviewer_route_policy": "exact_model_bounded_same_model_provider_retry",
             "idempotency_store": IDEMPOTENCY_STORE,
             "production_ready": False,
         },
