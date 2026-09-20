@@ -38,10 +38,17 @@ class ForgeCognitionTests(unittest.TestCase):
         action,goal,tier,_=choose_cycle(state(mode=ForgeMode.PAUSED_BY_OWNER))
         self.assertEqual(action,CycleAction.HOLD)
         self.assertIsNone(goal)
-        self.assertEqual(tier,ReasoningTier.FAST)
+        self.assertEqual(tier,ReasoningTier.REFLEX)
+
+    def test_reflex_goal_avoids_unnecessary_deep_reasoning(self):
+        g=ForgeGoal("g1","Do deterministic check.",1,complexity=10,uncertainty=10)
+        action,goal,tier,_=choose_cycle(state(goals=(g,)))
+        self.assertEqual(action,CycleAction.EXECUTE_NEXT)
+        self.assertEqual(goal.goal_id,"g1")
+        self.assertEqual(tier,ReasoningTier.REFLEX)
 
     def test_fast_goal_stays_fast(self):
-        g=ForgeGoal("g1","Do deterministic check.",1,complexity=10,uncertainty=10)
+        g=ForgeGoal("g1","Do simple reasoning.",1,complexity=25,uncertainty=20)
         action,goal,tier,_=choose_cycle(state(goals=(g,)))
         self.assertEqual(action,CycleAction.EXECUTE_NEXT)
         self.assertEqual(goal.goal_id,"g1")
