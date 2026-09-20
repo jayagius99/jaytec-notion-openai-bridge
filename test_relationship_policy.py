@@ -125,13 +125,25 @@ class RelationshipPolicyTests(unittest.TestCase):
         self.assertIs(resolve_identity_label("use JAYTEC".replace("use ", "")), Actor.JAYTEC)
         self.assertIsNot(resolve_identity_label("JAYTEC"), Actor.NOTION)
 
-    def test_connector_read_is_allowed_but_mutation_requires_separate_authority(self):
+    def test_connector_read_requires_current_task_and_mutation_requires_extra_authority(self):
         for destination in (Actor.GITHUB, Actor.NEON, Actor.RENDER):
+            with self.assertRaisesRegex(
+                RelationshipPolicyError,
+                "RELATIONSHIP_CURRENT_AUTH_REQUIRED",
+            ):
+                authorize_relationship(
+                    source=Actor.MANUS,
+                    destination=destination,
+                    purpose=Purpose.INSPECT,
+                )
+
             authorize_relationship(
                 source=Actor.MANUS,
                 destination=destination,
                 purpose=Purpose.INSPECT,
+                current_task_authorized=True,
             )
+
             with self.assertRaisesRegex(
                 RelationshipPolicyError,
                 "RELATIONSHIP_CONNECTOR_MUTATION_AUTH_REQUIRED",
@@ -142,6 +154,7 @@ class RelationshipPolicyTests(unittest.TestCase):
                     purpose=Purpose.WRITE,
                     current_task_authorized=True,
                 )
+
             authorize_relationship(
                 source=Actor.MANUS,
                 destination=destination,
