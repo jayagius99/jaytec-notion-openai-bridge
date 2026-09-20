@@ -506,6 +506,56 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
     )
     result["autorecovery_active"] = runtime.active
     result["runtime_components_registered"] = runtime.runtime_components_registered
+
+    # If a recovery invocation failed after claiming its fence, the exact
+    # fail-closed runtime result is already stored under a deterministic
+    # idempotency key. Peek only that existing record; never call Manus here.
+    attempt = result.get("recovery_attempts")
+    fence = result.get("fencing_token")
+    route_by_attempt = {
+        1: "same_worker_provider",
+        2: "fresh_worker_same_checkpoint",
+        3: "alternate_approved_route",
+    }
+    if (
+        isinstance(attempt, int)
+        and not isinstance(attempt, bool)
+        and isinstance(fence, int)
+        and not isinstance(fence, bool)
+        and attempt in route_by_attempt
+        and fence >= 1
+        and hasattr(REGISTRY, "peek_result")
+    ):
+        recovery_key = (
+            "manus:"
+            + task_id
+            + ":recovery:"
+            + str(fence)
+            + ":"
+            + route_by_attempt[attempt]
+        )
+        try:
+            stored = REGISTRY.peek_result(recovery_key)
+        except Exception as exc:
+            result["last_invocation_record"] = {
+                "status": "DIAGNOSTIC_READ_FAILED",
+                "error": type(exc).__name__,
+            }
+        else:
+            if isinstance(stored, Mapping):
+                safe_fields = (
+                    "status",
+                    "error",
+                    "monetary_topup_required",
+                    "requested_profile",
+                    "observed_profile_verified",
+                )
+                result["last_invocation_record"] = {
+                    key: stored.get(key)
+                    for key in safe_fields
+                    if key in stored
+                }
+
     result["read_only"] = True
     result["lease_acquired"] = False
     result["worker_invoked"] = False
