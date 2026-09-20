@@ -447,3 +447,5 @@ class WatchIngressPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# CI_REFRESH_PRIVATE_REPO_BROKER_V1
