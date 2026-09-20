@@ -124,6 +124,15 @@ class ManusLiteRecoveryInvoker:
                 f"{checkpoint.task_id}:recovery:{fencing_token}:"
                 f"{route.value.casefold()}"
             )[:200]
+            checkpoint_digest = hashlib.sha256(
+                json.dumps(
+                    dict(continuation_packet),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
             required_context = {
                 "parent_task_id": checkpoint.task_id,
                 "checkpoint_number": checkpoint.checkpoint_number,
@@ -131,18 +140,33 @@ class ManusLiteRecoveryInvoker:
                 "branch": checkpoint.branch,
                 "verified_head": checkpoint.commit_head,
                 "open_pr": checkpoint.open_pr,
-                "completed_work": list(checkpoint.completed_work),
-                "remaining_work": list(checkpoint.remaining_work),
-                "known_failures": list(checkpoint.known_failures),
-                "dependencies": list(checkpoint.dependencies),
-                "next_intended_action": checkpoint.next_intended_action,
+                "current_phase": checkpoint.current_phase[:500],
+                "last_safe_checkpoint": checkpoint.last_safe_checkpoint[:700],
+                "next_intended_action": checkpoint.next_intended_action[:700],
+                "completed_work_count": len(checkpoint.completed_work),
+                "remaining_work_count": len(checkpoint.remaining_work),
+                "known_failures_count": len(checkpoint.known_failures),
+                "dependencies_count": len(checkpoint.dependencies),
+                "continuation_packet_sha256": checkpoint_digest,
                 "fencing_token": fencing_token,
                 "recovery_route": route.value,
             }
             if self.broker_context:
-                required_context["jaytec_private_github_broker"] = dict(
-                    self.broker_context
-                )
+                # Do not embed the full private-repository snapshot in a fresh
+                # recovery task. The provider message ceiling is intentionally
+                # small, and the full broker context is delivered later through
+                # the proven NEEDS_JAYTEC same-task handoff path if required.
+                required_context["jaytec_private_github_broker"] = {
+                    "available": True,
+                    "kind": str(self.broker_context.get("kind") or "")[:80],
+                    "repo": str(self.broker_context.get("repo") or checkpoint.repo)[:200],
+                    "sha256": str(self.broker_context.get("sha256") or "")[:64],
+                    "handoff_policy": (
+                        "If direct private GitHub evidence is insufficient, "
+                        "return NEEDS_JAYTEC. JAYTEC will provide exact bounded "
+                        "broker evidence to this same task."
+                    ),
+                }
             constraints = list(dict.fromkeys(
                 [*checkpoint.active_constraints, *HARD_RECOVERY_CONSTRAINTS]
             ))
