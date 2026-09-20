@@ -26,10 +26,6 @@ services:
         value: gpt-5.6-sol
       - key: OPENROUTER_API_KEY
         sync: false
-      - key: MANUS_API_KEY
-        sync: false
-      - key: JAYTEC_MANUS_PROJECT_ID
-        sync: false
       - key: GEMINI_MODEL
         value: google/gemini-3.1-pro-preview
       - key: JAYTEC_READ_BOOTSTRAP_ENABLED
