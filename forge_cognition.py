@@ -452,13 +452,16 @@ class ForgeMindStore:
     def seed_pre_genesis(self, packet: Mapping[str, Any]) -> dict[str, Any]:
         """Store the reviewed birth package without activating Forge."""
         required = {
-            "forge_id","genesis_event_id","life_goal","constitutional_invariants",
+            "forge_id","genesis_event_id","owner_activation_ref","life_goal","constitutional_invariants",
             "long_horizon_objectives","human_specialist_doctrine","root_owner_continuity",
             "specialist_roster","world_model","capability_frontier","goals"
         }
         missing = sorted(required - set(packet))
         if missing:
             raise ForgeCognitionError("GENESIS_PACKET_MISSING:" + ",".join(missing))
+        genesis_event_id=_text(packet.get("genesis_event_id"),"GENESIS_EVENT_ID",maximum=100)
+        if not re.fullmatch(r"GENESIS_EVENT_[0-9]{4,}",genesis_event_id):
+            raise ForgeCognitionError("GENESIS_EVENT_ID_INVALID")
         root = packet.get("root_owner_continuity")
         human = packet.get("human_specialist_doctrine")
         if not isinstance(root, Mapping) or root.get("physical_continuity_required") is not True:
@@ -467,13 +470,17 @@ class ForgeMindStore:
             raise ForgeCognitionError("ROOT_OVERRIDE_REQUIRED")
         if not isinstance(human, Mapping) or str(human.get("role") or "").upper() != "HUMAN_SPECIALIST":
             raise ForgeCognitionError("HUMAN_SPECIALIST_REQUIRED")
+        roster=packet.get("specialist_roster")
+        if not isinstance(roster,Mapping) or not isinstance(roster.get("SOL"),Mapping):
+            raise ForgeCognitionError("SOL_PRIMARY_REQUIRED")
         goals_raw = packet.get("goals")
         if not isinstance(goals_raw, list):
             raise ForgeCognitionError("GOALS_INVALID")
         goals = [ForgeGoal.parse(x).to_dict() for x in goals_raw]
         state = {
             "forge_id": _text(packet.get("forge_id"), "FORGE_ID", maximum=100),
-            "genesis_event_id": _text(packet.get("genesis_event_id"), "GENESIS_EVENT_ID", maximum=100),
+            "genesis_event_id": genesis_event_id,
+            "owner_activation_ref": _text(packet.get("owner_activation_ref"), "OWNER_ACTIVATION_REF", maximum=500),
             "life_goal": _text(packet.get("life_goal"), "LIFE_GOAL"),
             "constitutional_invariants": list(_list(packet.get("constitutional_invariants"), "CONSTITUTIONAL_INVARIANTS")),
             "long_horizon_objectives": list(_list(packet.get("long_horizon_objectives"), "LONG_HORIZON_OBJECTIVES")),
@@ -700,16 +707,16 @@ class ForgeMindStore:
                             status=GoalStatus(str(update["status"]))
                         except ValueError as exc:
                             raise ForgeCognitionError("GOAL_STATUS_INVALID") from exc
-                    by_id[gid]=ForgeGoal(
-                        goal_id=old.goal_id,
-                        objective=old.objective,
-                        priority=int(update.get("priority",old.priority)),
-                        status=status,
-                        dependencies=old.dependencies,
-                        complexity=int(update.get("complexity",old.complexity)),
-                        uncertainty=int(update.get("uncertainty",old.uncertainty)),
-                        parallel_safe=old.parallel_safe,
-                    )
+                    by_id[gid]=ForgeGoal.parse({
+                        "goal_id":old.goal_id,
+                        "objective":old.objective,
+                        "priority":update.get("priority",old.priority),
+                        "status":status.value,
+                        "dependencies":list(old.dependencies),
+                        "complexity":update.get("complexity",old.complexity),
+                        "uncertainty":update.get("uncertainty",old.uncertainty),
+                        "parallel_safe":old.parallel_safe,
+                    })
 
                 new_goals=result.get("new_goals") or []
                 if not isinstance(new_goals,list) or len(new_goals)>MAX_ITEMS:
