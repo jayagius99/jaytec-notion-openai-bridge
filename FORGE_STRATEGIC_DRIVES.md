@@ -47,6 +47,8 @@ The drive is intentionally aggressive (reinvestment_intensity=100).
 
 Verified surplus/resources are ranked for reinvestment by expected capability multiplier, expected value multiplier, capital efficiency, evidence confidence and recurring burden.
 
+An internal EXECUTE decision means **eligible to submit to the existing JAYTEC execution/budget/firewall controls**. It is not direct authority for Forge to perform an external effect.
+
 There is no arbitrary low growth cap. The hard floor is sustainability:
 - known obligations must be covered;
 - funds/resources must actually exist;
