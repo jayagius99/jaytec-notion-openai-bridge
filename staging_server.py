@@ -41,7 +41,7 @@ from deepseek_reviewer import (
 )
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
-from startup_probe_guard import authorize_startup_probe, sha256_text
+from startup_probe_guard import authorize_startup_probe, sha256_json, sha256_text
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
@@ -211,6 +211,22 @@ def execute_task_packet(packet_json: str) -> str:
                 "subtask_id": "",
                 "overall_status": "INVALID_PACKET",
                 "unresolved_items": list(parse_errors),
+                "return_schema_version": "1.0",
+            },
+            sort_keys=True,
+        )
+
+    packet_digest = sha256_json(packet)
+    if not _startup_probe_authorized("task_packet_dispatch", packet_digest):
+        return json.dumps(
+            {
+                "execution_id": "blocked",
+                "task_id": str(packet.get("task_id", "")),
+                "subtask_id": str(packet.get("subtask_id", "")),
+                "overall_status": "POLICY_BLOCKED",
+                "unresolved_items": ["ONE_SHOT_TASK_PACKET_DISPATCH_AUTH_REQUIRED"],
+                "approval_required": True,
+                "packet_hash": packet_digest,
                 "return_schema_version": "1.0",
             },
             sort_keys=True,
