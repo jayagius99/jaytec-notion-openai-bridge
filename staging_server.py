@@ -17,6 +17,8 @@ import gzip
 import hashlib
 import json
 import os
+import subprocess
+import sys
 import threading
 from typing import Any, Mapping
 from urllib.parse import urlparse
@@ -715,8 +717,82 @@ def _run_deepseek_route_visibility_probe() -> None:
     )
 
 
+def _run_independent_g1_review_server_oneshot() -> None:
+    """Run the zero-paid independent G1 reviewer after the HTTP server starts.
+
+    The normal sequential startup reviewer stays disabled so a slow free-model
+    response cannot prevent Render from detecting the service port. This
+    one-shot launches the exact same hash-pinned reviewer in a child process
+    while the staging server remains available. The child inherits the packet,
+    model allowlist and hash pin, but receives an explicit local enable flag.
+    """
+
+    if (
+        os.environ.get(
+            "JAYTEC_G1_INDEPENDENT_REVIEW_SERVER_ONESHOT",
+            "0",
+        ).strip()
+        != "1"
+    ):
+        return
+
+    child_env = dict(os.environ)
+    child_env["JAYTEC_G1_INDEPENDENT_REVIEW_ENABLED"] = "1"
+    try:
+        completed = subprocess.run(
+            [sys.executable, "staging_independent_g1_review.py"],
+            env=child_env,
+            check=False,
+            timeout=240,
+        )
+        print(
+            "JAYTEC_G1_INDEPENDENT_REVIEW_SERVER_ONESHOT="
+            + json.dumps(
+                {
+                    "status": (
+                        "COMPLETE"
+                        if completed.returncode == 0
+                        else "FAILED_CLOSED"
+                    ),
+                    "returncode": completed.returncode,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            "JAYTEC_G1_INDEPENDENT_REVIEW_SERVER_ONESHOT="
+            + json.dumps(
+                {
+                    "status": "FAILED_CLOSED",
+                    "reason": "WRAPPER_TIMEOUT",
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    except Exception as exc:
+        print(
+            "JAYTEC_G1_INDEPENDENT_REVIEW_SERVER_ONESHOT="
+            + json.dumps(
+                {
+                    "status": "FAILED_CLOSED",
+                    "reason": type(exc).__name__,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+
 if __name__ == "__main__":
     _run_jaytec_read_bootstrap_probe()
+    threading.Thread(
+        target=_run_independent_g1_review_server_oneshot,
+        name="jaytec-independent-g1-review-oneshot",
+        daemon=True,
+    ).start()
     threading.Thread(
         target=_run_god_project_review_probe,
         name="jaytec-god-project-review",
