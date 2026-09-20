@@ -519,7 +519,7 @@ class AutoRecoveryExecutionTests(unittest.TestCase):
         finally:
             store.heartbeat = original
 
-    def test_terminal_callable_result_moves_to_required_input_not_recovery(self):
+    def test_terminal_success_completes_canonical_assignment(self):
         store = MemoryAssignmentStore(
             state(
                 stop_reason=StopReason.RUNNING,
@@ -546,11 +546,77 @@ class AutoRecoveryExecutionTests(unittest.TestCase):
             instance_id="watch-a",
         )
         self.assertTrue(supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW))
+        self.assertEqual(store.state.stop_reason, StopReason.COMPLETED)
+        self.assertTrue(store.state.completed)
+        decision = supervisor.tick("GOD-PREP-0017", now=NOW)
+        self.assertEqual(decision.action, SupervisorAction.STOP_WATCH)
+        self.assertEqual(decision.effective_stop_reason, StopReason.COMPLETED)
+
+
+
+    def test_needs_owner_is_the_explicit_owner_notification_terminal(self):
+        store = MemoryAssignmentStore(
+            state(
+                stop_reason=StopReason.RUNNING,
+                worker_kind=WorkerKind.JAYTEC_CALLABLE,
+                heartbeat_age_seconds=900,
+            )
+        )
+        class NeedsOwnerHealth(FakeHealth):
+            def wait_for_healthy(self, *, task_id, fencing_token, worker_id, timeout_seconds):
+                return WorkerHealth(
+                    healthy=True,
+                    worker_id=worker_id,
+                    heartbeat_at=NOW,
+                    progress_marker="MANUS_TERMINAL:NEEDS_OWNER:owner123",
+                    detail="verified complete",
+                )
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=FakeInvoker(),
+            health_probe=NeedsOwnerHealth(),
+            notifier=FakeNotifier(),
+            instance_id="watch-a",
+        )
+        self.assertTrue(supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW))
         self.assertEqual(store.state.stop_reason, StopReason.WAITING_FOR_REQUIRED_INPUT)
         decision = supervisor.tick("GOD-PREP-0017", now=NOW)
         self.assertEqual(decision.action, SupervisorAction.NOTIFY_JAY)
-        self.assertEqual(decision.effective_stop_reason, StopReason.WAITING_FOR_REQUIRED_INPUT)
+        self.assertEqual(decision.reason, "INTENTIONAL_OR_EXTERNAL_BLOCKER")
 
+    def test_failed_closed_terminal_enters_bounded_recovery_not_owner_hold(self):
+        store = MemoryAssignmentStore(
+            state(
+                stop_reason=StopReason.RUNNING,
+                worker_kind=WorkerKind.JAYTEC_CALLABLE,
+                heartbeat_age_seconds=900,
+                recovery_attempts=0,
+            )
+        )
+        class FailedClosedHealth(FakeHealth):
+            def wait_for_healthy(self, *, task_id, fencing_token, worker_id, timeout_seconds):
+                return WorkerHealth(
+                    healthy=True,
+                    worker_id=worker_id,
+                    heartbeat_at=NOW,
+                    progress_marker="MANUS_TERMINAL:FAILED_CLOSED:fail123",
+                    detail="verified complete",
+                )
+        invoker = FakeInvoker()
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=invoker,
+            health_probe=FailedClosedHealth(),
+            notifier=FakeNotifier(),
+            instance_id="watch-a",
+        )
+        self.assertTrue(supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW))
+        self.assertEqual(store.state.stop_reason, StopReason.STALLED_RECOVERABLE)
+        decision = supervisor.tick("GOD-PREP-0017", now=NOW)
+        self.assertEqual(decision.action, SupervisorAction.RECOVERY_FAILED)
+        self.assertEqual(len(invoker.calls), 1)
 
     def test_needs_jaytec_terminal_result_is_internal_dependency_not_owner_notification(self):
         seeded = state(
