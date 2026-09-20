@@ -412,7 +412,9 @@ def classify_assignment(
 
     if (
         state.stop_reason is StopReason.WAITING_FOR_DEPENDENCY
-        and str(state.last_error or "").startswith("MANUS_TERMINAL:NEEDS_JAYTEC:")
+        and str(state.last_error or "").startswith(
+            ("MANUS_TERMINAL:NEEDS_JAYTEC:", "MANUS_TERMINAL:PARTIAL_SUCCESS:")
+        )
     ):
         return RecoveryDecision(
             SupervisorAction.HOLD,
@@ -984,17 +986,30 @@ class AutoRecoverySupervisor:
         parts = marker.split(":", 3)
         result_state = parts[1] if len(parts) > 1 else "UNKNOWN"
 
-        if result_state == "NEEDS_JAYTEC":
+        if result_state == "SUCCESS":
+            stop_reason = StopReason.COMPLETED
+            action = SupervisorAction.STOP_WATCH
+            reason = "CALLABLE_WORKER_SUCCESS_VERIFIED"
+        elif result_state in {"NEEDS_JAYTEC", "PARTIAL_SUCCESS"}:
             stop_reason = StopReason.WAITING_FOR_DEPENDENCY
             action = SupervisorAction.HOLD
-            reason = "CALLABLE_WORKER_NEEDS_JAYTEC"
-        else:
-            # Until a terminal status has a dedicated convergence rule, fail
-            # closed exactly as before. Only NEEDS_JAYTEC is now known to be an
-            # internal orchestration handoff rather than a Jay/owner boundary.
+            reason = (
+                "CALLABLE_WORKER_NEEDS_JAYTEC"
+                if result_state == "NEEDS_JAYTEC"
+                else "CALLABLE_WORKER_PARTIAL_CONTINUE_IN_JAYTEC"
+            )
+        elif result_state == "FAILED_CLOSED":
+            stop_reason = StopReason.STALLED_RECOVERABLE
+            action = SupervisorAction.RECOVER
+            reason = "CALLABLE_WORKER_FAILED_CLOSED_RECOVERABLE"
+        elif result_state == "NEEDS_OWNER":
             stop_reason = StopReason.WAITING_FOR_REQUIRED_INPUT
             action = SupervisorAction.NOTIFY_JAY
-            reason = "CALLABLE_WORKER_FINISHED_REVIEW_REQUIRED"
+            reason = "CALLABLE_WORKER_NEEDS_OWNER"
+        else:
+            stop_reason = StopReason.WAITING_FOR_REQUIRED_INPUT
+            action = SupervisorAction.NOTIFY_JAY
+            reason = "CALLABLE_WORKER_UNKNOWN_TERMINAL_STATE"
 
         self.store.mark_stop(
             task_id,
