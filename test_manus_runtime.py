@@ -158,6 +158,46 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         ):
             validate_manus_structured_output_schema(bad)
 
+    def test_structured_schema_adversarial_matrix_fails_locally(self):
+        cases = {
+            "missing_additional_properties": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "required": ["x"],
+            },
+            "required_mismatch": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "string"},
+                    "y": {"type": "string"},
+                },
+                "required": ["x"],
+                "additionalProperties": False,
+            },
+            "unsupported_keyword": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "string", "maxLength": 3},
+                },
+                "required": ["x"],
+                "additionalProperties": False,
+            },
+            "array_without_items": {
+                "type": "object",
+                "properties": {"x": {"type": "array"}},
+                "required": ["x"],
+                "additionalProperties": False,
+            },
+            "non_object_root": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        }
+        for name, schema in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ManusRuntimeError):
+                    validate_manus_structured_output_schema(schema)
+
     def test_specialist_request_json_string_is_validated_after_completion(self):
         request = specialist_request(
             parent_task_id="task-1",
