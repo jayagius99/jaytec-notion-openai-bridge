@@ -3,6 +3,7 @@ import unittest
 from manus_dispatch_contract import (
     ManusDispatchContractError,
     authorize_manus_dispatch,
+    authorize_manus_preflight,
     verify_manus_dispatch_result,
 )
 from manus_governance import ManusGovernanceError
@@ -38,6 +39,36 @@ class ManusDispatchContractTests(unittest.TestCase):
             ManusDispatchContractError, "MANUS_PROJECT_NAME_MISMATCH"
         ):
             authorize_manus_dispatch(**self.base(project_name="something else"))
+
+
+    def test_preflight_lite_authorized_without_live_project_resolution(self):
+        auth = authorize_manus_preflight(
+            connectors=["github"],
+            connectors_explicit=True,
+            scope="jaytec_delegated_task",
+            authority_source="chatgpt",
+            current_task_authorized=True,
+            requested_profile="lite",
+            route_supports_profile_selector=True,
+        )
+        self.assertEqual(auth.connectors, ("github",))
+        self.assertEqual(auth.profile.requested_profile.value, "lite")
+        self.assertTrue(auth.authority.allowed)
+
+    def test_preflight_rejects_unauthorized_task(self):
+        with self.assertRaisesRegex(
+            ManusDispatchContractError,
+            "MANUS_ACTION_NOT_AUTHORIZED",
+        ):
+            authorize_manus_preflight(
+                connectors=[],
+                connectors_explicit=True,
+                scope="jaytec_delegated_task",
+                authority_source="chatgpt",
+                current_task_authorized=False,
+                requested_profile="lite",
+                route_supports_profile_selector=True,
+            )
 
     def test_implicit_connector_inheritance_is_blocked(self):
         with self.assertRaisesRegex(
