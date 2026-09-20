@@ -22,3 +22,19 @@ def test_watch_route_does_not_reuse_mcp_static_token_path():
     route = route.split("def _protocol_portal", 1)[0]
     assert "MCP_AUTH_TOKEN" not in route
     assert "static_auth" not in route
+
+
+def test_watch_status_route_is_oidc_only_and_read_only():
+    assert '@mcp.custom_route("/jaytec/watch-status", methods=["POST"])' in SERVER
+    route = SERVER.split('@mcp.custom_route("/jaytec/watch-status", methods=["POST"])', 1)[1]
+    route = route.split("def _protocol_portal", 1)[0]
+    assert 'watch_oidc_auth.verify_token(raw_token)' in route
+    assert '"jaytec:watch-cycle"' in route
+    assert 'read_autorecovery_assignment_status(' in route
+    assert '"read_only"] = True' in route
+    assert '"lease_acquired"] = False' in route
+    assert '"worker_invoked"] = False' in route
+    assert "execute_watch_cycle(" not in route
+    assert "acquire_recovery_lease" not in route
+    assert "MCP_AUTH_TOKEN" not in route
+    assert "static_auth" not in route
