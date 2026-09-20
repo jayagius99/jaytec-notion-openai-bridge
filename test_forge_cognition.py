@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 from forge_cognition import (
     CycleAction, ForgeGoal, ForgeMindState, ForgeMode, GoalStatus,
     ReasoningTier, actionable_goals, build_delta_context,
-    choose_cycle, choose_reasoning_tier
+    choose_cycle, choose_reasoning_tier, next_cycle_delay_seconds,
+    parallel_goal_batch, _validate_goal_graph, ForgeCognitionError
 )
 
 NOW=datetime.now(timezone.utc)
@@ -71,6 +72,28 @@ class ForgeCognitionTests(unittest.TestCase):
         self.assertEqual(action,CycleAction.REFLECT_AND_PLAN)
         self.assertIsNone(goal)
         self.assertEqual(tier,ReasoningTier.STANDARD)
+
+
+    def test_parallel_batch_only_explicit_safe_goals(self):
+        a=ForgeGoal("a","A.",1,parallel_safe=True)
+        b=ForgeGoal("b","B.",2,parallel_safe=True)
+        c=ForgeGoal("c","C.",3,parallel_safe=False)
+        batch=parallel_goal_batch(state(goals=(a,b,c)),max_parallel=3)
+        self.assertEqual([g.goal_id for g in batch],["a","b"])
+
+    def test_non_parallel_top_goal_serializes_batch(self):
+        a=ForgeGoal("a","A.",1,parallel_safe=False)
+        b=ForgeGoal("b","B.",2,parallel_safe=True)
+        self.assertEqual([g.goal_id for g in parallel_goal_batch(state(goals=(a,b)))],["a"])
+
+    def test_goal_cycle_rejected(self):
+        a=ForgeGoal("a","A.",1,dependencies=("b",))
+        b=ForgeGoal("b","B.",2,dependencies=("a",))
+        with self.assertRaisesRegex(ForgeCognitionError,"GOAL_DEPENDENCY_CYCLE"):
+            _validate_goal_graph([a,b])
+
+    def test_event_driven_execute_wakes_immediately(self):
+        self.assertEqual(next_cycle_delay_seconds(CycleAction.EXECUTE_NEXT,ReasoningTier.REFLEX),0)
 
     def test_delta_context_is_bounded(self):
         g=ForgeGoal("g1","Do it.",1)
