@@ -53,6 +53,12 @@ It must not substitute the Notion Agent.
 
 ## Notion Agent
 
+The main `execute_task_packet` MCP credential belongs to the JAYTEC control
+plane. It must not be provisioned to the Notion Agent. If an explicit Notion
+pass-through transport is later deployed, it must use a separately scoped
+credential/path that cannot act as a general JAYTEC control-plane caller.
+
+
 The Notion Agent is strict pass-through transport only and is absent from the
 normal authority chain. The only allowed edge is:
 
