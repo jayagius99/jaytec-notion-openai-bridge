@@ -444,7 +444,8 @@ def create_mcp_app() -> FastMCP:
     )
     openrouter_client = (
         OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
-        if OPENROUTER_API_KEY
+        if OPENROUTER_PROVIDER_MODE == OPENROUTER_PROVIDER_ACTIVE
+        and OPENROUTER_API_KEY
         else None
     )
 
@@ -513,8 +514,13 @@ def create_mcp_app() -> FastMCP:
             circuit=gemini_circuit,
         )
     else:
+        gemini_block_reason = (
+            "OPENROUTER_PROVIDER_DOOR_LOCKED_RESERVE"
+            if OPENROUTER_PROVIDER_MODE != OPENROUTER_PROVIDER_ACTIVE
+            else "OPENROUTER_API_KEY is not configured on this bridge"
+        )
         gemini_dispatch = gemini_circuit.guard(
-            lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
+            lambda _packet: (_ for _ in ()).throw(RuntimeError(gemini_block_reason))
         )
 
     def _status_json() -> str:
