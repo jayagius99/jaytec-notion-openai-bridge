@@ -89,6 +89,7 @@ on:
       - 'test_forge_cognition_engine.py'
       - 'forge_strategic_drives.py'
       - 'forge_strategy_engine.py'
+      - 'forge_strategy_benchmark.py'
       - 'test_forge_strategic_drives.py'
       - 'test_forge_strategy_engine.py'
       - 'test_forge_strategic_adversarial.py'
@@ -125,7 +126,7 @@ jobs:
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
             test_worker_output_parsing.py test_idempotency_postgres.py test_dockerfile_packaging.py \
             test_contract_equivalence.py test_server_candidate_probe.py test_engineering_migration_guard.py \
-            autorecovery_supervisor.py autorecovery_runtime.py autorecovery_loop.py jaytec_protocol_portal.py forge_cognition.py forge_cognition_engine.py forge_cognition_benchmark.py forge_strategic_drives.py forge_strategy_engine.py forge_genesis_binding.py \
+            autorecovery_supervisor.py autorecovery_runtime.py autorecovery_loop.py jaytec_protocol_portal.py forge_cognition.py forge_cognition_engine.py forge_cognition_benchmark.py forge_strategic_drives.py forge_strategy_engine.py forge_strategy_benchmark.py forge_genesis_binding.py \
             test_autorecovery_supervisor.py test_autorecovery_runtime.py test_autorecovery_loop.py test_jaytec_watch_command_policy.py test_jaytec_protocol_portal.py test_forge_cognition.py test_forge_cognition_engine.py test_forge_strategic_drives.py test_forge_strategy_engine.py test_forge_strategic_adversarial.py test_forge_genesis_strategic_policy.py test_forge_genesis_binding.py \
             test_manus_adapter.py test_manus_policy.py test_manus_governance.py test_manus_dispatch_contract.py \
             test_relationship_policy.py test_participant_contracts.py test_participant_prompt_injection.py test_manus_policy_integration_guard.py test_manus_runtime.py \
@@ -136,6 +137,8 @@ jobs:
         run: python -m unittest discover -v
       - name: Benchmark Forge cognition working packet
         run: python forge_cognition_benchmark.py
+      - name: Benchmark Forge deterministic strategic selection
+        run: python forge_strategy_benchmark.py
       - name: Docker build smoke (production Dockerfile path)
         run: docker build -t jaytec-bridge-ci:smoke .
       - name: Docker container startup smoke (staging_candidate only; no provider calls)
