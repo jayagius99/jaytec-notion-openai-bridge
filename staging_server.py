@@ -1,5 +1,8 @@
 """STAGING ONLY: unified JAYTEC execute_task_packet MCP surface.
 
+CI contract: the real staging_server.py HTTP entrypoint is smoke-tested before
+changes may merge, so Render startup behavior is not inferred from server.py.
+
 This entrypoint is intentionally independent from production server.py so the
 staging service can boot and validate packets without production provider keys.
 Specialist dispatch fails closed until the corresponding server-side credential
