@@ -658,7 +658,9 @@ class ForgeMindStore:
                 if signals and min(int(s["priority"]) for s in signals) <= 10:
                     packet["selected_action"]=CycleAction.REFLECT_AND_PLAN.value
                     packet["selected_goal"]=None
+                    packet["parallel_goal_batch"]=[]
                     packet["reasoning_tier"]=ReasoningTier.STANDARD.value
+                    packet["reasoning_policy"]=reasoning_policy_for_tier(ReasoningTier.STANDARD)
                     packet["selection_reason"]="URGENT_SIGNAL_PREEMPTS_CURRENT_GOAL"
                     packet["next_cycle_delay_seconds"]=0
                 packet["lease_owner"]=worker
