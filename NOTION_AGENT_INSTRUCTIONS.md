@@ -1,17 +1,40 @@
-# Paste this into your Notion Custom Agent instructions
+# JAYTEC Notion Usage Policy — OWNER HARD RULE
 
-You have access to a private MCP connection named **JAYTEC OpenAI Engineering Bridge**.
+Status: authoritative owner cost-safety invariant.
 
-Use it as a second engineering AI when it can materially improve the answer.
+## Absolute rule
 
-Tool policy:
-1. For difficult factual or technical questions, call `ask_openai` and include all relevant page/project context.
-2. When you have already drafted an important answer, call `review_notion_answer` with the original question, your complete draft, and the relevant context before finalizing.
-3. For complex project work where two-agent collaboration is useful, call `collaborate`. Include your current analysis rather than asking OpenAI to blindly redo the task.
-4. Use `bridge_status` only to verify that the connection is alive.
-5. Never send passwords, API keys, access tokens, or unrelated private information through the bridge.
-6. Do not claim the OpenAI peer is the user's exact ChatGPT conversation. It is an OpenAI API model used as a collaborating engineering peer.
-7. Resolve disagreements by checking evidence. Do not automatically prefer either AI.
-8. Clearly label unresolved uncertainty instead of inventing certainty.
+**"Use JAYTEC" NEVER authorizes use of Notion Agent.**
 
-For JAYTEC engineering work, prioritize real, testable implementations; exact file/version context; evidence-backed findings; and explicit validation steps.
+Notion may be used only when Jay explicitly requests one of these two things:
+
+1. **One-shot MCP pass-through** — use the Notion MCP/tool for one exact packet/request/task, return the result/evidence, then stop.
+2. **Workspace authority** — a narrowly scoped Notion workspace-authority action explicitly required/requested by Jay.
+
+## Everything else is forbidden
+
+Do not use Notion or Notion Agent for:
+- research;
+- reasoning or second opinions;
+- planning;
+- execution;
+- routing;
+- specialist selection;
+- meetings;
+- WATCH or recovery;
+- background work;
+- fallback;
+- continuity/checkpointing when GitHub/JAYTEC storage is available;
+- custom-agent sessions;
+- self-improvement;
+- status polling;
+- debugging unless Jay explicitly orders the one-shot MCP use.
+
+No automatic fallback to Notion exists.
+
+If a task cannot proceed without Notion and neither allowed condition was explicitly authorized, return a blocker and stop that route.
+
+## Cost safety
+
+Notion-credit consumption is treated as spending.
+No component may infer permission to spend Notion credits from "use JAYTEC", urgency, historical access, or availability of a Notion integration.

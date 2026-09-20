@@ -68,13 +68,32 @@ async def _run_middleware(payload):
 
 
 class TestCompatRewrite(unittest.TestCase):
-    def test_ordinary_collaborate_is_unchanged(self):
-        payload = _rpc("ordinary engineering question")
-        self.assertEqual(compat_server.rewrite_jsonrpc_payload(payload), payload)
+    def test_ordinary_collaborate_is_rejected(self):
+        result = compat_server.rewrite_jsonrpc_payload(_rpc("ordinary engineering question"))
+        self.assertEqual(result["params"]["name"], compat_server.REJECTED_TOOL_NAME)
+        self.assertEqual(result["params"]["arguments"], {})
 
     def test_non_collaborate_tool_is_unchanged(self):
         payload = _rpc(compat_server.RELIABILITY_STATUS_COMMAND, name="bridge_status")
         self.assertEqual(compat_server.rewrite_jsonrpc_payload(payload), payload)
+
+    def test_exact_orchestration_status_pass_through_maps_to_native_tool(self):
+        result = compat_server.rewrite_jsonrpc_payload(
+            _rpc(compat_server.ORCHESTRATION_STATUS_COMMAND)
+        )
+        self.assertEqual(result["params"]["name"], "orchestration_status")
+        self.assertEqual(result["params"]["arguments"], {})
+
+    def test_exact_task_packet_pass_through_maps_to_native_tool(self):
+        packet = {"packet_version": "1.0", "idempotency_key": "one-shot-pass"}
+        result = compat_server.rewrite_jsonrpc_payload(
+            _rpc(
+                compat_server.EXECUTE_TASK_PACKET_PREFIX
+                + json.dumps(packet, sort_keys=True)
+            )
+        )
+        self.assertEqual(result["params"]["name"], "execute_task_packet")
+        self.assertEqual(json.loads(result["params"]["arguments"]["packet_json"]), packet)
 
     def test_reliability_status_maps_to_native_tool(self):
         result = compat_server.rewrite_jsonrpc_payload(_rpc(compat_server.RELIABILITY_STATUS_COMMAND))
@@ -167,7 +186,8 @@ class TestCompatRewrite(unittest.TestCase):
     def test_batch_payload_rewrites_only_reserved_call(self):
         payload = [_rpc("ordinary", request_id=1), _rpc(compat_server.RELIABILITY_STATUS_COMMAND, request_id=2)]
         result = compat_server.rewrite_jsonrpc_payload(payload)
-        self.assertEqual(result[0], payload[0])
+        self.assertEqual(result[0]["params"]["name"], compat_server.REJECTED_TOOL_NAME)
+        self.assertEqual(result[0]["params"]["arguments"], {})
         self.assertEqual(result[1]["params"]["name"], "reliability_status")
 
     def test_malformed_json_body_passes_through_for_native_protocol_handling(self):
@@ -184,10 +204,12 @@ class TestCompatRewrite(unittest.TestCase):
         self.assertEqual(lengths, [str(len(capture.body)).encode("ascii")])
         self.assertEqual(sent[0]["status"], 204)
 
-    def test_asgi_middleware_leaves_normal_collaborate_body_byte_identical(self):
+    def test_asgi_middleware_rejects_normal_collaborate(self):
         payload = _rpc("normal collaboration request")
         capture, _ = asyncio.run(_run_middleware(payload))
-        self.assertEqual(json.loads(capture.body), payload)
+        rewritten = json.loads(capture.body)
+        self.assertEqual(rewritten["params"]["name"], compat_server.REJECTED_TOOL_NAME)
+        self.assertEqual(rewritten["params"]["arguments"], {})
 
 
 class TestCompatProcessIsolation(unittest.TestCase):
@@ -227,12 +249,16 @@ for index in range(100):
     assert rewritten["params"]["name"] == "reliability_status"
     ordinary = dict(payload)
     ordinary["params"] = {"name": "collaborate", "arguments": {"task": "ordinary"}}
-    assert compat_server.rewrite_jsonrpc_payload(ordinary) == ordinary
+    ordinary_rewritten = compat_server.rewrite_jsonrpc_payload(ordinary)
+    assert ordinary_rewritten["params"]["name"] == compat_server.REJECTED_TOOL_NAME
+    assert ordinary_rewritten["params"]["arguments"] == {}
 names = {tool.name for tool in asyncio.run(mcp.list_tools())}
-legacy = {"ask_openai", "review_notion_answer", "collaborate", "bridge_status", "orchestration_status", "execute_task_packet"}
+required_control = {"bridge_status", "orchestration_status", "execute_task_packet"}
+forbidden_notion_agent = {"ask_openai", "review_notion_answer", "collaborate"}
 native = {"reliability_status", "run_guardian_lite", "submit_task_packet_durable", "task_packet_status", "record_reliability_incident", "durable_worker_kick"}
 print(json.dumps({
-    "legacy_missing": sorted(legacy - names),
+    "control_missing": sorted(required_control - names),
+    "forbidden_present": sorted(forbidden_notion_agent & names),
     "native_missing": sorted(native - names),
     "router_identity_preserved": before is after,
     "http_app_created": http_app is not None,
@@ -257,7 +283,8 @@ print(json.dumps({
             results.append(json.loads(stdout.strip()))
 
         for result in results:
-            self.assertEqual(result["legacy_missing"], [])
+            self.assertEqual(result["control_missing"], [])
+            self.assertEqual(result["forbidden_present"], [])
             self.assertEqual(result["native_missing"], [])
             self.assertTrue(result["router_identity_preserved"])
             self.assertTrue(result["http_app_created"])

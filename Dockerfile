@@ -5,13 +5,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the full runtime needed by the production entrypoint.
 COPY . ./
 
 ENV PORT=8000
 EXPOSE 8000
 
-# compat_server wraps the unchanged reliable runtime at the HTTP boundary so
-# stale cached clients can reach native reliability tools through collaborate
-# without mutating the legacy router or tool registry.
-CMD ["sh", "-c", "python jaytec_read_startup_selftest.py && exec python compat_server.py"]
+# Production Notion-facing endpoint is a courier only. All direct native tool
+# calls and free-form collaboration are rejected at the HTTP boundary; only
+# exact JAYTEC-authored status/task-packet pass-through commands survive.
+# This Dockerfile change intentionally pins CI to the complete courier stress-test head.
+CMD ["sh", "-c", "python jaytec_read_startup_selftest.py && exec python notion_courier_server.py"]

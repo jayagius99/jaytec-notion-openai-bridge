@@ -22,6 +22,8 @@ DURABLE_SUBMIT_PREFIX = "JAYTEC_DURABLE_SUBMIT_JSON:"
 DURABLE_STATUS_PREFIX = "JAYTEC_DURABLE_STATUS_JSON:"
 DURABLE_WORKER_KICK_COMMAND = "JAYTEC_DURABLE_WORKER_KICK"
 RECORD_INCIDENT_PREFIX = "JAYTEC_RECORD_RELIABILITY_INCIDENT_JSON:"
+ORCHESTRATION_STATUS_COMMAND = legacy_server.LEGACY_ORCHESTRATION_STATUS_TASK
+EXECUTE_TASK_PACKET_PREFIX = legacy_server.LEGACY_EXECUTE_TASK_PACKET_PREFIX
 RESERVED_PREFIXES = (
     "JAYTEC_RELIABILITY_",
     "JAYTEC_DURABLE_",
@@ -72,9 +74,20 @@ def _strict_string(value: Any, *, field: str, default: str = "") -> str:
 def _compat_target(task: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Map reserved legacy collaborate commands to native reliability tools.
 
-    None means the task is not a compatibility command and must pass through
-    unchanged to the original collaborate implementation.
+    None means the task is not an approved compatibility command. Such calls
+    must be rejected; free-form collaborate is permanently disabled.
     """
+
+    if task == ORCHESTRATION_STATUS_COMMAND:
+        return "orchestration_status", {}
+    if task.startswith(EXECUTE_TASK_PACKET_PREFIX):
+        packet_json = task[len(EXECUTE_TASK_PACKET_PREFIX) :].strip()
+        if not packet_json:
+            raise ValueError("task packet is required")
+        value = json.loads(packet_json)
+        if not isinstance(value, Mapping):
+            raise ValueError("task packet must encode a JSON object")
+        return "execute_task_packet", {"packet_json": _json(dict(value))}
 
     if task == RELIABILITY_STATUS_COMMAND:
         return "reliability_status", {}
@@ -179,6 +192,8 @@ def _rewrite_call(payload: Mapping[str, Any]) -> Dict[str, Any]:
         return value
 
     if target is None:
+        params["name"] = REJECTED_TOOL_NAME
+        params["arguments"] = {}
         return value
 
     tool_name, tool_arguments = target
