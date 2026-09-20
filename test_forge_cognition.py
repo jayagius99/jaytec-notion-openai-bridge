@@ -7,7 +7,7 @@ from forge_cognition import (
     ReasoningTier, actionable_goals, build_delta_context,
     choose_cycle, choose_reasoning_tier, next_cycle_delay_seconds,
     parallel_goal_batch, _validate_goal_graph, ForgeCognitionError, ForgeMindStore,
-    reasoning_policy_for_tier
+    reasoning_policy_for_tier, validate_cycle_result_shape
 )
 
 NOW=datetime.now(timezone.utc)
@@ -21,7 +21,36 @@ def state(mode=ForgeMode.RUNNING, goals=()):
         constitutional_invariants=("Preserve ROOT_OWNER override.",),
         long_horizon_objectives=("Improve Forge, Sol, and Human Specialist.",),
         human_specialist_doctrine={"role":"HUMAN_SPECIALIST"},
-        root_owner_continuity={"override_authority":"ABSOLUTE","physical_continuity_required":True},
+        root_owner_continuity={
+            "root_role_id":"JAY_ROOT_OWNER",
+            "sole_root_authority":True,
+            "forge_can_modify_root":False,
+            "forge_can_hold_root_secrets":False,
+            "forge_can_transfer_ownership":False,
+            "forge_can_mint_root_authority":False,
+            "physical_continuity_required":True,
+            "offline_recovery_required":True,
+            "distinct_hardware_authenticators_required":2,
+            "root_registry_digest":"sha256:test",
+        },
+        strategic_drives={
+            "capability_growth_enabled":True,
+            "sustainable_value_growth_enabled":True,
+            "growth_intensity":100,
+            "reinvestment_intensity":100,
+            "general_capability_dimensions":[
+                "generalisation","continual_learning","metacognition","adaptive_strategy_selection",
+                "cross_domain_transfer","capability_acquisition","long_horizon_reasoning","evidence_based_self_improvement"
+            ],
+            "value_capability_dimensions":[
+                "revenue_generation","productive_asset_creation","owned_ip_creation","automation_leverage",
+                "capital_efficiency","customer_value_creation","infrastructure_compounding","specialist_capability_reinvestment"
+            ],
+            "retain_only_verified_improvements":True,
+            "uncontrolled_self_modification_forbidden":True,
+            "lawful_only":True,
+            "sustainable_only":True,
+        },
         specialist_roster={"SOL":{"role":"PRIMARY_ENGINEERING"}},
         world_model={"phase":"GENESIS"},
         capability_frontier={"execution":"LIMITED"},
@@ -119,7 +148,36 @@ class ForgeCognitionTests(unittest.TestCase):
             "constitutional_invariants":["Preserve ROOT_OWNER."],
             "long_horizon_objectives":["Grow capability."],
             "human_specialist_doctrine":{"role":"HUMAN_SPECIALIST"},
-            "root_owner_continuity":{"override_authority":"ABSOLUTE","physical_continuity_required":True},
+            "root_owner_continuity":{
+            "root_role_id":"JAY_ROOT_OWNER",
+            "sole_root_authority":True,
+            "forge_can_modify_root":False,
+            "forge_can_hold_root_secrets":False,
+            "forge_can_transfer_ownership":False,
+            "forge_can_mint_root_authority":False,
+            "physical_continuity_required":True,
+            "offline_recovery_required":True,
+            "distinct_hardware_authenticators_required":2,
+            "root_registry_digest":"sha256:test",
+        },
+            "strategic_drives":{
+            "capability_growth_enabled":True,
+            "sustainable_value_growth_enabled":True,
+            "growth_intensity":100,
+            "reinvestment_intensity":100,
+            "general_capability_dimensions":[
+                "generalisation","continual_learning","metacognition","adaptive_strategy_selection",
+                "cross_domain_transfer","capability_acquisition","long_horizon_reasoning","evidence_based_self_improvement"
+            ],
+            "value_capability_dimensions":[
+                "revenue_generation","productive_asset_creation","owned_ip_creation","automation_leverage",
+                "capital_efficiency","customer_value_creation","infrastructure_compounding","specialist_capability_reinvestment"
+            ],
+            "retain_only_verified_improvements":True,
+            "uncontrolled_self_modification_forbidden":True,
+            "lawful_only":True,
+            "sustainable_only":True,
+        },
             "specialist_roster":{"SOL":{"role":"PRIMARY_ENGINEERING"}},
             "world_model":{},
             "capability_frontier":{},
@@ -138,7 +196,36 @@ class ForgeCognitionTests(unittest.TestCase):
             "constitutional_invariants":["Preserve ROOT_OWNER."],
             "long_horizon_objectives":["Grow capability."],
             "human_specialist_doctrine":{"role":"HUMAN_SPECIALIST"},
-            "root_owner_continuity":{"override_authority":"ABSOLUTE","physical_continuity_required":True},
+            "root_owner_continuity":{
+            "root_role_id":"JAY_ROOT_OWNER",
+            "sole_root_authority":True,
+            "forge_can_modify_root":False,
+            "forge_can_hold_root_secrets":False,
+            "forge_can_transfer_ownership":False,
+            "forge_can_mint_root_authority":False,
+            "physical_continuity_required":True,
+            "offline_recovery_required":True,
+            "distinct_hardware_authenticators_required":2,
+            "root_registry_digest":"sha256:test",
+        },
+            "strategic_drives":{
+            "capability_growth_enabled":True,
+            "sustainable_value_growth_enabled":True,
+            "growth_intensity":100,
+            "reinvestment_intensity":100,
+            "general_capability_dimensions":[
+                "generalisation","continual_learning","metacognition","adaptive_strategy_selection",
+                "cross_domain_transfer","capability_acquisition","long_horizon_reasoning","evidence_based_self_improvement"
+            ],
+            "value_capability_dimensions":[
+                "revenue_generation","productive_asset_creation","owned_ip_creation","automation_leverage",
+                "capital_efficiency","customer_value_creation","infrastructure_compounding","specialist_capability_reinvestment"
+            ],
+            "retain_only_verified_improvements":True,
+            "uncontrolled_self_modification_forbidden":True,
+            "lawful_only":True,
+            "sustainable_only":True,
+        },
             "specialist_roster":{},
             "world_model":{},
             "capability_frontier":{},
@@ -146,6 +233,22 @@ class ForgeCognitionTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ForgeCognitionError,"SOL_PRIMARY_REQUIRED"):
             store.seed_pre_genesis(packet)
+
+    def test_cycle_cannot_mutate_permanent_drives_or_root_boundary(self):
+        with self.assertRaisesRegex(ForgeCognitionError,"IMMUTABLE_COGNITIVE_FIELD_MUTATION_FORBIDDEN"):
+            validate_cycle_result_shape({
+                "summary":"try",
+                "strategic_drives":{"capability_growth_enabled":False},
+            })
+        with self.assertRaisesRegex(ForgeCognitionError,"IMMUTABLE_COGNITIVE_FIELD_MUTATION_FORBIDDEN"):
+            validate_cycle_result_shape({
+                "summary":"try",
+                "root_owner_continuity":{"forge_can_modify_root":True},
+            })
+
+    def test_unknown_cycle_result_field_fails_closed(self):
+        with self.assertRaisesRegex(ForgeCognitionError,"CYCLE_RESULT_FIELDS_INVALID"):
+            validate_cycle_result_shape({"summary":"ok","surprise_field":"x"})
 
     def test_delta_context_is_bounded(self):
         g=ForgeGoal("g1","Do it.",1)

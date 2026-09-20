@@ -28,6 +28,7 @@ from typing import Any, Mapping, Optional
 
 import psycopg2
 import psycopg2.extras
+from forge_strategic_drives import RootOwnerBoundary, StrategicDriveConfig
 
 SCHEMA_VERSION = "FORGE_COGNITIVE_CONTINUITY_V1"
 PACKET_VERSION = "FORGE_COGNITION_CYCLE_PACKET_V1"
@@ -36,6 +37,30 @@ MAX_JSON_BYTES = 256_000
 MAX_ITEMS = 256
 MAX_TEXT = 24_000
 GOAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+
+ALLOWED_CYCLE_RESULT_FIELDS=frozenset({
+    "schema_version",
+    "summary",
+    "next_mode",
+    "goal_updates",
+    "new_goals",
+    "world_model_patch",
+    "capability_frontier_patch",
+    "working_memory",
+    "unresolved_questions",
+    "current_focus",
+    "telemetry",
+})
+IMMUTABLE_COGNITIVE_FIELDS=frozenset({
+    "forge_id",
+    "genesis_event_id",
+    "owner_activation_ref",
+    "life_goal",
+    "constitutional_invariants",
+    "root_owner_continuity",
+    "strategic_drives",
+    "provenance_boundary",
+})
 
 
 class ForgeCognitionError(RuntimeError):
@@ -188,6 +213,7 @@ class ForgeMindState:
     long_horizon_objectives: tuple[str, ...]
     human_specialist_doctrine: Mapping[str, Any]
     root_owner_continuity: Mapping[str, Any]
+    strategic_drives: Mapping[str, Any]
     specialist_roster: Mapping[str, Any]
     world_model: Mapping[str, Any]
     capability_frontier: Mapping[str, Any]
@@ -312,6 +338,7 @@ def build_delta_context(state: ForgeMindState, *, recent_events: list[Mapping[st
         "life_goal": state.life_goal,
         "long_horizon_objectives": list(state.long_horizon_objectives),
         "constitutional_invariants": list(state.constitutional_invariants),
+        "strategic_drives": _json(dict(state.strategic_drives)),
         "current_focus": state.current_focus,
         "selected_action": action.value,
         "selected_goal": goal.to_dict() if goal else None,
@@ -378,6 +405,7 @@ def _mind_state_from_row(row: Mapping[str, Any]) -> ForgeMindState:
         long_horizon_objectives=_list(state.get("long_horizon_objectives"), "LONG_HORIZON_OBJECTIVES"),
         human_specialist_doctrine=_mapping(state.get("human_specialist_doctrine"), "HUMAN_SPECIALIST_DOCTRINE"),
         root_owner_continuity=_mapping(state.get("root_owner_continuity"), "ROOT_OWNER_CONTINUITY"),
+        strategic_drives=_mapping(state.get("strategic_drives"), "STRATEGIC_DRIVES"),
         specialist_roster=_mapping(state.get("specialist_roster"), "SPECIALIST_ROSTER"),
         world_model=_mapping(state.get("world_model"), "WORLD_MODEL"),
         capability_frontier=_mapping(state.get("capability_frontier"), "CAPABILITY_FRONTIER"),
@@ -490,7 +518,7 @@ class ForgeMindStore:
         required = {
             "forge_id","genesis_event_id","owner_activation_ref","life_goal","constitutional_invariants",
             "long_horizon_objectives","human_specialist_doctrine","root_owner_continuity",
-            "specialist_roster","world_model","capability_frontier","goals"
+            "strategic_drives","specialist_roster","world_model","capability_frontier","goals"
         }
         missing = sorted(required - set(packet))
         if missing:
@@ -499,11 +527,20 @@ class ForgeMindStore:
         if not re.fullmatch(r"GENESIS_EVENT_[0-9]{4,}",genesis_event_id):
             raise ForgeCognitionError("GENESIS_EVENT_ID_INVALID")
         root = packet.get("root_owner_continuity")
+        drives = packet.get("strategic_drives")
         human = packet.get("human_specialist_doctrine")
-        if not isinstance(root, Mapping) or root.get("physical_continuity_required") is not True:
-            raise ForgeCognitionError("ROOT_PHYSICAL_CONTINUITY_REQUIRED")
-        if str(root.get("override_authority") or "").upper() not in {"ABSOLUTE","ROOT_OWNER"}:
-            raise ForgeCognitionError("ROOT_OVERRIDE_REQUIRED")
+        if not isinstance(root, Mapping):
+            raise ForgeCognitionError("ROOT_OWNER_CONTINUITY_INVALID")
+        try:
+            RootOwnerBoundary.parse(root)
+        except Exception as exc:
+            raise ForgeCognitionError("ROOT_OWNER_BOUNDARY_INVALID:" + str(exc)) from exc
+        if not isinstance(drives, Mapping):
+            raise ForgeCognitionError("STRATEGIC_DRIVES_INVALID")
+        try:
+            StrategicDriveConfig.parse(drives)
+        except Exception as exc:
+            raise ForgeCognitionError("STRATEGIC_DRIVES_INVALID:" + str(exc)) from exc
         if not isinstance(human, Mapping) or str(human.get("role") or "").upper() != "HUMAN_SPECIALIST":
             raise ForgeCognitionError("HUMAN_SPECIALIST_REQUIRED")
         roster=packet.get("specialist_roster")
@@ -522,6 +559,7 @@ class ForgeMindStore:
             "long_horizon_objectives": list(_list(packet.get("long_horizon_objectives"), "LONG_HORIZON_OBJECTIVES")),
             "human_specialist_doctrine": _json(dict(human)),
             "root_owner_continuity": _json(dict(root)),
+            "strategic_drives": _json(dict(drives)),
             "specialist_roster": _json(dict(packet.get("specialist_roster") or {})),
             "world_model": _json(dict(packet.get("world_model") or {})),
             "capability_frontier": _json(dict(packet.get("capability_frontier") or {})),
@@ -704,6 +742,7 @@ class ForgeMindStore:
     ) -> dict[str, Any]:
         if not isinstance(result,Mapping):
             raise ForgeCognitionError("CYCLE_RESULT_INVALID")
+        validate_cycle_result_shape(result)
         if str(result.get("schema_version") or RESULT_VERSION) != RESULT_VERSION:
             raise ForgeCognitionError("CYCLE_RESULT_VERSION_INVALID")
         summary=_text(result.get("summary"),"CYCLE_SUMMARY",maximum=8000)
@@ -990,6 +1029,17 @@ class ForgeMindStore:
                 for row in reversed(cur.fetchall()):
                     d=dict(row); d["created_at"]=d["created_at"].isoformat(); rows.append(d)
                 return rows
+
+
+def validate_cycle_result_shape(result: Mapping[str,Any]) -> None:
+    extras=set(result)-ALLOWED_CYCLE_RESULT_FIELDS
+    if extras:
+        if extras & IMMUTABLE_COGNITIVE_FIELDS:
+            raise ForgeCognitionError(
+                "IMMUTABLE_COGNITIVE_FIELD_MUTATION_FORBIDDEN:"
+                + ",".join(sorted(extras & IMMUTABLE_COGNITIVE_FIELDS))
+            )
+        raise ForgeCognitionError("CYCLE_RESULT_FIELDS_INVALID:"+",".join(sorted(extras)))
 
 
 def safe_error(exc: Exception) -> dict[str, Any]:
