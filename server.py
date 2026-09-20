@@ -578,7 +578,7 @@ def create_mcp_app() -> FastMCP:
                 sort_keys=True,
             )
         try:
-            result = _manus_runtime().start_task(request_json)
+            result = _manus_runtime().start_task_idempotent(request_json, registry)
         except Exception as exc:
             result = runtime_error_payload(exc)
         return json.dumps(result, ensure_ascii=False, sort_keys=True)
