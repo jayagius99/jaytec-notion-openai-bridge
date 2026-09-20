@@ -24,9 +24,7 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from fastmcp import FastMCP
-from fastmcp.server.auth import MultiAuth, StaticTokenVerifier, require_scopes
-from fastmcp.server.dependencies import get_access_token
-from fastmcp.server.middleware import AuthMiddleware
+from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -109,22 +107,16 @@ FORGE_COGNITION_DATABASE_URL = (
 if not MCP_AUTH_TOKEN:
     raise RuntimeError("MCP_AUTH_TOKEN is required")
 
-static_auth = StaticTokenVerifier(
+auth = StaticTokenVerifier(
     tokens={
         MCP_AUTH_TOKEN: {
             "sub": "jaytec-staging-client",
             "client_id": "jaytec-orchestration-staging",
-            "scopes": ["jaytec:mcp"],
         }
     }
 )
 watch_oidc_auth = GitHubActionsWatchOIDCVerifier()
-auth = MultiAuth(verifiers=[static_auth, watch_oidc_auth])
-mcp = FastMCP(
-    "JAYTEC Orchestration Staging",
-    auth=auth,
-    middleware=[AuthMiddleware(auth=require_scopes("jaytec:mcp"))],
-)
+mcp = FastMCP("JAYTEC Orchestration Staging", auth=auth)
 
 def _autorecovery_components_registered() -> bool:
     return bool(
@@ -363,10 +355,22 @@ def autorecovery_assignment_status(task_id: str) -> str:
 async def jaytec_watch_cycle(request: Request) -> JSONResponse:
     """OIDC-authenticated, WATCH-only ingress for exactly one recovery cycle."""
 
-    access = get_access_token()
+    authorization = str(request.headers.get("authorization") or "").strip()
+    if not authorization.startswith("Bearer "):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_BEARER_REQUIRED"},
+            status_code=401,
+        )
+    raw_token = authorization[7:].strip()
+    if not raw_token or len(raw_token) > 8192:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_BEARER_INVALID"},
+            status_code=401,
+        )
+    access = await watch_oidc_auth.verify_token(raw_token)
     if access is None or "jaytec:watch-cycle" not in set(access.scopes or []):
         return JSONResponse(
-            {"status": "DENIED", "reason": "WATCH_OIDC_SCOPE_REQUIRED"},
+            {"status": "DENIED", "reason": "WATCH_OIDC_IDENTITY_INVALID"},
             status_code=403,
         )
     ok, reason = validate_watch_claims(access.claims)
