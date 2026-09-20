@@ -381,6 +381,64 @@ class ManusLiteRuntime:
             "packet_sha256": packet_digest(packet),
         }
 
+    def start_task_idempotent(
+        self,
+        request_json: str,
+        registry: Any,
+    ) -> dict[str, Any]:
+        """Start exactly once per normalized task id/request within registry TTL."""
+        key, digest = start_request_identity(request_json)
+        try:
+            existing = registry.lookup(key, digest)
+        except Exception as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise ManusRuntimeError("MANUS_RUNTIME_CONFLICTING_DUPLICATE") from exc
+            raise
+
+        if isinstance(existing, Mapping):
+            replay = dict(existing)
+            replay["idempotent_replay"] = True
+            return replay
+
+        starting = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "STARTING",
+            "task_id": key.split(":", 1)[1],
+            "requested_profile": "lite",
+        }
+        try:
+            claimed = registry.claim_once(key, digest, starting)
+        except Exception as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise ManusRuntimeError("MANUS_RUNTIME_CONFLICTING_DUPLICATE") from exc
+            raise
+
+        if not claimed:
+            try:
+                raced = registry.lookup(key, digest)
+            except Exception as exc:
+                if str(exc) == "CONFLICTING_DUPLICATE":
+                    raise ManusRuntimeError("MANUS_RUNTIME_CONFLICTING_DUPLICATE") from exc
+                raise
+            if not isinstance(raced, Mapping):
+                raise ManusRuntimeError("MANUS_RUNTIME_IDEMPOTENCY_RACE_UNRESOLVED")
+            replay = dict(raced)
+            replay["idempotent_replay"] = True
+            return replay
+
+        try:
+            result = self.start_task(request_json)
+        except Exception as exc:
+            result = runtime_error_payload(exc)
+
+        try:
+            registry.store(key, digest, result)
+        except Exception as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise ManusRuntimeError("MANUS_RUNTIME_CONFLICTING_DUPLICATE") from exc
+            raise
+        return dict(result)
+
     def task_status(self, provider_task_id: str) -> dict[str, Any]:
         task_id = str(provider_task_id or "").strip()
         if not task_id or len(task_id) > MAX_STATUS_TASK_ID:
