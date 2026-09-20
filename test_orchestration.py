@@ -41,6 +41,31 @@ def base_packet(now=None):
     }
 
 
+class TestExecutionRegistryReadOnlyPeek(unittest.TestCase):
+    def test_peek_returns_existing_result_without_hash_or_mutation(self):
+        now = datetime.now(timezone.utc)
+        reg = ExecutionRegistry(ttl_seconds=60)
+        reg.store("manus:test", "hash-a", {"status": "FAILED_CLOSED", "error": "SAFE_CODE"}, now=now)
+        out = reg.peek_result("manus:test", now=now)
+        self.assertEqual({"status": "FAILED_CLOSED", "error": "SAFE_CODE"}, out)
+        out["error"] = "changed"
+        self.assertEqual(
+            {"status": "FAILED_CLOSED", "error": "SAFE_CODE"},
+            reg.peek_result("manus:test", now=now),
+        )
+
+    def test_peek_expired_record_is_invisible_but_not_rewritten(self):
+        now = datetime.now(timezone.utc)
+        reg = ExecutionRegistry(ttl_seconds=1)
+        reg.store("manus:test-expired", "hash-a", {"status": "FAILED_CLOSED"}, now=now)
+        self.assertIsNone(
+            reg.peek_result(
+                "manus:test-expired",
+                now=now + timedelta(seconds=2),
+            )
+        )
+
+
 class TestOrchestration(unittest.TestCase):
     def test_valid(self):
         self.assertTrue(validate_packet(base_packet()).ok)

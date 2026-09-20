@@ -74,6 +74,37 @@ class PostgresExecutionRegistry:
                 )
                 return int(cur.rowcount or 0)
 
+    def peek_result(
+        self,
+        key: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Read one unexpired stored result without requiring or changing its hash."""
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        cutoff = current.timestamp() - float(self.ttl_seconds)
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT result_json, created_at
+                    FROM execution_registry
+                    WHERE idempotency_key = %s
+                    """,
+                    (key,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                created_at = row.get("created_at")
+                if created_at is None:
+                    raise PostgresIdempotencyError("missing_created_at")
+                if created_at.timestamp() < cutoff:
+                    return None
+                import json
+
+                return copy.deepcopy(json.loads(row["result_json"]))
+
     def lookup(self, key: str, packet_hash: str, *, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         cutoff = current.timestamp() - float(self.ttl_seconds)
