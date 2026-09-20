@@ -241,6 +241,36 @@ def choose_reasoning_tier(goal: Optional[ForgeGoal], *, ambiguity: bool = False,
     return ReasoningTier.STANDARD
 
 
+def reasoning_policy_for_tier(tier: ReasoningTier) -> dict[str, Any]:
+    policies={
+        ReasoningTier.REFLEX:{
+            "model_call":False,
+            "effort_hint":"none",
+            "latency_class":"local",
+            "context_scope":"minimal",
+        },
+        ReasoningTier.FAST:{
+            "model_call":True,
+            "effort_hint":"low",
+            "latency_class":"interactive",
+            "context_scope":"focused",
+        },
+        ReasoningTier.STANDARD:{
+            "model_call":True,
+            "effort_hint":"medium",
+            "latency_class":"normal",
+            "context_scope":"working_set",
+        },
+        ReasoningTier.DEEP:{
+            "model_call":True,
+            "effort_hint":"high",
+            "latency_class":"deliberate",
+            "context_scope":"expanded_on_demand",
+        },
+    }
+    return dict(policies[tier])
+
+
 def next_cycle_delay_seconds(action: CycleAction, tier: ReasoningTier) -> int | None:
     """Scheduling hint; liveness WATCH remains separate from cognition cadence."""
     if action is CycleAction.HOLD:
@@ -283,6 +313,7 @@ def build_delta_context(state: ForgeMindState, *, recent_events: list[Mapping[st
         "selected_action": action.value,
         "selected_goal": goal.to_dict() if goal else None,
         "reasoning_tier": tier.value,
+        "reasoning_policy": reasoning_policy_for_tier(tier),
         "selection_reason": reason,
         "world_model_digest": digest(dict(state.world_model)),
         "capability_frontier_digest": digest(dict(state.capability_frontier)),
