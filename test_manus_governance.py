@@ -192,7 +192,9 @@ class ManusGovernanceTests(unittest.TestCase):
     def test_directive_contains_nonnegotiable_boundaries(self):
         text = render_directive()
         for phrase in (
-            "Manus may evolve Manus",
+            "Manus Home is a subordinate JAYTEC-owned Manus layer",
+            "JAYTEC / active owner-authorized work comes first",
+            "Growth/improvement beyond that minimum is spare-capacity work only",
             "MUST NOT edit",
             "The Notion Agent is NOT JAYTEC",
             '"JAYTEC" always means the JAYTEC system/control',
