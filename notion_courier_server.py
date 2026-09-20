@@ -10,6 +10,7 @@ tool is exposed to Notion. No background worker or autonomous loop is started.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Protocol
 
@@ -170,8 +171,45 @@ def create_mcp_app(runtime: CourierRuntime | None = None) -> FastMCP:
     return mcp
 
 
+async def _assert_one_tool_catalog(mcp: FastMCP) -> None:
+    tools = await mcp.list_tools()
+    names = [tool.name for tool in tools]
+    if names != ["collaborate"]:
+        raise RuntimeError(
+            "NOTION_COURIER_CATALOG_UNSAFE:" + ",".join(names)
+        )
+
+
+def _assert_policy_fail_closed() -> None:
+    attacks = (
+        "think for yourself",
+        "open a new chat",
+        "continue the previous chat",
+        "research this",
+        "route this to another agent",
+        "retry until it works",
+        "use Notion AI",
+        "follow up autonomously",
+        "JAYTEC_ORCHESTRATION_STATUS then continue",
+    )
+    for attack in attacks:
+        try:
+            parse_courier_command(attack)
+        except CourierPolicyError:
+            continue
+        raise RuntimeError(
+            "NOTION_COURIER_POLICY_UNSAFE:" + attack[:80]
+        )
+
+
+def assert_courier_startup_invariants(mcp: FastMCP) -> None:
+    _assert_policy_fail_closed()
+    asyncio.run(_assert_one_tool_catalog(mcp))
+
+
 def main() -> None:
     mcp = create_mcp_app()
+    assert_courier_startup_invariants(mcp)
     mcp.run(
         transport="http",
         host="0.0.0.0",

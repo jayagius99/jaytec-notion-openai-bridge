@@ -176,5 +176,21 @@ class TestNotionCourierServer(unittest.TestCase):
         self.assertIn("never", description)
 
 
+    def test_startup_invariants_accept_exact_one_tool_catalog(self):
+        app, _ = self._make_app()
+        s.assert_courier_startup_invariants(app)
+
+    def test_startup_invariants_reject_extra_tool_catalog(self):
+        app, _ = self._make_app()
+
+        @app.tool
+        def forbidden_extra_tool() -> str:
+            return "no"
+
+        with self.assertRaisesRegex(RuntimeError, "NOTION_COURIER_CATALOG_UNSAFE"):
+            s.assert_courier_startup_invariants(app)
+
+
+
 if __name__ == "__main__":
     unittest.main()
