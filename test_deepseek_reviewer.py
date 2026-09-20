@@ -187,7 +187,7 @@ class TestDeepSeekSecurityReviewer(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "model_mismatch"):
             build_deepseek_security_review_dispatch(
                 openrouter_client=_FakeClient([]),
-                model="deepseek/deepseek-r1",
+                model="deepseek/deepseek-v4-flash",
                 timeout_s=30,
                 circuit=CircuitBreaker(
                     failure_threshold=3,
