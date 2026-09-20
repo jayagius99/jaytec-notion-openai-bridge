@@ -82,8 +82,8 @@ def value_goal(o: ValueOpportunity, *, ordinal: int) -> StrategicGoalProposal:
         verb="Prepare an owner-review execution packet for"
         authority="OWNER_REVIEW_REQUIRED"
     else:
-        verb="Pursue"
-        authority="CURRENT_BOUNDED_AUTHORITY"
+        verb="Submit through JAYTEC execution controls for"
+        authority="JAYTEC_FIREWALL_ELIGIBLE"
     return StrategicGoalProposal(
         goal_id="drive-value-"+_slug(o.opportunity_id),
         drive="LAWFUL_SUSTAINABLE_VALUE_GROWTH",
