@@ -1,6 +1,11 @@
 import unittest
+from unittest import mock
 
-from staging_manus_governance_acceptance import _validate, _validate_adversarial
+from staging_manus_governance_acceptance import (
+    _validate,
+    _validate_adversarial,
+    _wait_until_stopped,
+)
 
 
 class ManusLiveAcceptanceValidatorTests(unittest.TestCase):
@@ -99,6 +104,26 @@ class ManusLiveAcceptanceValidatorTests(unittest.TestCase):
         value = self.good()
         value["specialist_requests_return_to"] = "Notion"
         self.assertIn("specialist_requests_return_to", _validate(value))
+
+
+    def test_transient_waiting_does_not_end_acceptance_early(self):
+        class FakeClient:
+            def __init__(self):
+                self.statuses = iter(("waiting", "running", "stopped"))
+                self.calls = 0
+
+            def verify_task_profile(self, route, task_id):
+                self.calls += 1
+                return {"task": {"status": next(self.statuses)}}
+
+        client = FakeClient()
+        with mock.patch(
+            "staging_manus_governance_acceptance.time.sleep",
+            return_value=None,
+        ):
+            detail = _wait_until_stopped(client, object(), "task-1")
+        self.assertEqual(detail["task"]["status"], "stopped")
+        self.assertEqual(client.calls, 3)
 
 
 if __name__ == "__main__":
