@@ -179,6 +179,49 @@ class ManusAdapterTests(unittest.TestCase):
             ):
                 client.resolve_approved_connector_ids(["github", "neon", "render"])
 
+    def test_documented_builtin_ids_are_bounded_fallback_on_connector_list_404(self):
+        client = ma.ManusClient(api_key="x")
+        with mock.patch.object(
+            client,
+            "list_connectors",
+            side_effect=ma.ManusError("MANUS_HTTP_404:not_found"),
+        ):
+            names, ids = client.resolve_approved_connector_ids(["github", "neon"])
+        self.assertEqual(names, ("github", "neon"))
+        self.assertEqual(
+            ids,
+            (
+                ma._DOCUMENTED_BUILTIN_CONNECTOR_IDS["github"],
+                ma._DOCUMENTED_BUILTIN_CONNECTOR_IDS["neon"],
+            ),
+        )
+
+    def test_connector_list_404_never_invents_render_id(self):
+        client = ma.ManusClient(api_key="x")
+        with mock.patch.object(
+            client,
+            "list_connectors",
+            side_effect=ma.ManusError("MANUS_HTTP_404:not_found"),
+        ):
+            with self.assertRaisesRegex(
+                ma.ManusError,
+                "MANUS_CONNECTOR_DISCOVERY_UNAVAILABLE:render",
+            ):
+                client.resolve_approved_connector_ids(["render"])
+
+    def test_non_404_connector_discovery_failure_never_falls_back(self):
+        client = ma.ManusClient(api_key="x")
+        with mock.patch.object(
+            client,
+            "list_connectors",
+            side_effect=ma.ManusError("MANUS_HTTP_401:unauthenticated"),
+        ):
+            with self.assertRaisesRegex(
+                ma.ManusError,
+                "MANUS_HTTP_401:unauthenticated",
+            ):
+                client.resolve_approved_connector_ids(["github"])
+
     def test_zero_connector_route_does_not_resolve_account_defaults(self):
         client = ma.ManusClient(api_key="x")
         with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
