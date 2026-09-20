@@ -102,6 +102,67 @@ class PostgresExecutionRegistry:
 
                 return copy.deepcopy(json.loads(row["result_json"]))
 
+    def claim_once(
+        self,
+        key: str,
+        packet_hash: str,
+        result: Mapping[str, Any],
+        *,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Atomically claim a key once within TTL.
+
+        Same-key replay returns False even when the hash is identical.
+        Expired rows may be replaced.
+        """
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        cutoff = current.timestamp() - float(self.ttl_seconds)
+        import json
+
+        payload = json.dumps(dict(result), ensure_ascii=False, sort_keys=True)
+        lock_id = _advisory_lock_id(key)
+
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (lock_id,))
+                cur.execute(
+                    """
+                    SELECT created_at
+                    FROM execution_registry
+                    WHERE idempotency_key = %s
+                    """,
+                    (key,),
+                )
+                row = cur.fetchone()
+                if row is not None:
+                    created_at = row.get("created_at")
+                    if created_at is None:
+                        raise PostgresIdempotencyError("missing_created_at")
+                    if created_at.timestamp() >= cutoff:
+                        return False
+                    cur.execute(
+                        """
+                        UPDATE execution_registry
+                        SET packet_hash = %s,
+                            result_json = %s,
+                            created_at = %s
+                        WHERE idempotency_key = %s
+                        """,
+                        (packet_hash, payload, current, key),
+                    )
+                    return True
+
+                cur.execute(
+                    """
+                    INSERT INTO execution_registry
+                        (idempotency_key, packet_hash, result_json, created_at)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (key, packet_hash, payload, current),
+                )
+                return True
+
+
     def store(
         self,
         key: str,
