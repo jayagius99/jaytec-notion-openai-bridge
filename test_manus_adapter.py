@@ -250,15 +250,13 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertEqual(route.connector_permissions, (("github", "write"),))
         self.assertEqual(route.connector_ids, ("gh",))
 
-    def test_prepare_route_cannot_select_paid_profile(self):
+    def test_prepare_route_cannot_select_paid_profile_before_network(self):
         client = ma.ManusClient(api_key="x")
-        with mock.patch.object(ma, "JAYTEC_MANUS_PROJECT_ID", ""), mock.patch.object(
-            client, "resolve_manus_project", return_value=("project-manus", "MANUS")
-        ), mock.patch.object(
-            client,
-            "resolve_approved_connector_ids",
-            return_value=(("github", "neon", "render"), ("gh", "neon", "render")),
-        ):
+        with mock.patch.object(
+            client, "resolve_manus_project"
+        ) as project_lookup, mock.patch.object(
+            client, "resolve_approved_connector_ids"
+        ) as connector_lookup:
             with self.assertRaisesRegex(
                 ManusProfilePolicyError, "MANUS_PAID_PROFILE_BLOCKED"
             ):
@@ -268,6 +266,50 @@ class ManusAdapterTests(unittest.TestCase):
                     current_task_authorized=True,
                     requested_profile="standard",
                 )
+        project_lookup.assert_not_called()
+        connector_lookup.assert_not_called()
+
+
+    def test_unauthorized_task_fails_before_any_manus_lookup(self):
+        client = ma.ManusClient(api_key="x")
+        with mock.patch.object(
+            client, "resolve_manus_project"
+        ) as project_lookup, mock.patch.object(
+            client, "resolve_approved_connector_ids"
+        ) as connector_lookup:
+            with self.assertRaisesRegex(
+                Exception,
+                "MANUS_ACTION_NOT_AUTHORIZED",
+            ):
+                client.prepare_route(
+                    scope="jaytec_delegated_task",
+                    authority_source="chatgpt",
+                    current_task_authorized=False,
+                    requested_profile="lite",
+                )
+        project_lookup.assert_not_called()
+        connector_lookup.assert_not_called()
+
+    def test_blocked_connector_fails_before_any_manus_lookup(self):
+        client = ma.ManusClient(api_key="x")
+        with mock.patch.object(
+            client, "resolve_manus_project"
+        ) as project_lookup, mock.patch.object(
+            client, "resolve_approved_connector_ids"
+        ) as connector_lookup:
+            with self.assertRaisesRegex(
+                ma.ManusError,
+                "MANUS_CONNECTOR_NOT_ALLOWLISTED",
+            ):
+                client.prepare_route(
+                    scope="jaytec_delegated_task",
+                    authority_source="chatgpt",
+                    current_task_authorized=True,
+                    requested_profile="lite",
+                    requested_connector_purposes={"notion": "read"},
+                )
+        project_lookup.assert_not_called()
+        connector_lookup.assert_not_called()
 
     def test_governed_message_always_injects_role_and_directive(self):
         message = ma.ManusClient._governed_message(_route(), "Return a test result.")
