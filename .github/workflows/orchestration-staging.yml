@@ -6,6 +6,7 @@ on:
       - 'staging/**'
   pull_request:
     paths:
+      - '.github/workflows/orchestration-staging.yml'
       - 'orchestration.py'
       - 'circuit_breaker.py'
       - 'worker_json.py'
@@ -151,3 +152,36 @@ jobs:
             -e GEMINI_MODEL=google/gemini-3.1-pro-preview \
             jaytec-bridge-ci:smoke \
             python -c "import os, importlib; os.environ['RUNTIME_MODE']='staging_candidate'; os.environ['MCP_AUTH_TOKEN']='test'; os.environ['OPENAI_API_KEY']='test'; os.environ['CODEX_MODEL']='gpt-5.6-sol'; os.environ['GEMINI_MODEL']='google/gemini-3.1-pro-preview'; import server; importlib.reload(server); server.create_mcp_app(); print('container_startup_ok')"
+
+      - name: Real staging_server HTTP entrypoint smoke (locked providers)
+        shell: bash
+        run: |
+          set -euo pipefail
+          log_file="$(mktemp)"
+          set +e
+          timeout 15s env \
+            PYTHONUNBUFFERED=1 \
+            PORT=18080 \
+            MCP_AUTH_TOKEN=test \
+            JAYTEC_MCP_ALLOWED_HOSTS_JSON='["127.0.0.1","localhost","testserver"]' \
+            JAYTEC_MCP_ALLOWED_ORIGINS_JSON='[]' \
+            ENGINEERING_PROVIDER_MODE=LOCKED_RESERVE \
+            OPENROUTER_PROVIDER_MODE=LOCKED_RESERVE \
+            JAYTEC_READ_BOOTSTRAP_ENABLED=0 \
+            JAYTEC_G1_INDEPENDENT_REVIEW_SERVER_ONESHOT=0 \
+            JAYTEC_GOD_PROJECT_REVIEW_ENABLED=0 \
+            JAYTEC_DEEPSEEK_SECURITY_REVIEW_ENABLED=0 \
+            JAYTEC_DEEPSEEK_TRANSPORT_MATRIX_ENABLED=0 \
+            JAYTEC_DEEPSEEK_ROUTE_VISIBILITY_ENABLED=0 \
+            JAYTEC_AUTORECOVERY_ENABLED=0 \
+            JAYTEC_AUTORECOVERY_SCHEMA_READY=0 \
+            python staging_server.py >"$log_file" 2>&1
+          rc=$?
+          set -e
+          cat "$log_file"
+          if [ "$rc" -ne 124 ]; then
+            echo "staging_server exited before bounded smoke timeout: rc=$rc" >&2
+            exit "$rc"
+          fi
+          grep -Eq 'Application startup complete|Uvicorn running|Started server process' "$log_file"
+          echo "staging_server_entrypoint_smoke_ok"
