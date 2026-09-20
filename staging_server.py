@@ -218,7 +218,7 @@ def _manus_runtime() -> ManusLiteRuntime:
 def manus_start_task(request_json: str) -> str:
     """Start one bounded JAYTEC-owned Manus task. Profile is permanently Lite."""
     try:
-        result = _manus_runtime().start_task(request_json)
+        result = _manus_runtime().start_task_idempotent(request_json, REGISTRY)
     except Exception as exc:
         result = runtime_error_payload(exc)
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
