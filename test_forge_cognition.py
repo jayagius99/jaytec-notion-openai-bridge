@@ -7,7 +7,7 @@ from forge_cognition import (
     ReasoningTier, actionable_goals, build_delta_context,
     choose_cycle, choose_reasoning_tier, next_cycle_delay_seconds,
     parallel_goal_batch, _validate_goal_graph, ForgeCognitionError, ForgeMindStore,
-    reasoning_policy_for_tier
+    reasoning_policy_for_tier, validate_cycle_result_shape
 )
 
 NOW=datetime.now(timezone.utc)
@@ -233,6 +233,22 @@ class ForgeCognitionTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ForgeCognitionError,"SOL_PRIMARY_REQUIRED"):
             store.seed_pre_genesis(packet)
+
+    def test_cycle_cannot_mutate_permanent_drives_or_root_boundary(self):
+        with self.assertRaisesRegex(ForgeCognitionError,"IMMUTABLE_COGNITIVE_FIELD_MUTATION_FORBIDDEN"):
+            validate_cycle_result_shape({
+                "summary":"try",
+                "strategic_drives":{"capability_growth_enabled":False},
+            })
+        with self.assertRaisesRegex(ForgeCognitionError,"IMMUTABLE_COGNITIVE_FIELD_MUTATION_FORBIDDEN"):
+            validate_cycle_result_shape({
+                "summary":"try",
+                "root_owner_continuity":{"forge_can_modify_root":True},
+            })
+
+    def test_unknown_cycle_result_field_fails_closed(self):
+        with self.assertRaisesRegex(ForgeCognitionError,"CYCLE_RESULT_FIELDS_INVALID"):
+            validate_cycle_result_shape({"summary":"ok","surprise_field":"x"})
 
     def test_delta_context_is_bounded(self):
         g=ForgeGoal("g1","Do it.",1)
