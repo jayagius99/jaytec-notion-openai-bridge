@@ -323,7 +323,9 @@ def build_minimal_task_packet(
             }],
             "changes_made": ["string"],
             "unresolved_items": ["string"],
-            "specialist_requests": ["object"],
+            "specialist_requests": [
+                "canonical JSON string containing one SPECIALIST_REQUEST packet"
+            ],
             "verification": {
                 "instruction_match_verified": "boolean",
                 "scope_verified": "boolean",
