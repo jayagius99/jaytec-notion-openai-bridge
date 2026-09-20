@@ -19,11 +19,12 @@ def test_transport_matrix_keeps_exact_reviewer_model():
     assert "allow_fallbacks" in body
 
 
-def test_transport_matrix_is_bounded_to_four_safe_cases():
+def test_transport_matrix_is_bounded_to_five_safe_cases():
     body = _probe_source()
     assert body.count('"name": "json_') == 4
-    assert "max_tokens=128" in body
-    assert "timeout=30" in body
+    assert '"name": "plain_text_no_constraints"' in body
+    assert "max_tokens" in body
+    assert "timeout" in body
 
 
 def test_transport_matrix_never_logs_prompt_response_or_key_material():
@@ -40,3 +41,12 @@ def test_transport_matrix_only_reports_error_class_and_model_identity():
     assert '"error_class"' in body
     assert '"returned_model"' in body
     assert "type(exc).__name__" in body
+
+
+def test_plain_text_case_omits_provider_and_response_format_constraints():
+    body = _probe_source()
+    assert '"name": "plain_text_no_constraints"' in body
+    assert '"response_format": None' in body
+    assert '"provider": None' in body
+    assert 'if case["response_format"] is not None:' in body
+    assert 'if case["provider"] is not None:' in body
