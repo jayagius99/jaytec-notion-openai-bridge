@@ -138,6 +138,16 @@ class TestNotionCourierPolicy(unittest.TestCase):
         self.assertFalse(data["retry"])
         self.assertEqual(data["agent_action"], "STOP")
 
+    def test_completion_payload_requires_verbatim_return_and_stop(self):
+        raw = '{"answer":"exact"}'
+        data = json.loads(p.completion_payload("status", raw))
+        self.assertEqual(data["courier_status"], "COMPLETE")
+        self.assertEqual(data["result"], raw)
+        self.assertEqual(data["result_handling"], "RETURN_RESULT_VERBATIM")
+        self.assertEqual(data["agent_action"], "RETURN_TO_CALLER_AND_STOP")
+        self.assertFalse(data["retry"])
+        self.assertFalse(data["follow_up"])
+
 
 class TestNotionCourierServer(unittest.TestCase):
     def _make_app(self):
