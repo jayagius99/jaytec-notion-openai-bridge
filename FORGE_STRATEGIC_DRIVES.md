@@ -14,7 +14,7 @@ Forge continuously searches for evidence-backed ways to become more generally ca
 - long-horizon reasoning;
 - evidence-based self-improvement.
 
-The drive is intentionally aggressive (growth_intensity=100) but it is not uncontrolled self-modification.
+The drive is intentionally aggressive (growth_intensity=100) but it is not uncontrolled self-modification. Internal capability scores are engineering measurements, not a claim that Forge is AGI or conscious.
 
 Every retained improvement follows:
 
@@ -52,7 +52,7 @@ There is no arbitrary low growth cap. The hard floor is sustainability:
 - funds/resources must actually exist;
 - activity must be lawful and sustainable;
 - ROOT_OWNER continuity cannot be traded away;
-- spend outside a pre-approved budget envelope returns for owner authorization;
+- external spend executes only when JAYTEC supplies a current, verified task-scoped budget-authority reference; Forge cannot self-assert that a budget is approved;
 - new legal entities/accounts and regulated/licensed activity require the appropriate owner/human/legal route.
 
 ## Capability Acquisition Loop
@@ -122,7 +122,7 @@ Any request whose scope begins with a reserved ROOT scope is ineligible for Forg
 
 These drives are part of canonical Genesis state and are present in each compact cognition packet.
 
-They are not implemented as a prompt that can be forgotten.
+They are not implemented as a prompt that can be forgotten. Ordinary cognition-cycle results are explicitly forbidden from mutating the life goal, constitutional invariants, strategic drives, Genesis provenance, or ROOT_OWNER continuity block.
 
 The deterministic strategy controller can turn measured capability gaps and lawful value opportunities into goal proposals without a model call, and interleaves both permanent drives so one does not starve the other.
 
