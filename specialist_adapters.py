@@ -305,8 +305,23 @@ def build_codex_dispatch(
                 retry_after=details.get("retry_after"),
                 details=details,
             ) from exc
+        returned_provider_model = _provider_model(response)
+        if returned_provider_model is None:
+            raise RuntimeError(
+                "engineering_provider_response: provider model identity unavailable"
+            )
+        require_exact_model(
+            returned_provider_model,
+            codex_model,
+            context="engineering_provider_response",
+        )
         result = json_object(response.output_text or "")
         result.setdefault("model", codex_model)
+        result["bridge_diagnostics"] = {
+            "provider_model": returned_provider_model,
+            "model_identity_observed": True,
+            "provider_fallbacks": False,
+        }
         return result
 
     return circuit.guard(_dispatch)
@@ -422,12 +437,15 @@ def build_gemini_dispatch(
             raise RuntimeError("gemini_no_choices")
 
         returned_provider_model = _provider_model(response)
-        if returned_provider_model is not None:
-            require_exact_model(
-                returned_provider_model,
-                gemini_model,
-                context="gemini_provider_response",
+        if returned_provider_model is None:
+            raise RuntimeError(
+                "gemini_provider_response: provider model identity unavailable"
             )
+        require_exact_model(
+            returned_provider_model,
+            gemini_model,
+            context="gemini_provider_response",
+        )
 
         choice = response.choices[0]
         finish_reason = _finish_reason(choice)
