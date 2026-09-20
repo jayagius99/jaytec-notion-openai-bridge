@@ -489,10 +489,10 @@ class AutoRecoveryExecutionTests(unittest.TestCase):
         refreshed = supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW)
         self.assertFalse(refreshed)
         decision = supervisor.tick("GOD-PREP-0017", now=NOW)
-        self.assertEqual(decision.action, SupervisorAction.RECOVER)
+        self.assertEqual(decision.action, SupervisorAction.RECOVERY_FAILED)
         self.assertEqual(
             decision.reason,
-            "CALLABLE_WORKER_FAILED_CLOSED_RECOVERABLE",
+            "RECOVERY_HEALTH_VERIFY_FAILED",
         )
         self.assertEqual(len(invoker.calls), 1)
         self.assertEqual(store.state.stop_reason, StopReason.STALLED_RECOVERABLE)
