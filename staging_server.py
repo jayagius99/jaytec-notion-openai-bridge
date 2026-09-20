@@ -586,6 +586,12 @@ def _run_deepseek_transport_matrix_probe() -> None:
             "provider": {"allow_fallbacks": False},
             "reasoning": None,
         },
+        {
+            "name": "plain_text_no_constraints",
+            "response_format": None,
+            "provider": None,
+            "reasoning": None,
+        },
     ]
 
     results = []
@@ -608,27 +614,32 @@ def _run_deepseek_transport_matrix_probe() -> None:
                 "returned_model": None,
             }
             try:
-                extra_body = {"provider": case["provider"]}
-                if case["reasoning"] is not None:
-                    extra_body["reasoning"] = case["reasoning"]
-                response = OPENROUTER_CLIENT.chat.completions.create(
-                    model=DEEPSEEK_REVIEWER_MODEL,
-                    messages=[
+                request_kwargs = {
+                    "model": DEEPSEEK_REVIEWER_MODEL,
+                    "messages": [
                         {
                             "role": "user",
                             "content": (
-                                "Return exactly one JSON object matching the requested schema. "
-                                "Set ok to true."
+                                "Return exactly one JSON object with one key named ok set to true. "
+                                "Return no markdown and no text outside the JSON object."
                             ),
                         }
                     ],
-                    temperature=0,
-                    max_tokens=128,
-                    timeout=30,
-                    stream=False,
-                    response_format=case["response_format"],
-                    extra_body=extra_body,
-                )
+                    "temperature": 0,
+                    "max_tokens": 128,
+                    "timeout": 30,
+                    "stream": False,
+                }
+                if case["response_format"] is not None:
+                    request_kwargs["response_format"] = case["response_format"]
+                extra_body = {}
+                if case["provider"] is not None:
+                    extra_body["provider"] = case["provider"]
+                if case["reasoning"] is not None:
+                    extra_body["reasoning"] = case["reasoning"]
+                if extra_body:
+                    request_kwargs["extra_body"] = extra_body
+                response = OPENROUTER_CLIENT.chat.completions.create(**request_kwargs)
                 returned_model = getattr(response, "model", None)
                 item["returned_model"] = returned_model
                 if returned_model not in (None, DEEPSEEK_REVIEWER_MODEL):
