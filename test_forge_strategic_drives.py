@@ -13,12 +13,17 @@ from forge_strategic_drives import (
     RootOwnerBoundary,
     StrategicDriveError,
     ValueOpportunity,
+    LearningEvidence,
+    ReinvestmentTarget,
+    build_aggressive_reinvestment_plan,
     build_strategic_drive_packet,
     evaluate_improvement,
     evaluate_value_opportunity,
     rank_capability_gaps,
     rank_value_opportunities,
     touches_root_boundary,
+    learning_update_is_verified,
+    reinvestment_target_decision,
 )
 
 def root():
@@ -152,6 +157,56 @@ class StrategicDriveTests(unittest.TestCase):
             "known_obligations_covered":True,"funds_or_resources_available":True,
         })
         self.assertEqual(evaluate_value_opportunity(o),OpportunityDecision.OWNER_REVIEW)
+
+    def test_preapproved_budget_can_execute_lawful_spend(self):
+        o=ValueOpportunity.parse({
+            "opportunity_id":"approved-tool","mechanism":"buy approved compute","expected_value_score":75,"capability_synergy":95,
+            "capital_efficiency":80,"time_to_value_score":90,"evidence_confidence":0.9,
+            "downside_risk":10,"ongoing_burden":10,"lawful":True,"sustainable":True,
+            "deceptive":False,"unauthorized_access":False,"regulated_or_licensed_activity":False,
+            "required_scopes":["forge:compute"],"requires_external_spend":True,"within_preapproved_budget":True,
+            "requires_new_legal_entity_or_account":False,"known_obligations_covered":True,"funds_or_resources_available":True,
+        })
+        self.assertEqual(evaluate_value_opportunity(o),OpportunityDecision.EXECUTE)
+
+    def test_continual_learning_requires_transfer_and_retention(self):
+        good=LearningEvidence.parse({
+            "evaluation_id":"learn-1","executed":True,
+            "source_before":0.60,"source_after":0.75,
+            "transfer_before":0.40,"transfer_after":0.55,
+            "retention_before":0.80,"retention_after":0.79,
+            "critical_regressions":[],
+        })
+        bad=LearningEvidence.parse({
+            "evaluation_id":"learn-2","executed":True,
+            "source_before":0.60,"source_after":0.80,
+            "transfer_before":0.40,"transfer_after":0.39,
+            "retention_before":0.80,"retention_after":0.80,
+            "critical_regressions":[],
+        })
+        self.assertTrue(learning_update_is_verified(good))
+        self.assertFalse(learning_update_is_verified(bad))
+
+    def test_reinvestment_prefers_capability_multiplier_and_respects_budget(self):
+        a=ReinvestmentTarget.parse({
+            "target_id":"sol-evals","category":"models","expected_capability_multiplier":95,
+            "expected_value_multiplier":80,"capital_efficiency":90,"evidence_confidence":0.9,
+            "recurring_burden":10,"lawful":True,"sustainable":True,
+            "required_scopes":["specialist:sol"],"requires_external_spend":True,
+            "within_preapproved_budget":True,"funds_available":True,"known_obligations_covered":True,
+        })
+        b=ReinvestmentTarget.parse({
+            "target_id":"tooling","category":"tools","expected_capability_multiplier":70,
+            "expected_value_multiplier":75,"capital_efficiency":75,"evidence_confidence":0.8,
+            "recurring_burden":15,"lawful":True,"sustainable":True,
+            "required_scopes":["forge:tools"],"requires_external_spend":True,
+            "within_preapproved_budget":False,"funds_available":True,"known_obligations_covered":True,
+        })
+        self.assertEqual(reinvestment_target_decision(a),OpportunityDecision.EXECUTE)
+        self.assertEqual(reinvestment_target_decision(b),OpportunityDecision.OWNER_REVIEW)
+        plan=build_aggressive_reinvestment_plan([b,a])
+        self.assertEqual(plan[0]["target_id"],"sol-evals")
+        self.assertAlmostEqual(sum(x["surplus_allocation_weight"] for x in plan),1.0,places=5)
 
     def test_root_touching_value_opportunity_rejected(self):
         o=ValueOpportunity.parse({
