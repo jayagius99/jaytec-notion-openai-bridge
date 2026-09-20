@@ -556,6 +556,37 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
                     if key in stored
                 }
 
+    worker_id = str(result.get("worker_id") or "").strip()
+    if worker_id and _autorecovery_components_registered():
+        try:
+            worker_status = _manus_runtime().task_status_readonly(worker_id)
+        except Exception as exc:
+            result["current_worker_result"] = {
+                "status": "DIAGNOSTIC_READ_FAILED",
+                "reason": type(exc).__name__,
+            }
+        else:
+            if isinstance(worker_status, Mapping):
+                safe_worker: dict[str, Any] = {
+                    "status": worker_status.get("status"),
+                    "provider_task_id": worker_status.get("provider_task_id"),
+                    "requested_profile": worker_status.get("requested_profile"),
+                    "observed_profile": worker_status.get("observed_profile"),
+                    "read_only": True,
+                }
+                if worker_status.get("reason") is not None:
+                    safe_worker["reason"] = worker_status.get("reason")
+                terminal = worker_status.get("result")
+                if isinstance(terminal, Mapping):
+                    safe_worker["result"] = {
+                        "status": terminal.get("status"),
+                        "summary": terminal.get("summary"),
+                        "unresolved_items": terminal.get("unresolved_items"),
+                        "specialist_requests": terminal.get("specialist_requests"),
+                        "verification": terminal.get("verification"),
+                    }
+                result["current_worker_result"] = safe_worker
+
     result["read_only"] = True
     result["lease_acquired"] = False
     result["worker_invoked"] = False

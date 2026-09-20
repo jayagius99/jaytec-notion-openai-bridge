@@ -552,6 +552,92 @@ class ManusLiteRuntime:
             raise
         return dict(result)
 
+    def task_status_readonly(self, provider_task_id: str) -> dict[str, Any]:
+        """Read and verify one Manus task without mutating provider state.
+
+        This diagnostic path never calls stop_task. Any profile/project/result
+        mismatch returns FAILED_CLOSED so inspection cannot become authority.
+        """
+
+        task_id = str(provider_task_id or "").strip()
+        if not task_id or len(task_id) > MAX_STATUS_TASK_ID:
+            raise ManusRuntimeError("MANUS_RUNTIME_PROVIDER_TASK_ID_INVALID")
+
+        lite = authorize_manus_route(
+            requested_profile="lite",
+            route_supports_profile_selector=True,
+        )
+
+        detail = self.client.task_detail(task_id)
+        task = _task(detail)
+        observed = task.get("agent_profile")
+        try:
+            verify_manus_profile(
+                lite,
+                observed_profile=str(observed) if observed not in (None, "") else None,
+            )
+        except ManusProfilePolicyError:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "FAILED_CLOSED",
+                "provider_task_id": task_id,
+                "reason": "MANUS_RUNTIME_PROFILE_MISMATCH",
+            }
+
+        try:
+            project_id, _project_name = self.client.resolve_manus_project()
+        except Exception as exc:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "FAILED_CLOSED",
+                "provider_task_id": task_id,
+                "reason": "MANUS_RUNTIME_PROJECT_LOOKUP_FAILED:" + type(exc).__name__,
+            }
+
+        observed_project = task.get("project_id")
+        if observed_project not in (None, "") and str(observed_project) != project_id:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "FAILED_CLOSED",
+                "provider_task_id": task_id,
+                "reason": "MANUS_RUNTIME_PROJECT_MISMATCH",
+            }
+
+        provider_status = str(task.get("status") or "").strip().casefold()
+        out: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "PENDING",
+            "provider_task_id": task_id,
+            "requested_profile": "lite",
+            "observed_profile": "lite",
+            "task": safe_task_summary(detail),
+            "read_only": True,
+        }
+
+        if provider_status in {"error", "failed", "cancelled", "canceled"}:
+            out["status"] = "FAILED_CLOSED"
+            out["reason"] = "MANUS_PROVIDER_TASK_FAILED"
+            return out
+        if provider_status not in {"stopped", "completed", "success", "succeeded"}:
+            return out
+
+        messages = self.client.list_messages(task_id, limit=100)
+        result = _latest_structured_value(messages)
+        if result is None:
+            out["status"] = "FAILED_CLOSED"
+            out["reason"] = "MANUS_STRUCTURED_RESULT_MISSING"
+            return out
+
+        requests = result.get("specialist_requests")
+        if isinstance(requests, list):
+            for request in requests:
+                validate_specialist_request(_decode_specialist_request(request))
+
+        verify_manus_completion(result)
+        out["status"] = "VERIFIED_COMPLETE"
+        out["result"] = dict(result)
+        return out
+
     def task_status(self, provider_task_id: str) -> dict[str, Any]:
         task_id = str(provider_task_id or "").strip()
         if not task_id or len(task_id) > MAX_STATUS_TASK_ID:

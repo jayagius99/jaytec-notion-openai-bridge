@@ -37,6 +37,7 @@ on:
       - 'manus_governance.py'
       - 'manus_dispatch_contract.py'
       - 'manus_runtime.py'
+      - 'test_manus_runtime_readonly.py'
       - 'relationship_policy.py'
       - 'participant_contracts.py'
       - 'MANUS_OPERATING_DIRECTIVE.md'
