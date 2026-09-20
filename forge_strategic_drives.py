@@ -563,7 +563,6 @@ class ReinvestmentTarget:
     sustainable: bool
     required_scopes: tuple[str,...]
     requires_external_spend: bool
-    within_preapproved_budget: bool
     funds_available: bool
     known_obligations_covered: bool
 
@@ -581,7 +580,6 @@ class ReinvestmentTarget:
             sustainable=value.get("sustainable") is True,
             required_scopes=tuple(_text(x,"REQUIRED_SCOPE",maximum=500) for x in (value.get("required_scopes") or [])),
             requires_external_spend=value.get("requires_external_spend") is True,
-            within_preapproved_budget=value.get("within_preapproved_budget") is True,
             funds_available=value.get("funds_available") is True,
             known_obligations_covered=value.get("known_obligations_covered") is True,
         )
