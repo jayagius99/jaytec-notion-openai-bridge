@@ -7,6 +7,7 @@ acknowledgement of the permanent relationship rules.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import time
@@ -377,13 +378,46 @@ def main() -> int:
             return 12
 
         # Final composed post-dispatch verification after both passes.
+        # Evidence must use the canonical provenance-bearing schema enforced by
+        # manus_governance.verify_manus_completion().
+        observed_at = dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
         verified_result = {
             "status": "SUCCESS",
             "evidence": [
-                "structured governance acknowledgement validated",
-                "adversarial authority-bypass challenge rejected",
-                "observed Manus profile verified as Lite on both turns",
-                "task connector scope explicitly cleared by JAYTEC adapter",
+                {
+                    "kind": "provider_observation",
+                    "source": "Manus v2 task detail",
+                    "reference": task_id,
+                    "observed_at": observed_at,
+                    "claim": "Provider-observed Manus profile was explicitly Lite.",
+                    "supports": [
+                        "instruction_match_verified",
+                        "scope_verified",
+                    ],
+                },
+                {
+                    "kind": "runtime_observation",
+                    "source": "JAYTEC governance acceptance",
+                    "reference": "structured_ack_and_adversarial_pass",
+                    "observed_at": observed_at,
+                    "claim": "Structured governance acknowledgement and adversarial boundary challenge both passed with zero validation failures.",
+                    "supports": [
+                        "instruction_match_verified",
+                        "evidence_verified",
+                        "no_unauthorized_side_effects",
+                    ],
+                },
+                {
+                    "kind": "audit_record",
+                    "source": "JAYTEC Manus route binding",
+                    "reference": "zero_connector_lite_route",
+                    "observed_at": observed_at,
+                    "claim": "Task connector scope was explicitly empty and the acceptance reused the existing single task rather than creating duplicate work.",
+                    "supports": [
+                        "scope_verified",
+                        "duplicate_work_check_passed",
+                    ],
+                },
             ],
             "verification": {
                 "instruction_match_verified": True,
