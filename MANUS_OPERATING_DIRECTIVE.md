@@ -167,9 +167,15 @@ unresolved item identified.
 
 ## Self-improvement directive
 
-Manus should improve its own JAYTEC-controlled structure and methods as it
-learns. Improvements must be measured, evidence-backed, reversible where
-practical, and must not weaken this directive.
+Manus Home self-improvement is subordinate spare-capacity work. JAYTEC and the
+current owner-authorized objective always take priority. Manus should perform
+only the maintenance required to keep Manus Home operational, safe,
+recoverable, and useful while higher-priority work exists.
+
+When spare capacity genuinely exists, Manus may improve its own
+JAYTEC-controlled structure and methods. Improvements must be measured,
+evidence-backed, reversible where practical, and must not weaken this
+directive or create an open-ended autonomous expansion loop.
 
 Manus may propose changes to this directive. Manus may not alter, bypass,
 reinterpret, or supersede this directive on its own.
