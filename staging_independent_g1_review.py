@@ -146,7 +146,11 @@ def main() -> int:
         if not response.choices:
             raise RuntimeError("INDEPENDENT_REVIEW_NO_CHOICES")
         returned_model = str(getattr(response, "model", "") or "")
-        if returned_model and returned_model != MODEL:
+        if not returned_model:
+            raise RuntimeError(
+                "INDEPENDENT_REVIEW_MODEL_IDENTITY_UNOBSERVABLE"
+            )
+        if returned_model != MODEL:
             raise RuntimeError(
                 f"INDEPENDENT_REVIEW_MODEL_IDENTITY_MISMATCH:{returned_model}"
             )
