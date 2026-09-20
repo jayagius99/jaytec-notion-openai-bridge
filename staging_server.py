@@ -24,9 +24,15 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from fastmcp import FastMCP
-from fastmcp.server.auth import StaticTokenVerifier
+from fastmcp.server.auth import MultiAuth, StaticTokenVerifier, require_scopes
+from fastmcp.server.dependencies import get_access_token
+from fastmcp.server.middleware import AuthMiddleware
 from openai import OpenAI
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
+from autorecovery_watch_ingress import WatchIngressError, execute_watch_cycle
+from github_watch_oidc import GitHubActionsWatchOIDCVerifier, validate_watch_claims
 from autorecovery_runtime import (
     assignment_status as read_autorecovery_assignment_status,
     runtime_status as get_autorecovery_runtime_status,
@@ -103,15 +109,29 @@ FORGE_COGNITION_DATABASE_URL = (
 if not MCP_AUTH_TOKEN:
     raise RuntimeError("MCP_AUTH_TOKEN is required")
 
-auth = StaticTokenVerifier(
+static_auth = StaticTokenVerifier(
     tokens={
         MCP_AUTH_TOKEN: {
             "sub": "jaytec-staging-client",
             "client_id": "jaytec-orchestration-staging",
+            "scopes": ["jaytec:mcp"],
         }
     }
 )
-mcp = FastMCP("JAYTEC Orchestration Staging", auth=auth)
+watch_oidc_auth = GitHubActionsWatchOIDCVerifier()
+auth = MultiAuth(verifiers=[static_auth, watch_oidc_auth])
+mcp = FastMCP(
+    "JAYTEC Orchestration Staging",
+    auth=auth,
+    middleware=[AuthMiddleware(auth=require_scopes("jaytec:mcp"))],
+)
+
+def _autorecovery_components_registered() -> bool:
+    return bool(
+        MANUS_API_KEY
+        and os.environ.get("JAYTEC_AUTORECOVERY_RUNTIME_COMPONENTS", "").strip()
+        == "manus_lite_v1"
+    )
 
 # Safe startup telemetry: never print credentials, only whether the governed
 # Lite-only Manus route is configured.
@@ -213,6 +233,7 @@ def orchestration_status() -> str:
     autorecovery = get_autorecovery_runtime_status(
         env=os.environ,
         database_url=DATABASE_URL,
+        runtime_components_registered=_autorecovery_components_registered(),
     ).to_dict()
     portal = (
         PortalStore(PROTOCOL_DATABASE_URL).probe()
@@ -299,6 +320,7 @@ def autorecovery_runtime_status() -> str:
     status = get_autorecovery_runtime_status(
         env=os.environ,
         database_url=DATABASE_URL,
+        runtime_components_registered=_autorecovery_components_registered(),
     )
     result = status.to_dict()
     result["schema_probe"] = probe_autorecovery_schema(DATABASE_URL)
@@ -325,6 +347,7 @@ def autorecovery_assignment_status(task_id: str) -> str:
     status = get_autorecovery_runtime_status(
         env=os.environ,
         database_url=DATABASE_URL,
+        runtime_components_registered=_autorecovery_components_registered(),
     )
     result = read_autorecovery_assignment_status(
         DATABASE_URL,
@@ -334,6 +357,64 @@ def autorecovery_assignment_status(task_id: str) -> str:
     result["autorecovery_active"] = status.active
     result["ui_chat_autoresume_supported"] = False
     return json.dumps(result, sort_keys=True)
+
+
+@mcp.custom_route("/jaytec/watch-cycle", methods=["POST"])
+async def jaytec_watch_cycle(request: Request) -> JSONResponse:
+    """OIDC-authenticated, WATCH-only ingress for exactly one recovery cycle."""
+
+    access = get_access_token()
+    if access is None or "jaytec:watch-cycle" not in set(access.scopes or []):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_SCOPE_REQUIRED"},
+            status_code=403,
+        )
+    ok, reason = validate_watch_claims(access.claims)
+    if not ok:
+        return JSONResponse(
+            {"status": "DENIED", "reason": reason},
+            status_code=403,
+        )
+
+    raw = await request.body()
+    if len(raw) > 96_000:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_CYCLE_REQUEST_TOO_LARGE"},
+            status_code=413,
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_CYCLE_JSON_INVALID"},
+            status_code=400,
+        )
+    if not isinstance(payload, Mapping):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_CYCLE_ROOT_INVALID"},
+            status_code=400,
+        )
+
+    try:
+        result = execute_watch_cycle(
+            payload,
+            database_url=DATABASE_URL,
+            manus_runtime=_manus_runtime(),
+            registry=REGISTRY,
+            env=os.environ,
+        )
+    except WatchIngressError as exc:
+        result = {"status": "DENIED", "reason": str(exc)}
+        return JSONResponse(result, status_code=403)
+    except Exception as exc:
+        result = {
+            "status": "FAILED_CLOSED",
+            "reason": "WATCH_CYCLE_EXCEPTION:" + type(exc).__name__,
+        }
+        return JSONResponse(result, status_code=503)
+
+    status_code = 200 if result.get("status") == "PASS" else 409
+    return JSONResponse(result, status_code=status_code)
 
 
 def _protocol_portal() -> PortalStore:

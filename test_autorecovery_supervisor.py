@@ -478,6 +478,38 @@ class AutoRecoveryExecutionTests(unittest.TestCase):
         finally:
             store.heartbeat = original
 
+    def test_terminal_callable_result_moves_to_required_input_not_recovery(self):
+        store = MemoryAssignmentStore(
+            state(
+                stop_reason=StopReason.RUNNING,
+                worker_kind=WorkerKind.JAYTEC_CALLABLE,
+                heartbeat_age_seconds=900,
+            )
+        )
+        class TerminalHealth(FakeHealth):
+            def wait_for_healthy(self, *, task_id, fencing_token, worker_id, timeout_seconds):
+                return WorkerHealth(
+                    healthy=True,
+                    worker_id=worker_id,
+                    heartbeat_at=NOW,
+                    progress_marker="MANUS_TERMINAL:SUCCESS:abc123",
+                    detail="verified complete",
+                )
+        notifier = FakeNotifier()
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=FakeInvoker(),
+            health_probe=TerminalHealth(),
+            notifier=notifier,
+            instance_id="watch-a",
+        )
+        self.assertTrue(supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW))
+        self.assertEqual(store.state.stop_reason, StopReason.WAITING_FOR_REQUIRED_INPUT)
+        decision = supervisor.tick("GOD-PREP-0017", now=NOW)
+        self.assertEqual(decision.action, SupervisorAction.NOTIFY_JAY)
+        self.assertEqual(decision.effective_stop_reason, StopReason.WAITING_FOR_REQUIRED_INPUT)
+
     def test_ui_chat_never_calls_invoker(self):
         store = MemoryAssignmentStore(
             state(
