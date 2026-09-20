@@ -152,7 +152,7 @@ class TestLegacyCompatibility(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "MCP_AUTH_TOKEN"):
                 server._require_startup_prereqs()
 
-        with patch.object(server, "MCP_AUTH_TOKEN", "configured"), patch.object(
+        with patch.object(server, "MCP_AUTH_TOKEN", "Ab9_xY7-Qp2Lm8Nv4Rs6Tu1Wx3Za5BcD"), patch.object(
             server, "OPENAI_API_KEY", "configured"
         ), patch.object(server, "RUNTIME_MODE", "production"), patch.object(
             server, "DATABASE_URL", ""
