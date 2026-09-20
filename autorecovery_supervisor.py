@@ -410,6 +410,16 @@ def classify_assignment(
             "FATAL_FAILURE_REQUIRES_HUMAN_DECISION",
         )
 
+    if (
+        state.stop_reason is StopReason.WAITING_FOR_DEPENDENCY
+        and str(state.last_error or "").startswith("MANUS_TERMINAL:NEEDS_JAYTEC:")
+    ):
+        return RecoveryDecision(
+            SupervisorAction.HOLD,
+            StopReason.WAITING_FOR_DEPENDENCY,
+            "JAYTEC_INTERNAL_HANDOFF_REQUIRED",
+        )
+
     if state.stop_reason in HUMAN_OR_AUTHORITY_HOLDS:
         action = (
             SupervisorAction.NOTIFY_JAY
@@ -970,10 +980,26 @@ class AutoRecoverySupervisor:
         marker = str(health.progress_marker or "")
         if not marker.startswith("MANUS_TERMINAL:"):
             return None
+
+        parts = marker.split(":", 3)
+        result_state = parts[1] if len(parts) > 1 else "UNKNOWN"
+
+        if result_state == "NEEDS_JAYTEC":
+            stop_reason = StopReason.WAITING_FOR_DEPENDENCY
+            action = SupervisorAction.HOLD
+            reason = "CALLABLE_WORKER_NEEDS_JAYTEC"
+        else:
+            # Until a terminal status has a dedicated convergence rule, fail
+            # closed exactly as before. Only NEEDS_JAYTEC is now known to be an
+            # internal orchestration handoff rather than a Jay/owner boundary.
+            stop_reason = StopReason.WAITING_FOR_REQUIRED_INPUT
+            action = SupervisorAction.NOTIFY_JAY
+            reason = "CALLABLE_WORKER_FINISHED_REVIEW_REQUIRED"
+
         self.store.mark_stop(
             task_id,
             fencing_token=fencing_token,
-            stop_reason=StopReason.WAITING_FOR_REQUIRED_INPUT,
+            stop_reason=stop_reason,
             error=marker[:2000],
             now=health.heartbeat_at or utcnow(),
         )
@@ -983,13 +1009,15 @@ class AutoRecoverySupervisor:
                 "task_id": task_id,
                 "worker_id": health.worker_id,
                 "progress_marker": marker,
-                "next_state": StopReason.WAITING_FOR_REQUIRED_INPUT.value,
+                "result_state": result_state,
+                "next_state": stop_reason.value,
+                "owner_notification_required": action is SupervisorAction.NOTIFY_JAY,
             }
         )
         return RecoveryDecision(
-            SupervisorAction.NOTIFY_JAY,
-            StopReason.WAITING_FOR_REQUIRED_INPUT,
-            "CALLABLE_WORKER_FINISHED_REVIEW_REQUIRED",
+            action,
+            stop_reason,
+            reason,
         )
 
     def refresh_worker_health(
