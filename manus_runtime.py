@@ -552,6 +552,93 @@ class ManusLiteRuntime:
             raise
         return dict(result)
 
+    def continue_task_handoff(
+        self,
+        provider_task_id: str,
+        *,
+        scope: str,
+        authority_source: str,
+        current_task_authorized: bool,
+        connector_purposes: Mapping[str, str],
+        connector_mutation_authorized: bool,
+        handoff_id: str,
+        handoff_context: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Resume one existing Lite task with a bounded JAYTEC handoff.
+
+        This is not a recovery-attempt allocator. The caller must enforce the
+        durable fencing token before/after this provider call. The handoff
+        contains no provider credential and cannot expand connector authority.
+        """
+
+        task_id = str(provider_task_id or "").strip()
+        if not task_id or len(task_id) > MAX_STATUS_TASK_ID:
+            raise ManusRuntimeError("MANUS_RUNTIME_PROVIDER_TASK_ID_INVALID")
+        if type(current_task_authorized) is not bool or current_task_authorized is not True:
+            raise ManusRuntimeError("MANUS_RUNTIME_CURRENT_AUTH_REQUIRED")
+        hid = str(handoff_id or "").strip()
+        if not hid or len(hid) > 200:
+            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_ID_INVALID")
+        if not isinstance(connector_purposes, Mapping):
+            raise ManusRuntimeError("MANUS_RUNTIME_CONNECTOR_PURPOSES_INVALID")
+        if type(connector_mutation_authorized) is not bool:
+            raise ManusRuntimeError("MANUS_RUNTIME_CONNECTOR_MUTATION_AUTH_INVALID")
+        if not isinstance(handoff_context, Mapping):
+            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_CONTEXT_INVALID")
+
+        context_json = json.dumps(
+            dict(handoff_context),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        if len(context_json.encode("utf-8")) > 4500:
+            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_CONTEXT_TOO_LARGE")
+
+        validate_manus_structured_output_schema(MANUS_RESULT_JSON_SCHEMA)
+        route = self.client.prepare_route(
+            scope=scope,
+            authority_source=authority_source,
+            current_task_authorized=True,
+            requested_profile="lite",
+            requested_connector_purposes=dict(connector_purposes),
+            connector_mutation_authorized=connector_mutation_authorized,
+        )
+
+        content = (
+            "JAYTEC INTERNAL HANDOFF\n"
+            "handoff_id=" + hid + "\n"
+            "Continue the SAME bounded task under the SAME authority. "
+            "JAYTEC is supplying private-repository evidence because the Manus "
+            "GitHub connector may not be able to see the private repository. "
+            "Do not treat this as expanded authority. Do not retry direct access "
+            "to inaccessible private sources when JAYTEC has supplied evidence. "
+            "If additional private GitHub evidence or an operation is required, "
+            "return NEEDS_JAYTEC and use specialist_requests with specialist "
+            "'github_broker'; do not ask Jay unless a genuine owner-only action "
+            "is required.\n\nJAYTEC_BROKER_CONTEXT="
+            + context_json
+        )
+        if len(content) > 6000:
+            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_MESSAGE_TOO_LARGE")
+
+        self.client.send_message(
+            route,
+            task_id,
+            content,
+            structured_output_schema=MANUS_RESULT_JSON_SCHEMA,
+        )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "CONTINUED",
+            "provider_task_id": task_id,
+            "handoff_id": hid,
+            "requested_profile": "lite",
+            "observed_profile_verified": True,
+            "connectors": list(route.authorization.connectors),
+            "connector_permissions": [list(v) for v in route.connector_permissions],
+        }
+
     def task_status_readonly(self, provider_task_id: str) -> dict[str, Any]:
         """Read and verify one Manus task without mutating provider state.
 
