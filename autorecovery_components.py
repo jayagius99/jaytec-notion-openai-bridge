@@ -99,9 +99,16 @@ def _authority(checkpoint: AssignmentCheckpoint) -> tuple[list[str], dict[str, s
 class ManusLiteRecoveryInvoker:
     """Start one idempotent, fenced Manus Lite continuation worker."""
 
-    def __init__(self, runtime: ManusLiteRuntime, registry: Any) -> None:
+    def __init__(
+        self,
+        runtime: ManusLiteRuntime,
+        registry: Any,
+        *,
+        broker_context: Mapping[str, Any] | None = None,
+    ) -> None:
         self.runtime = runtime
         self.registry = registry
+        self.broker_context = dict(broker_context or {})
 
     def invoke(
         self,
@@ -132,6 +139,10 @@ class ManusLiteRecoveryInvoker:
                 "fencing_token": fencing_token,
                 "recovery_route": route.value,
             }
+            if self.broker_context:
+                required_context["jaytec_private_github_broker"] = dict(
+                    self.broker_context
+                )
             constraints = list(dict.fromkeys(
                 [*checkpoint.active_constraints, *HARD_RECOVERY_CONSTRAINTS]
             ))
@@ -202,6 +213,83 @@ class ManusLiteRecoveryInvoker:
             worker_id=worker_id,
             route=route,
             detail="MANUS_LITE_RECOVERY_STARTED",
+        )
+
+
+    def continue_existing(
+        self,
+        *,
+        checkpoint: AssignmentCheckpoint,
+        worker_id: str,
+        fencing_token: int,
+        broker_context: Mapping[str, Any],
+    ) -> WorkerInvocation:
+        """Continue one NEEDS_JAYTEC task without consuming recovery budget."""
+
+        try:
+            actions, connectors, mutation = _authority(checkpoint)
+            digest = hashlib.sha256(
+                json.dumps(
+                    dict(broker_context),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            result = self.runtime.continue_task_handoff(
+                worker_id,
+                scope="jaytec_delegated_task",
+                authority_source="chatgpt",
+                current_task_authorized=True,
+                connector_purposes=connectors,
+                connector_mutation_authorized=mutation,
+                handoff_id=(
+                    f"{checkpoint.task_id}:fence:{fencing_token}:"
+                    f"github-broker:{digest[:16]}"
+                ),
+                handoff_context=dict(broker_context),
+            )
+        except Exception as exc:
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_JAYTEC_HANDOFF_FAILED:" + type(exc).__name__,
+            )
+
+        if result.get("status") != "CONTINUED":
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_JAYTEC_HANDOFF_NOT_CONTINUED",
+            )
+        if result.get("provider_task_id") != worker_id:
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_JAYTEC_HANDOFF_WORKER_MISMATCH",
+            )
+        if (
+            result.get("requested_profile") != "lite"
+            or result.get("observed_profile_verified") is not True
+        ):
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_JAYTEC_HANDOFF_LITE_IDENTITY_UNVERIFIED",
+            )
+        return WorkerInvocation(
+            accepted=True,
+            worker_id=worker_id,
+            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+            detail=(
+                "MANUS_JAYTEC_HANDOFF_REPLAY"
+                if result.get("idempotent_replay") is True
+                else "MANUS_JAYTEC_HANDOFF_CONTINUED"
+            ),
         )
 
 

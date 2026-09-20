@@ -44,6 +44,7 @@ class FakeClient:
         self.stopped = []
         self.created_prompt = None
         self.create_count = 0
+        self.sent_messages = []
 
     def prepare_route(self, **kwargs):
         self.prepare_calls.append(dict(kwargs))
@@ -66,6 +67,17 @@ class FakeClient:
         self.created_schema = structured_output_schema
         self.created_title = title
         return {"task_id": "provider-123"}
+
+
+    def send_message(self, route, task_id, content, *, structured_output_schema=None):
+        self.sent_messages.append(
+            {
+                "task_id": task_id,
+                "content": content,
+                "schema": structured_output_schema,
+            }
+        )
+        return {"ok": True}
 
     def task_detail(self, task_id):
         return {
@@ -292,6 +304,57 @@ class ManusLiteRuntimeTests(unittest.TestCase):
                 registry,
             )
         self.assertEqual(client.create_count, 1)
+
+
+    def test_internal_handoff_reuses_same_lite_task_and_never_exports_credentials(self):
+        client = FakeClient(observed_profile="lite", task_status="stopped")
+        runtime = ManusLiteRuntime(client)
+        context = {
+            "schema_version": "JAYTEC_GITHUB_BROKER_CONTEXT_V1",
+            "repo": "jayagius99/jaytec-work-engine-v2-g1",
+            "authority": "READ_EVIDENCE_ONLY_NO_TOKEN_EXPORT",
+            "refs": {"main": "a" * 40},
+        }
+        result = runtime.continue_task_handoff(
+            "provider-123",
+            scope="jaytec_delegated_task",
+            authority_source="chatgpt",
+            current_task_authorized=True,
+            connector_purposes={"github": "write"},
+            connector_mutation_authorized=True,
+            handoff_id="handoff-1",
+            handoff_context=context,
+        )
+        self.assertEqual(result["status"], "CONTINUED")
+        self.assertEqual(result["provider_task_id"], "provider-123")
+        self.assertEqual(len(client.sent_messages), 1)
+        sent = client.sent_messages[0]["content"]
+        self.assertIn("handoff_id=handoff-1", sent)
+        self.assertIn("READ_EVIDENCE_ONLY_NO_TOKEN_EXPORT", sent)
+        self.assertNotIn("Bearer ", sent)
+        self.assertNotIn("sk-", sent)
+        self.assertEqual(client.prepare_calls[0]["requested_profile"], "lite")
+
+    def test_internal_handoff_is_idempotent_when_handoff_id_already_in_messages(self):
+        class ExistingHandoffClient(FakeClient):
+            def list_messages(self, task_id, *, limit=100):
+                return {"messages": [{"content": "handoff_id=handoff-1"}]}
+
+        client = ExistingHandoffClient()
+        runtime = ManusLiteRuntime(client)
+        result = runtime.continue_task_handoff(
+            "provider-123",
+            scope="jaytec_delegated_task",
+            authority_source="chatgpt",
+            current_task_authorized=True,
+            connector_purposes={"github": "inspect"},
+            connector_mutation_authorized=False,
+            handoff_id="handoff-1",
+            handoff_context={"repo": "private"},
+        )
+        self.assertEqual(result["status"], "CONTINUED")
+        self.assertTrue(result["idempotent_replay"])
+        self.assertEqual(client.sent_messages, [])
 
     def test_status_rejects_and_stops_non_lite_task(self):
         client = FakeClient(observed_profile="standard", task_status="running")

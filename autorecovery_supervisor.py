@@ -410,6 +410,18 @@ def classify_assignment(
             "FATAL_FAILURE_REQUIRES_HUMAN_DECISION",
         )
 
+    if (
+        state.stop_reason is StopReason.WAITING_FOR_DEPENDENCY
+        and str(state.last_error or "").startswith(
+            ("MANUS_TERMINAL:NEEDS_JAYTEC:", "MANUS_TERMINAL:PARTIAL_SUCCESS:")
+        )
+    ):
+        return RecoveryDecision(
+            SupervisorAction.HOLD,
+            StopReason.WAITING_FOR_DEPENDENCY,
+            "JAYTEC_INTERNAL_HANDOFF_REQUIRED",
+        )
+
     if state.stop_reason in HUMAN_OR_AUTHORITY_HOLDS:
         action = (
             SupervisorAction.NOTIFY_JAY
@@ -970,10 +982,39 @@ class AutoRecoverySupervisor:
         marker = str(health.progress_marker or "")
         if not marker.startswith("MANUS_TERMINAL:"):
             return None
+
+        parts = marker.split(":", 3)
+        result_state = parts[1] if len(parts) > 1 else "UNKNOWN"
+
+        if result_state == "SUCCESS":
+            stop_reason = StopReason.COMPLETED
+            action = SupervisorAction.STOP_WATCH
+            reason = "CALLABLE_WORKER_SUCCESS_VERIFIED"
+        elif result_state in {"NEEDS_JAYTEC", "PARTIAL_SUCCESS"}:
+            stop_reason = StopReason.WAITING_FOR_DEPENDENCY
+            action = SupervisorAction.HOLD
+            reason = (
+                "CALLABLE_WORKER_NEEDS_JAYTEC"
+                if result_state == "NEEDS_JAYTEC"
+                else "CALLABLE_WORKER_PARTIAL_CONTINUE_IN_JAYTEC"
+            )
+        elif result_state == "FAILED_CLOSED":
+            stop_reason = StopReason.STALLED_RECOVERABLE
+            action = SupervisorAction.RECOVER
+            reason = "CALLABLE_WORKER_FAILED_CLOSED_RECOVERABLE"
+        elif result_state == "NEEDS_OWNER":
+            stop_reason = StopReason.WAITING_FOR_REQUIRED_INPUT
+            action = SupervisorAction.NOTIFY_JAY
+            reason = "CALLABLE_WORKER_NEEDS_OWNER"
+        else:
+            stop_reason = StopReason.WAITING_FOR_REQUIRED_INPUT
+            action = SupervisorAction.NOTIFY_JAY
+            reason = "CALLABLE_WORKER_UNKNOWN_TERMINAL_STATE"
+
         self.store.mark_stop(
             task_id,
             fencing_token=fencing_token,
-            stop_reason=StopReason.WAITING_FOR_REQUIRED_INPUT,
+            stop_reason=stop_reason,
             error=marker[:2000],
             now=health.heartbeat_at or utcnow(),
         )
@@ -983,13 +1024,15 @@ class AutoRecoverySupervisor:
                 "task_id": task_id,
                 "worker_id": health.worker_id,
                 "progress_marker": marker,
-                "next_state": StopReason.WAITING_FOR_REQUIRED_INPUT.value,
+                "result_state": result_state,
+                "next_state": stop_reason.value,
+                "owner_notification_required": action is SupervisorAction.NOTIFY_JAY,
             }
         )
         return RecoveryDecision(
-            SupervisorAction.NOTIFY_JAY,
-            StopReason.WAITING_FOR_REQUIRED_INPUT,
-            "CALLABLE_WORKER_FINISHED_REVIEW_REQUIRED",
+            action,
+            stop_reason,
+            reason,
         )
 
     def refresh_worker_health(
@@ -1235,6 +1278,45 @@ class AutoRecoverySupervisor:
                 health=health,
             )
             if terminal is not None:
+                # A replacement worker that immediately terminates FAILED_CLOSED
+                # has consumed this recovery attempt. Do not return a raw
+                # RECOVER action from inside the recovery execution path: that
+                # would blur attempt accounting and could encourage same-cycle
+                # recursion. Record the failed attempt and let the next
+                # canonical WATCH cycle decide whether another bounded attempt
+                # remains.
+                if terminal.action is SupervisorAction.RECOVER:
+                    exhausted = lease.attempt_number >= self.max_recovery_attempts
+                    stop_reason = (
+                        StopReason.RECOVERY_EXHAUSTED
+                        if exhausted
+                        else StopReason.STALLED_RECOVERABLE
+                    )
+                    if exhausted:
+                        self.store.mark_stop(
+                            task_id,
+                            fencing_token=lease.fencing_token,
+                            stop_reason=stop_reason,
+                            error="RECOVERY_WORKER_TERMINATED_FAILED_CLOSED",
+                            now=health.heartbeat_at or current,
+                        )
+                        self._notify(
+                            {
+                                "event": "JAYTEC_AUTORECOVERY_EXHAUSTED",
+                                "task_id": task_id,
+                                "recovery_attempts": lease.attempt_number,
+                            }
+                        )
+                    return RecoveryDecision(
+                        SupervisorAction.RECOVERY_FAILED,
+                        stop_reason,
+                        (
+                            "RECOVERY_ATTEMPTS_EXHAUSTED"
+                            if exhausted
+                            else "RECOVERY_WORKER_TERMINATED_FAILED_CLOSED"
+                        ),
+                        recovery_route=route,
+                    )
                 return terminal
 
             self.store.heartbeat(

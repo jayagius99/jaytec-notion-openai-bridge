@@ -68,7 +68,7 @@ MANUS_RESULT_JSON_SCHEMA: dict[str, Any] = {
     "properties": {
         "status": {
             "type": "string",
-            "enum": ["SUCCESS", "PARTIAL_SUCCESS", "NEEDS_JAYTEC", "FAILED_CLOSED"],
+            "enum": ["SUCCESS", "PARTIAL_SUCCESS", "NEEDS_JAYTEC", "NEEDS_OWNER", "FAILED_CLOSED"],
         },
         "summary": {"type": "string"},
         "evidence": {
@@ -434,8 +434,10 @@ def _prompt(packet: Mapping[str, Any]) -> str:
     return (
         "JAYTEC MANUS TASK PACKET\n"
         "Execute only this bounded packet. Do not expand scope or authority. "
-        "Return the required structured result only. If blocked or uncertain, "
-        "return NEEDS_JAYTEC or FAILED_CLOSED rather than guessing.\n\n"
+        "Return the required structured result only. If JAYTEC can resolve the "
+        "blocker, return NEEDS_JAYTEC. Use NEEDS_OWNER only for a genuine owner, "
+        "physical, credential, spend, or irreversible-decision boundary. Use "
+        "FAILED_CLOSED for bounded execution failure rather than guessing.\n\n"
         + json.dumps(packet, ensure_ascii=False, sort_keys=True)
     )
 
@@ -551,6 +553,130 @@ class ManusLiteRuntime:
                 raise ManusRuntimeError("MANUS_RUNTIME_CONFLICTING_DUPLICATE") from exc
             raise
         return dict(result)
+
+    def continue_task_handoff(
+        self,
+        provider_task_id: str,
+        *,
+        scope: str,
+        authority_source: str,
+        current_task_authorized: bool,
+        connector_purposes: Mapping[str, str],
+        connector_mutation_authorized: bool,
+        handoff_id: str,
+        handoff_context: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Resume one existing Lite task with a bounded JAYTEC handoff.
+
+        This is not a recovery-attempt allocator. The caller must enforce the
+        durable fencing token before/after this provider call. The handoff
+        contains no provider credential and cannot expand connector authority.
+        """
+
+        task_id = str(provider_task_id or "").strip()
+        if not task_id or len(task_id) > MAX_STATUS_TASK_ID:
+            raise ManusRuntimeError("MANUS_RUNTIME_PROVIDER_TASK_ID_INVALID")
+        if type(current_task_authorized) is not bool or current_task_authorized is not True:
+            raise ManusRuntimeError("MANUS_RUNTIME_CURRENT_AUTH_REQUIRED")
+        hid = str(handoff_id or "").strip()
+        if not hid or len(hid) > 200:
+            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_ID_INVALID")
+        if not isinstance(connector_purposes, Mapping):
+            raise ManusRuntimeError("MANUS_RUNTIME_CONNECTOR_PURPOSES_INVALID")
+        if type(connector_mutation_authorized) is not bool:
+            raise ManusRuntimeError("MANUS_RUNTIME_CONNECTOR_MUTATION_AUTH_INVALID")
+        if not isinstance(handoff_context, Mapping):
+            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_CONTEXT_INVALID")
+
+        context_json = json.dumps(
+            dict(handoff_context),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        if len(context_json.encode("utf-8")) > 4500:
+            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_CONTEXT_TOO_LARGE")
+
+        validate_manus_structured_output_schema(MANUS_RESULT_JSON_SCHEMA)
+
+        # Handoff idempotency: if a prior send reached Manus but the caller
+        # lost the response, detect the deterministic handoff id in task
+        # messages and treat it as already delivered instead of duplicating it.
+        try:
+            existing_messages = self.client.list_messages(task_id, limit=100)
+            existing_text = json.dumps(
+                existing_messages,
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception:
+            existing_text = ""
+        if hid in existing_text:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "CONTINUED",
+                "provider_task_id": task_id,
+                "handoff_id": hid,
+                "requested_profile": "lite",
+                "observed_profile_verified": True,
+                "idempotent_replay": True,
+            }
+
+        route = self.client.prepare_route(
+            scope=scope,
+            authority_source=authority_source,
+            current_task_authorized=True,
+            requested_profile="lite",
+            requested_connector_purposes=dict(connector_purposes),
+            connector_mutation_authorized=connector_mutation_authorized,
+        )
+
+        content = (
+            "JAYTEC INTERNAL HANDOFF\n"
+            "handoff_id=" + hid + "\n"
+            "Continue the SAME bounded task under the SAME authority. "
+            "JAYTEC is supplying private-repository evidence because the Manus "
+            "GitHub connector may not be able to see the private repository. "
+            "Do not treat this as expanded authority. Do not retry direct access "
+            "to inaccessible private sources when JAYTEC has supplied evidence. "
+            "If additional private GitHub evidence or an operation is required, "
+            "return NEEDS_JAYTEC and use at most TWO specialist_requests. Each "
+            "request must use specialist='github_broker' and required_context "
+            "with one exact operation. Supported operations are: "
+            "read_file{path,ref,start_line?,end_line?}; "
+            "list_path{path?,ref}; read_issue{number}; read_pr{number}; "
+            "read_workflow_runs{branch?}; "
+            "create_branch{base_ref,new_branch}; "
+            "write_file{branch,path,content,commit_message?,expected_sha?}; "
+            "create_pr{head,base,title,body}. "
+            "Mutation is allowed only through a branch named "
+            "watch/worker-<current-fence>-<slug>. Never request merge, delete, "
+            "force push, protected-branch write, settings, secrets, credentials "
+            "or repository visibility changes. The handoff_id contains the "
+            "current fence. Do not ask Jay unless a genuine owner-only action "
+            "is required.\n\nJAYTEC_BROKER_CONTEXT="
+            + context_json
+        )
+        if len(content) > 6000:
+            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_MESSAGE_TOO_LARGE")
+
+        self.client.send_message(
+            route,
+            task_id,
+            content,
+            structured_output_schema=MANUS_RESULT_JSON_SCHEMA,
+        )
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "CONTINUED",
+            "provider_task_id": task_id,
+            "handoff_id": hid,
+            "requested_profile": "lite",
+            "observed_profile_verified": True,
+            "connectors": list(route.authorization.connectors),
+            "connector_permissions": [list(v) for v in route.connector_permissions],
+        }
 
     def task_status_readonly(self, provider_task_id: str) -> dict[str, Any]:
         """Read and verify one Manus task without mutating provider state.
