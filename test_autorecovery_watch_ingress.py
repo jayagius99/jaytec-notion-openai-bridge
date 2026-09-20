@@ -182,6 +182,21 @@ class WatchIngressPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(WatchIngressError, "SECRET_FIELD_FORBIDDEN"):
             _broker_context(secret, refs)
 
+
+        secret_value = dict(good)
+        secret_value["issues"] = [{"body_excerpt": "token=supersecret12345678"}]
+        unsigned = {k: v for k, v in secret_value.items() if k != "sha256"}
+        secret_value["sha256"] = hashlib.sha256(
+            json.dumps(
+                unsigned,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        with self.assertRaisesRegex(WatchIngressError, "SECRET_FIELD_FORBIDDEN"):
+            _broker_context(secret_value, refs)
+
     def test_needs_jaytec_broker_handoff_keeps_same_worker_and_fence(self):
         refs = {"security/root-owner-control-v1": "b" * 40}
         store = FakeBrokerStore()
