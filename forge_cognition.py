@@ -417,6 +417,21 @@ class ForgeMindStore:
                 );
                 CREATE INDEX IF NOT EXISTS forge_mind_events_forge_idx
                   ON forge_mind_events(forge_id, event_id DESC);
+                CREATE TABLE IF NOT EXISTS forge_cognition_inbox (
+                    signal_id BIGSERIAL PRIMARY KEY,
+                    forge_id TEXT NOT NULL REFERENCES forge_mind_state(forge_id) ON DELETE CASCADE,
+                    dedupe_key TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    payload JSONB NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    consumed_at TIMESTAMPTZ,
+                    UNIQUE(forge_id, dedupe_key)
+                );
+                CREATE INDEX IF NOT EXISTS forge_cognition_inbox_pending_idx
+                  ON forge_cognition_inbox(forge_id, status, priority, signal_id);
                 """)
 
     def probe(self) -> dict[str, Any]:
@@ -425,10 +440,11 @@ class ForgeMindStore:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     cur.execute("""
                     SELECT to_regclass('public.forge_mind_state')::text AS state_table,
-                           to_regclass('public.forge_mind_events')::text AS event_table
+                           to_regclass('public.forge_mind_events')::text AS event_table,
+                           to_regclass('public.forge_cognition_inbox')::text AS inbox_table
                     """)
                     row = dict(cur.fetchone() or {})
-                    ready = bool(row.get("state_table") and row.get("event_table"))
+                    ready = bool(row.get("state_table") and row.get("event_table") and row.get("inbox_table"))
                     return {"schema_version": SCHEMA_VERSION, "status": "PASS" if ready else "NOT_READY", **row}
         except Exception as exc:
             return {"schema_version": SCHEMA_VERSION, "status": "FAILED_CLOSED", "reason": type(exc).__name__}
@@ -551,7 +567,17 @@ class ForgeMindStore:
         try:
             state=self.load_state(forge_id)
             events=self.recent_events(forge_id,limit=event_limit)
+            signals=self.pending_signals(forge_id,limit=16)
             packet=build_delta_context(state,recent_events=events,max_events=event_limit)
+            packet["pending_signals"]=signals
+            packet["signal_ids"]=[int(s["signal_id"]) for s in signals]
+            packet["wake_reason"]="SIGNAL" if signals else "GOAL_OR_REFLECTION"
+            if signals and min(int(s["priority"]) for s in signals) <= 10:
+                packet["selected_action"]=CycleAction.REFLECT_AND_PLAN.value
+                packet["selected_goal"]=None
+                packet["reasoning_tier"]=ReasoningTier.STANDARD.value
+                packet["selection_reason"]="URGENT_SIGNAL_PREEMPTS_CURRENT_GOAL"
+                packet["next_cycle_delay_seconds"]=0
             packet["lease_owner"]=worker_id
             packet["lease_expires_at"]=claim["lease_expires_at"]
             packet["requires_model_call"]=packet["reasoning_tier"] != ReasoningTier.REFLEX.value or packet["selected_action"] == CycleAction.REFLECT_AND_PLAN.value
@@ -580,6 +606,7 @@ class ForgeMindStore:
         fencing_token: int,
         expected_state_version: int,
         result: Mapping[str, Any],
+        consumed_signal_ids: tuple[int, ...] = (),
     ) -> dict[str, Any]:
         if not isinstance(result,Mapping):
             raise ForgeCognitionError("CYCLE_RESULT_INVALID")
@@ -653,6 +680,14 @@ class ForgeMindStore:
                 final_goals=list(by_id.values())
                 _validate_goal_graph(final_goals)
 
+                if next_mode is ForgeMode.RUNNING and not any(
+                    g.status is GoalStatus.ACTIVE for g in final_goals
+                ):
+                    # One strategic reflection is enough. If it yields no next
+                    # goal, sleep until a new event wakes Forge instead of
+                    # burning model calls in an empty loop.
+                    next_mode=ForgeMode.WAITING_FOR_DEPENDENCY
+
                 for field,name in (("world_model_patch","WORLD_MODEL_PATCH"),("capability_frontier_patch","CAPABILITY_FRONTIER_PATCH")):
                     patch=result.get(field) or {}
                     if not isinstance(patch,Mapping):
@@ -675,6 +710,21 @@ class ForgeMindStore:
                 new_version=int(row["state_version"])+1
                 new_cycle=int(row["cycle_number"])+1
                 state=_json(state)
+                if consumed_signal_ids:
+                    ids=[]
+                    for raw_id in consumed_signal_ids:
+                        if isinstance(raw_id,bool) or not isinstance(raw_id,int) or raw_id < 1:
+                            raise ForgeCognitionError("CONSUMED_SIGNAL_ID_INVALID")
+                        ids.append(raw_id)
+                    cur.execute(
+                        """
+                        UPDATE forge_cognition_inbox
+                           SET status='CONSUMED',consumed_at=now()
+                         WHERE forge_id=%s AND status='PENDING' AND signal_id = ANY(%s)
+                        """,
+                        (forge_id,ids),
+                    )
+
                 cur.execute("""
                     UPDATE forge_mind_state
                        SET mode=%s,state_json=%s::jsonb,state_version=%s,cycle_number=%s,
@@ -700,6 +750,76 @@ class ForgeMindStore:
                 updated["event_id"]=int(cur.fetchone()["event_id"])
                 updated["updated_at"]=updated["updated_at"].isoformat()
                 return updated
+
+    def enqueue_signal(
+        self,
+        forge_id: str,
+        *,
+        dedupe_key: str,
+        source: str,
+        event_type: str,
+        payload: Mapping[str, Any],
+        priority: int = 50,
+        wake: bool = True,
+    ) -> dict[str, Any]:
+        key=_text(dedupe_key,"DEDUPE_KEY",maximum=300)
+        src=_text(source,"SIGNAL_SOURCE",maximum=200)
+        kind=_text(event_type,"SIGNAL_TYPE",maximum=200)
+        if isinstance(priority,bool) or not isinstance(priority,int) or not 1 <= priority <= 1000:
+            raise ForgeCognitionError("SIGNAL_PRIORITY_INVALID")
+        if type(wake) is not bool:
+            raise ForgeCognitionError("SIGNAL_WAKE_INVALID")
+        body=_mapping(payload,"SIGNAL_PAYLOAD")
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT mode FROM forge_mind_state WHERE forge_id=%s FOR UPDATE",(forge_id,))
+                row=cur.fetchone()
+                if row is None:
+                    raise ForgeCognitionError("FORGE_STATE_NOT_FOUND")
+                cur.execute(
+                    """
+                    INSERT INTO forge_cognition_inbox(forge_id,dedupe_key,source,event_type,priority,payload)
+                    VALUES (%s,%s,%s,%s,%s,%s::jsonb)
+                    ON CONFLICT (forge_id,dedupe_key) DO UPDATE SET dedupe_key=EXCLUDED.dedupe_key
+                    RETURNING signal_id,status,priority,created_at
+                    """,
+                    (forge_id,key,src,kind,priority,json.dumps(body)),
+                )
+                signal=dict(cur.fetchone())
+                current=ForgeMode(str(row["mode"]))
+                can_wake=current is ForgeMode.WAITING_FOR_DEPENDENCY or (
+                    current is ForgeMode.WAITING_FOR_REQUIRED_INPUT and src.upper() in {"OWNER","HUMAN_SPECIALIST","ROOT_OWNER"}
+                )
+                if wake and can_wake:
+                    cur.execute(
+                        "UPDATE forge_mind_state SET mode=%s,updated_at=now() WHERE forge_id=%s",
+                        (ForgeMode.RUNNING.value,forge_id),
+                    )
+                    signal["woke_forge"]=True
+                else:
+                    signal["woke_forge"]=False
+                signal["created_at"]=signal["created_at"].isoformat()
+                return signal
+
+    def pending_signals(self, forge_id: str, *, limit: int = 16) -> list[dict[str, Any]]:
+        if isinstance(limit,bool) or not isinstance(limit,int) or not 1 <= limit <= 64:
+            raise ForgeCognitionError("SIGNAL_LIMIT_INVALID")
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT signal_id,source,event_type,priority,payload,created_at
+                      FROM forge_cognition_inbox
+                     WHERE forge_id=%s AND status='PENDING'
+                     ORDER BY priority ASC, signal_id ASC
+                     LIMIT %s
+                    """,
+                    (forge_id,limit),
+                )
+                out=[]
+                for row in cur.fetchall():
+                    item=dict(row); item["created_at"]=item["created_at"].isoformat(); out.append(item)
+                return out
 
     def recent_events(self, forge_id: str, *, limit: int = 24) -> list[dict[str, Any]]:
         if isinstance(limit,bool) or not isinstance(limit,int) or not 1 <= limit <= 100:
