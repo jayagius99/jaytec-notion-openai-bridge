@@ -31,6 +31,8 @@ def test_watch_status_route_is_oidc_only_and_read_only():
     assert 'watch_oidc_auth.verify_token(raw_token)' in route
     assert '"jaytec:watch-cycle"' in route
     assert 'read_autorecovery_assignment_status(' in route
+    assert '"last_manus_attempt_result"' in route
+    assert "read_saved_manus_recovery_result(" in route
     assert '"read_only"] = True' in route
     assert '"lease_acquired"] = False' in route
     assert '"worker_invoked"] = False' in route
