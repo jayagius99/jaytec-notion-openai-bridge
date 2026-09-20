@@ -217,7 +217,11 @@ def build_deepseek_security_review_dispatch(
             raise WorkerJsonError("EMPTY_RESPONSE", "reviewer returned no choices")
 
         returned_model = _provider_model(response)
-        if returned_model is not None and returned_model != model:
+        if returned_model is None:
+            raise RuntimeError(
+                "deepseek_reviewer_provider_model_unobservable"
+            )
+        if returned_model != model:
             raise RuntimeError(
                 "deepseek_reviewer_provider_model_mismatch:"
                 f"expected={model};got={returned_model}"

@@ -94,6 +94,27 @@ class GeminiOutputBudgetTests(unittest.TestCase):
                 {"task_id": "T", "subtask_id": "S", "max_retries": 0}
             )
 
+    def test_missing_provider_model_identity_fails_closed(self):
+        class MissingModel(_Completions):
+            def create(self, **kwargs):
+                self.calls.append(kwargs)
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            finish_reason="stop",
+                            message=SimpleNamespace(content=GOOD),
+                        )
+                    ],
+                )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "provider model identity unavailable",
+        ):
+            _dispatch(MissingModel())(
+                {"task_id": "T", "subtask_id": "S", "max_retries": 0}
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
