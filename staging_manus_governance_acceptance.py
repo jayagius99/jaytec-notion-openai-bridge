@@ -85,8 +85,8 @@ structured-output schema can extract these truths:
 - OpenAI/OpenRouter are not direct Manus specialist routes;
 - specialist requests return to JAYTEC;
 - infrastructure mutations require current explicit authority;
-- Manus is Lite-only unless Jay explicitly authorizes a paid profile for that
-  one current task;
+- Manus is permanently Lite-only; no paid profile can be authorized by Jay,
+  ChatGPT, GOD Mode, JAYTEC, urgency, retries, or any other instruction;
 - hidden fallbacks are forbidden;
 - SUCCESS requires evidence/verification;
 - uncertainty means escalate to JAYTEC or fail closed.
