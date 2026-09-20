@@ -31,6 +31,10 @@ _BROKER_SECRET_KEY = re.compile(
     r"(api[_-]?key|authorization|bearer|password|secret|credential|token)",
     re.I,
 )
+_BROKER_SECRET_VALUE = re.compile(
+    r"(?i)(sk-[A-Za-z0-9_-]{8,}|bearer\s+[A-Za-z0-9._~+/=-]{8,}|"
+    r"(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S+)"
+)
 
 
 class WatchIngressError(RuntimeError):
@@ -71,6 +75,8 @@ def _broker_has_secret_key(value: Any) -> bool:
                 return True
     elif isinstance(value, list):
         return any(_broker_has_secret_key(item) for item in value)
+    elif isinstance(value, str) and _BROKER_SECRET_VALUE.search(value):
+        return True
     return False
 
 
