@@ -17,9 +17,9 @@ class ControlPlaneIngressIdentityTests(unittest.TestCase):
             encoding="utf-8"
         )
         for retired in (
-            "call \`ask_openai\`",
-            "call \`review_notion_answer\`",
-            "For complex project work where two-agent collaboration is useful, call \`collaborate\`",
+            "call `ask_openai`",
+            "call `review_notion_answer`",
+            "For complex project work where two-agent collaboration is useful, call `collaborate`",
         ):
             with self.subTest(retired=retired):
                 self.assertNotIn(retired, instructions)
