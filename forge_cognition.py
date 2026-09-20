@@ -672,9 +672,11 @@ class ForgeMindStore:
                     packet["next_cycle_delay_seconds"]=0
                 packet["lease_owner"]=worker
                 packet["lease_expires_at"]=expires.isoformat()
-                packet["requires_model_call"]=(
-                    packet["reasoning_tier"] != ReasoningTier.REFLEX.value
-                    or packet["selected_action"] == CycleAction.REFLECT_AND_PLAN.value
+                packet["model_call_policy"]=(
+                    "LOCAL_FIRST"
+                    if packet["reasoning_tier"] == ReasoningTier.REFLEX.value
+                    and packet["selected_action"] == CycleAction.EXECUTE_NEXT.value
+                    else "REQUIRED"
                 )
                 return packet
 
@@ -879,12 +881,31 @@ class ForgeMindStore:
                     """
                     INSERT INTO forge_cognition_inbox(forge_id,dedupe_key,source,event_type,priority,payload)
                     VALUES (%s,%s,%s,%s,%s,%s::jsonb)
-                    ON CONFLICT (forge_id,dedupe_key) DO UPDATE SET dedupe_key=EXCLUDED.dedupe_key
+                    ON CONFLICT (forge_id,dedupe_key) DO NOTHING
                     RETURNING signal_id,status,priority,created_at
                     """,
                     (forge_id,key,src,kind,priority,json.dumps(body)),
                 )
-                signal=dict(cur.fetchone())
+                inserted=cur.fetchone()
+                if inserted is None:
+                    cur.execute(
+                        """
+                        SELECT signal_id,status,priority,created_at
+                          FROM forge_cognition_inbox
+                         WHERE forge_id=%s AND dedupe_key=%s
+                        """,
+                        (forge_id,key),
+                    )
+                    existing=cur.fetchone()
+                    if existing is None:
+                        raise ForgeCognitionError("SIGNAL_DEDUPE_LOOKUP_FAILED")
+                    signal=dict(existing)
+                    signal["deduplicated"]=True
+                    signal["woke_forge"]=False
+                    signal["created_at"]=signal["created_at"].isoformat()
+                    return signal
+                signal=dict(inserted)
+                signal["deduplicated"]=False
                 current=ForgeMode(str(row["mode"]))
                 can_wake=current is ForgeMode.WAITING_FOR_DEPENDENCY or (
                     current is ForgeMode.WAITING_FOR_REQUIRED_INPUT and src.upper() in {"OWNER","HUMAN_SPECIALIST","ROOT_OWNER"}
