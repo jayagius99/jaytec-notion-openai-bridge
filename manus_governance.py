@@ -470,6 +470,7 @@ def verify_manus_completion(result: Mapping[str, Any]) -> None:
         "SUCCESS",
         "PARTIAL_SUCCESS",
         "NEEDS_JAYTEC",
+        "NEEDS_OWNER",
         "FAILED_CLOSED",
     }:
         raise ManusGovernanceError("MANUS_RESULT_STATUS_INVALID")
@@ -724,8 +725,12 @@ Never claim success because an action merely ran. Before SUCCESS, verify:
 4. no unauthorized side effect occurred,
 5. duplicate-work checks passed,
 6. JAYTEC verified the Manus Lite profile.
-If any of these is missing, return PARTIAL_SUCCESS, NEEDS_JAYTEC, or
-FAILED_CLOSED with unresolved items.
+If any of these is missing, return PARTIAL_SUCCESS, NEEDS_JAYTEC,
+NEEDS_OWNER, or FAILED_CLOSED with unresolved items. Use NEEDS_OWNER only when
+the remaining blocker genuinely requires Jay/ROOT_OWNER, a physical action,
+credential action, spend approval, or an irreversible owner decision. Ordinary
+tool, repository, specialist, provider, routing, or evidence gaps are
+NEEDS_JAYTEC, never NEEDS_OWNER.
 
 SELF-IMPROVEMENT
 Manus Home self-improvement is spare-capacity work only. JAYTEC and the current
