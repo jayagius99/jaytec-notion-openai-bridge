@@ -128,6 +128,7 @@ def compute_production_ready(
     idempotency_store: str,
     codex_model: str,
     gemini_model: str,
+    engineering_provider_active: bool,
     mcp_auth_token_present: bool,
     mcp_auth_token_strong: bool,
     openai_api_key_present: bool,
@@ -155,6 +156,8 @@ def compute_production_ready(
     if idempotency_store != "postgres":
         return False
     if codex_model != EXPECTED_CODEX_MODEL:
+        return False
+    if not engineering_provider_active:
         return False
     if gemini_model != EXPECTED_GEMINI_MODEL:
         return False
@@ -457,6 +460,7 @@ def create_mcp_app() -> FastMCP:
         idempotency_store=idempotency_store,
         codex_model=CODEX_MODEL,
         gemini_model=GEMINI_MODEL,
+        engineering_provider_active=ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE,
         mcp_auth_token_present=bool(MCP_AUTH_TOKEN),
         mcp_auth_token_strong=is_strong_mcp_auth_token(MCP_AUTH_TOKEN),
         openai_api_key_present=bool(OPENAI_API_KEY),
