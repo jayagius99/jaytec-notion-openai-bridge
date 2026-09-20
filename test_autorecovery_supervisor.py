@@ -334,6 +334,45 @@ class AutoRecoveryExecutionTests(unittest.TestCase):
                 now=NOW,
             )
 
+    def test_one_hundred_competing_recovery_leases_yield_one_owner(self):
+        store = MemoryAssignmentStore(
+            state(stop_reason=StopReason.WORKER_LOST, recovery_attempts=0)
+        )
+        winners = []
+        for index in range(100):
+            lease = store.acquire_recovery_lease(
+                "GOD-PREP-0017",
+                lease_owner=f"watch-{index}",
+                now=NOW + dt.timedelta(milliseconds=index),
+            )
+            if lease is not None:
+                winners.append(lease)
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(winners[0].lease_owner, "watch-0")
+
+    def test_one_hundred_stale_worker_heartbeats_never_cross_new_fence(self):
+        store = MemoryAssignmentStore(
+            state(stop_reason=StopReason.WORKER_LOST, fencing_token=40)
+        )
+        lease = store.acquire_recovery_lease(
+            "GOD-PREP-0017",
+            lease_owner="watch-current",
+            now=NOW,
+        )
+        self.assertIsNotNone(lease)
+        assert lease is not None
+        self.assertEqual(lease.fencing_token, 41)
+        for index in range(100):
+            with self.assertRaisesRegex(AutoRecoveryError, "STALE_FENCING_TOKEN"):
+                store.heartbeat(
+                    "GOD-PREP-0017",
+                    fencing_token=40,
+                    worker_id=f"stale-worker-{index}",
+                    now=NOW + dt.timedelta(seconds=index),
+                )
+        self.assertEqual(store.state.fencing_token, 41)
+        self.assertEqual(store.state.lease_owner, "watch-current")
+
     def test_checkpoint_head_mismatch_never_invokes_worker(self):
         store = MemoryAssignmentStore(
             state(stop_reason=StopReason.WORKER_LOST)
