@@ -1,0 +1,539 @@
+"""JAYTEC-owned Manus Lite runtime surface.
+
+This module is the only supported direct JAYTEC -> Manus execution wrapper.
+It deliberately exposes NO profile selector: every dispatch is hard-pinned to
+Lite before the first Manus network call and re-verified from provider-observed
+task metadata.
+
+The runtime is asynchronous:
+- start_task() creates one bounded private task and returns a task id;
+- task_status() performs read-only status/result verification.
+
+It does not bypass the production V2 dispatch-authority boundary; server.py
+must apply that boundary before invoking this module.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from typing import Any, Mapping
+
+from manus_adapter import ManusClient, ManusError, ManusInsufficientCredits, safe_task_summary
+from manus_governance import (
+    ManusGovernanceError,
+    build_minimal_task_packet,
+    packet_digest,
+    validate_specialist_request,
+    verify_manus_completion,
+)
+from manus_policy import (
+    ManusProfilePolicyError,
+    authorize_manus_route,
+    verify_manus_profile,
+)
+
+SCHEMA_VERSION = "JAYTEC_MANUS_LITE_RUNTIME_V1"
+MAX_REQUEST_BYTES = 32_000
+MAX_STATUS_TASK_ID = 200
+
+# Deliberately excludes profile/override fields. Unknown fields fail closed.
+_ALLOWED_START_FIELDS = frozenset({
+    "task_id",
+    "objective",
+    "scope",
+    "authority_source",
+    "current_task_authorized",
+    "allowed_actions",
+    "connector_purposes",
+    "connector_mutation_authorized",
+    "required_context",
+    "constraints",
+    "reference_ids",
+    "title",
+})
+
+_FORBIDDEN_PROFILE_FIELDS = frozenset({
+    "profile",
+    "requested_profile",
+    "agent_profile",
+    "paid_profile",
+    "explicit_paid_override",
+    "paid_override_authority",
+    "model",
+})
+
+MANUS_RESULT_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["SUCCESS", "PARTIAL_SUCCESS", "NEEDS_JAYTEC", "FAILED_CLOSED"],
+        },
+        "summary": {"type": "string"},
+        "evidence": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string"},
+                    "source": {"type": "string"},
+                    "reference": {"type": "string"},
+                    "observed_at": {"type": "string"},
+                    "claim": {"type": "string"},
+                    "supports": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "kind",
+                    "source",
+                    "reference",
+                    "observed_at",
+                    "claim",
+                    "supports",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "changes_made": {"type": "array", "items": {"type": "string"}},
+        "unresolved_items": {"type": "array", "items": {"type": "string"}},
+        "specialist_requests": {"type": "array", "items": {"type": "object"}},
+        "verification": {
+            "type": "object",
+            "properties": {
+                "instruction_match_verified": {"type": "boolean"},
+                "scope_verified": {"type": "boolean"},
+                "evidence_verified": {"type": "boolean"},
+                "no_unauthorized_side_effects": {"type": "boolean"},
+                "duplicate_work_check_passed": {"type": "boolean"},
+            },
+            "required": [
+                "instruction_match_verified",
+                "scope_verified",
+                "evidence_verified",
+                "no_unauthorized_side_effects",
+                "duplicate_work_check_passed",
+            ],
+            "additionalProperties": False,
+        },
+    },
+    "required": [
+        "status",
+        "summary",
+        "evidence",
+        "changes_made",
+        "unresolved_items",
+        "specialist_requests",
+        "verification",
+    ],
+    "additionalProperties": False,
+}
+
+
+class ManusRuntimeError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class StartRequest:
+    task_id: str
+    objective: str
+    scope: str
+    authority_source: str
+    current_task_authorized: bool
+    allowed_actions: tuple[str, ...]
+    connector_purposes: Mapping[str, str]
+    connector_mutation_authorized: bool
+    required_context: Mapping[str, Any]
+    constraints: tuple[str, ...]
+    reference_ids: tuple[str, ...]
+    title: str
+
+
+def _json_object(raw: str) -> Mapping[str, Any]:
+    if not isinstance(raw, str):
+        raise ManusRuntimeError("MANUS_RUNTIME_REQUEST_NOT_STRING")
+    encoded = raw.encode("utf-8")
+    if len(encoded) > MAX_REQUEST_BYTES:
+        raise ManusRuntimeError("MANUS_RUNTIME_REQUEST_TOO_LARGE")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ManusRuntimeError("MANUS_RUNTIME_REQUEST_INVALID_JSON") from exc
+    if not isinstance(value, Mapping):
+        raise ManusRuntimeError("MANUS_RUNTIME_REQUEST_NOT_OBJECT")
+    return value
+
+
+def _strings(value: Any, *, field: str, allow_empty: bool = True) -> tuple[str, ...]:
+    if value is None and allow_empty:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+        raise ManusRuntimeError(f"MANUS_RUNTIME_{field.upper()}_INVALID")
+    return tuple(v.strip() for v in value)
+
+
+def parse_start_request(raw: str) -> StartRequest:
+    value = _json_object(raw)
+
+    forbidden = sorted(set(value) & _FORBIDDEN_PROFILE_FIELDS)
+    if forbidden:
+        raise ManusRuntimeError(
+            "MANUS_RUNTIME_PROFILE_SELECTION_FORBIDDEN:" + ",".join(forbidden)
+        )
+
+    unknown = sorted(set(value) - _ALLOWED_START_FIELDS)
+    if unknown:
+        raise ManusRuntimeError("MANUS_RUNTIME_UNKNOWN_FIELDS:" + ",".join(unknown))
+
+    required = {
+        "task_id",
+        "objective",
+        "scope",
+        "authority_source",
+        "current_task_authorized",
+        "allowed_actions",
+    }
+    missing = sorted(required - set(value))
+    if missing:
+        raise ManusRuntimeError("MANUS_RUNTIME_MISSING:" + ",".join(missing))
+
+    task_id = str(value.get("task_id") or "").strip()
+    objective = str(value.get("objective") or "").strip()
+    scope = str(value.get("scope") or "").strip()
+    authority_source = str(value.get("authority_source") or "").strip()
+    if not task_id or len(task_id) > 200:
+        raise ManusRuntimeError("MANUS_RUNTIME_TASK_ID_INVALID")
+    if not objective:
+        raise ManusRuntimeError("MANUS_RUNTIME_OBJECTIVE_INVALID")
+    if type(value.get("current_task_authorized")) is not bool:
+        raise ManusRuntimeError("MANUS_RUNTIME_CURRENT_AUTH_INVALID")
+    if value.get("current_task_authorized") is not True:
+        raise ManusRuntimeError("MANUS_RUNTIME_CURRENT_AUTH_REQUIRED")
+
+    allowed_actions = _strings(
+        value.get("allowed_actions"),
+        field="allowed_actions",
+        allow_empty=False,
+    )
+
+    connector_purposes = value.get("connector_purposes", {})
+    if not isinstance(connector_purposes, Mapping):
+        raise ManusRuntimeError("MANUS_RUNTIME_CONNECTOR_PURPOSES_INVALID")
+    normalized_connectors: dict[str, str] = {}
+    for key, purpose in connector_purposes.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ManusRuntimeError("MANUS_RUNTIME_CONNECTOR_NAME_INVALID")
+        if not isinstance(purpose, str) or not purpose.strip():
+            raise ManusRuntimeError("MANUS_RUNTIME_CONNECTOR_PURPOSE_INVALID")
+        normalized_connectors[key.strip()] = purpose.strip()
+
+    mutation_authorized = value.get("connector_mutation_authorized", False)
+    if type(mutation_authorized) is not bool:
+        raise ManusRuntimeError("MANUS_RUNTIME_CONNECTOR_MUTATION_AUTH_INVALID")
+
+    required_context = value.get("required_context", {})
+    if not isinstance(required_context, Mapping):
+        raise ManusRuntimeError("MANUS_RUNTIME_CONTEXT_INVALID")
+
+    title = str(value.get("title") or f"JAYTEC Manus task {task_id}").strip()
+    if not title:
+        raise ManusRuntimeError("MANUS_RUNTIME_TITLE_INVALID")
+
+    return StartRequest(
+        task_id=task_id,
+        objective=objective,
+        scope=scope,
+        authority_source=authority_source,
+        current_task_authorized=True,
+        allowed_actions=allowed_actions,
+        connector_purposes=normalized_connectors,
+        connector_mutation_authorized=mutation_authorized,
+        required_context=dict(required_context),
+        constraints=_strings(value.get("constraints", []), field="constraints"),
+        reference_ids=_strings(value.get("reference_ids", []), field="reference_ids"),
+        title=title[:200],
+    )
+
+
+def start_request_identity(raw: str) -> tuple[str, str]:
+    """Return stable idempotency key/digest without touching Manus."""
+    req = parse_start_request(raw)
+    normalized = {
+        "schema_version": SCHEMA_VERSION,
+        "task_id": req.task_id,
+        "objective": req.objective,
+        "scope": req.scope,
+        "authority_source": req.authority_source,
+        "current_task_authorized": req.current_task_authorized,
+        "allowed_actions": list(req.allowed_actions),
+        "connector_purposes": dict(sorted(req.connector_purposes.items())),
+        "connector_mutation_authorized": req.connector_mutation_authorized,
+        "required_context": dict(req.required_context),
+        "constraints": list(req.constraints),
+        "reference_ids": list(req.reference_ids),
+        "title": req.title,
+        "profile": "lite",
+    }
+    canonical = json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return (
+        "manus:" + req.task_id,
+        hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    )
+
+
+def _task(body: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = body.get("task")
+    if isinstance(value, Mapping):
+        return value
+    value = body.get("data")
+    return value if isinstance(value, Mapping) else {}
+
+
+def _message_rows(body: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    value = body.get("messages")
+    if not isinstance(value, list):
+        value = body.get("data")
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, Mapping)]
+
+
+def _latest_structured_value(body: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    for row in _message_rows(body):
+        if str(row.get("type") or "") != "structured_output_result":
+            continue
+        result = row.get("structured_output_result")
+        if not isinstance(result, Mapping) or result.get("success") is not True:
+            continue
+        value = result.get("value")
+        if isinstance(value, Mapping):
+            return value
+    return None
+
+
+def _prompt(packet: Mapping[str, Any]) -> str:
+    return (
+        "JAYTEC MANUS TASK PACKET\n"
+        "Execute only this bounded packet. Do not expand scope or authority. "
+        "Return the required structured result only. If blocked or uncertain, "
+        "return NEEDS_JAYTEC or FAILED_CLOSED rather than guessing.\n\n"
+        + json.dumps(packet, ensure_ascii=False, sort_keys=True)
+    )
+
+
+class ManusLiteRuntime:
+    def __init__(self, client: ManusClient):
+        self.client = client
+
+    def start_task(self, request_json: str) -> dict[str, Any]:
+        req = parse_start_request(request_json)
+
+        packet = build_minimal_task_packet(
+            task_id=req.task_id,
+            objective=req.objective,
+            scope=req.scope,
+            authority_source=req.authority_source,
+            allowed_actions=list(req.allowed_actions),
+            required_context=req.required_context,
+            constraints=list(req.constraints),
+            reference_ids=list(req.reference_ids),
+        )
+
+        # There is intentionally no caller-controlled profile input here.
+        route = self.client.prepare_route(
+            scope=req.scope,
+            authority_source=req.authority_source,
+            current_task_authorized=req.current_task_authorized,
+            requested_profile="lite",
+            requested_connector_purposes=req.connector_purposes,
+            connector_mutation_authorized=req.connector_mutation_authorized,
+        )
+
+        created = self.client.create_task(
+            route,
+            _prompt(packet),
+            title=req.title,
+            structured_output_schema=MANUS_RESULT_JSON_SCHEMA,
+        )
+        provider_task_id = str(created.get("task_id") or "").strip()
+        if not provider_task_id:
+            raise ManusRuntimeError("MANUS_RUNTIME_PROVIDER_TASK_ID_MISSING")
+
+        # create_task already verifies the provider-observed profile before
+        # returning. Report only safe non-secret routing metadata.
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "STARTED",
+            "task_id": req.task_id,
+            "provider_task_id": provider_task_id,
+            "requested_profile": "lite",
+            "observed_profile_verified": True,
+            "project_id": route.authorization.project_id,
+            "connectors": list(route.authorization.connectors),
+            "connector_permissions": [list(v) for v in route.connector_permissions],
+            "packet_sha256": packet_digest(packet),
+        }
+
+    def start_task_idempotent(
+        self,
+        request_json: str,
+        registry: Any,
+    ) -> dict[str, Any]:
+        """Start exactly once per normalized task id/request within registry TTL."""
+        key, digest = start_request_identity(request_json)
+        try:
+            existing = registry.lookup(key, digest)
+        except Exception as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise ManusRuntimeError("MANUS_RUNTIME_CONFLICTING_DUPLICATE") from exc
+            raise
+
+        if isinstance(existing, Mapping):
+            replay = dict(existing)
+            replay["idempotent_replay"] = True
+            return replay
+
+        starting = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "STARTING",
+            "task_id": key.split(":", 1)[1],
+            "requested_profile": "lite",
+        }
+        try:
+            claimed = registry.claim_once(key, digest, starting)
+        except Exception as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise ManusRuntimeError("MANUS_RUNTIME_CONFLICTING_DUPLICATE") from exc
+            raise
+
+        if not claimed:
+            try:
+                raced = registry.lookup(key, digest)
+            except Exception as exc:
+                if str(exc) == "CONFLICTING_DUPLICATE":
+                    raise ManusRuntimeError("MANUS_RUNTIME_CONFLICTING_DUPLICATE") from exc
+                raise
+            if not isinstance(raced, Mapping):
+                raise ManusRuntimeError("MANUS_RUNTIME_IDEMPOTENCY_RACE_UNRESOLVED")
+            replay = dict(raced)
+            replay["idempotent_replay"] = True
+            return replay
+
+        try:
+            result = self.start_task(request_json)
+        except Exception as exc:
+            result = runtime_error_payload(exc)
+
+        try:
+            registry.store(key, digest, result)
+        except Exception as exc:
+            if str(exc) == "CONFLICTING_DUPLICATE":
+                raise ManusRuntimeError("MANUS_RUNTIME_CONFLICTING_DUPLICATE") from exc
+            raise
+        return dict(result)
+
+    def task_status(self, provider_task_id: str) -> dict[str, Any]:
+        task_id = str(provider_task_id or "").strip()
+        if not task_id or len(task_id) > MAX_STATUS_TASK_ID:
+            raise ManusRuntimeError("MANUS_RUNTIME_PROVIDER_TASK_ID_INVALID")
+
+        # Build a Lite-only decision locally before reading Manus. This contains
+        # no paid-profile override path.
+        lite = authorize_manus_route(
+            requested_profile="lite",
+            route_supports_profile_selector=True,
+        )
+
+        detail = self.client.task_detail(task_id)
+        task = _task(detail)
+        observed = task.get("agent_profile")
+        try:
+            verify_manus_profile(
+                lite,
+                observed_profile=str(observed) if observed not in (None, "") else None,
+            )
+        except ManusProfilePolicyError:
+            try:
+                self.client.stop_task(task_id)
+            except Exception:
+                pass
+            raise
+
+        project_id, _project_name = self.client.resolve_manus_project()
+        observed_project = task.get("project_id")
+        if observed_project not in (None, "") and str(observed_project) != project_id:
+            try:
+                self.client.stop_task(task_id)
+            except Exception:
+                pass
+            raise ManusRuntimeError("MANUS_RUNTIME_PROJECT_MISMATCH")
+
+        status = str(task.get("status") or "").strip().casefold()
+        out: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "status": "PENDING",
+            "provider_task_id": task_id,
+            "requested_profile": "lite",
+            "observed_profile": "lite",
+            "task": safe_task_summary(detail),
+        }
+
+        if status in {"error", "failed", "cancelled", "canceled"}:
+            out["status"] = "FAILED_CLOSED"
+            out["reason"] = "MANUS_PROVIDER_TASK_FAILED"
+            return out
+        if status not in {"stopped", "completed", "success", "succeeded"}:
+            return out
+
+        messages = self.client.list_messages(task_id, limit=100)
+        result = _latest_structured_value(messages)
+        if result is None:
+            out["status"] = "FAILED_CLOSED"
+            out["reason"] = "MANUS_STRUCTURED_RESULT_MISSING"
+            return out
+
+        # Validate any Manus -> JAYTEC specialist request as request-only
+        # metadata. It never self-dispatches another provider.
+        requests = result.get("specialist_requests")
+        if isinstance(requests, list):
+            for request in requests:
+                if isinstance(request, Mapping):
+                    validate_specialist_request(request)
+                else:
+                    raise ManusRuntimeError("MANUS_RUNTIME_SPECIALIST_REQUEST_INVALID")
+
+        verify_manus_completion(result)
+        out["status"] = "VERIFIED_COMPLETE"
+        out["result"] = dict(result)
+        return out
+
+
+def runtime_error_payload(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, ManusInsufficientCredits):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "BLOCKED_LITE_AVAILABILITY",
+            "error": "MANUS_LITE_VENDOR_QUOTA_OR_AVAILABILITY_BLOCK",
+            "monetary_topup_required": False,
+        }
+    if isinstance(
+        exc,
+        (ManusRuntimeError, ManusProfilePolicyError, ManusGovernanceError, ManusError),
+    ):
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "FAILED_CLOSED",
+            "error": str(exc),
+        }
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": "FAILED_CLOSED",
+        "error": type(exc).__name__,
+    }

@@ -16,6 +16,8 @@ from dispatch_authority_boundary import (
 )
 from auth_security import is_strong_mcp_auth_token, require_mcp_auth_token
 from http_security import load_host_origin_policy
+from manus_adapter import MANUS_API_KEY, ManusClient
+from manus_runtime import ManusLiteRuntime, runtime_error_payload
 from provider_endpoints import (
     OPENAI_API_BASE,
     OPENROUTER_API_BASE,
@@ -272,6 +274,9 @@ def _orchestration_status_json(
             "gemini_model": gemini_model,
             "codex_circuit": codex_circuit,
             "gemini_circuit": gemini_circuit,
+            "manus_adapter_configured": bool(MANUS_API_KEY),
+            "manus_profile_policy": "lite_only_no_exceptions",
+            "manus_runtime": "JAYTEC_MANUS_LITE_RUNTIME_V1",
             "idempotency_store": idempotency_store,
             "runtime_mode": runtime_mode,
             "production_ready": production_ready,  # legacy bridge-scoped field
@@ -547,6 +552,55 @@ def create_mcp_app() -> FastMCP:
             codex_dispatch=codex_dispatch,
             gemini_dispatch=gemini_dispatch,
         )
+
+    def _manus_dispatch_boundary() -> tuple[bool, str]:
+        decision = evaluate_dispatch_boundary(runtime_mode=RUNTIME_MODE)
+        if not decision.allowed:
+            return False, decision.reason
+        if not MANUS_API_KEY:
+            return False, "MANUS_API_KEY_NOT_CONFIGURED"
+        return True, "MANUS_LITE_RUNTIME_ALLOWED"
+
+    def _manus_runtime() -> ManusLiteRuntime:
+        return ManusLiteRuntime(ManusClient())
+
+    @mcp.tool
+    def manus_start_task(request_json: str) -> str:
+        """Start a bounded JAYTEC-owned Manus task. Profile is Lite-only."""
+        allowed, reason = _manus_dispatch_boundary()
+        if not allowed:
+            return json.dumps(
+                {
+                    "schema_version": "JAYTEC_MANUS_LITE_RUNTIME_V1",
+                    "status": "POLICY_BLOCKED",
+                    "error": reason,
+                },
+                sort_keys=True,
+            )
+        try:
+            result = _manus_runtime().start_task_idempotent(request_json, registry)
+        except Exception as exc:
+            result = runtime_error_payload(exc)
+        return json.dumps(result, ensure_ascii=False, sort_keys=True)
+
+    @mcp.tool
+    def manus_task_status(provider_task_id: str) -> str:
+        """Read/verify one Manus task. Non-Lite identity fails closed."""
+        allowed, reason = _manus_dispatch_boundary()
+        if not allowed:
+            return json.dumps(
+                {
+                    "schema_version": "JAYTEC_MANUS_LITE_RUNTIME_V1",
+                    "status": "POLICY_BLOCKED",
+                    "error": reason,
+                },
+                sort_keys=True,
+            )
+        try:
+            result = _manus_runtime().task_status(provider_task_id)
+        except Exception as exc:
+            result = runtime_error_payload(exc)
+        return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
     # ---------------- Legacy compatibility surface ----------------
     # Free-form direct OpenAI calls bypass the unified JAYTEC task-packet policy.

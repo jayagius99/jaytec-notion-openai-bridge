@@ -61,6 +61,33 @@ Allowed overall statuses:
 
 ## Current transport truth
 
+### Manus Lite runtime
+
+Manus is not silently inserted into TaskPacket v1 fan-out. It is exposed as a
+separate asynchronous JAYTEC-owned automation surface:
+
+- `manus_start_task(request_json)`
+- `manus_task_status(provider_task_id)`
+
+The runtime version is `JAYTEC_MANUS_LITE_RUNTIME_V1`. It accepts bounded
+current-task authority, minimum context, allowed actions, and optional explicit
+GitHub/Neon/Render connector purposes. It accepts no profile selector or paid
+override field.
+
+Every Manus task is explicitly pinned to `lite`; the provider-observed profile
+must verify as Lite after creation and on readback. Non-Lite or unobservable
+identity fails closed. There is no Standard/Max/paid fallback.
+
+Task starts use the existing durable JAYTEC idempotency registry. Same task id
+plus the same normalized request replays; the same task id with changed scope,
+context, connectors, objective, or authority fails closed rather than creating
+competing Manus work.
+
+The production surface is subject to the V2 dispatch-authority boundary.
+Staging can exercise the same runtime for bounded validation. Missing Manus
+credentials/project binding is a blocked Manus route, not permission to use a
+generic or paid Manus path.
+
 ### Engineering specialist (legacy TaskPacket key: `codex`)
 
 TaskPacket v1 retains the historical `codex` key and `CODEX_MODEL` environment name only for wire/config compatibility. The semantic role is now the provider-neutral JAYTEC engineering specialist. The approved current primary is exact `gpt-5.6-sol`. Any route must prove exact model identity, satisfy this contract, fail closed on mismatch, and preserve the same safety/validation gates. The legacy `gpt-5.3-codex` dependency is superseded and must not block G1/V2 simply because that model or its API project is unavailable.
