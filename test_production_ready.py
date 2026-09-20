@@ -51,6 +51,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model="gpt-5.6-sol",
                 gemini_model="google/gemini-3.1-pro-preview",
                 engineering_provider_active=False,
+                openrouter_provider_active=True,
                 mcp_auth_token_present=True,
                 mcp_auth_token_strong=True,
                 openai_api_key_present=True,
