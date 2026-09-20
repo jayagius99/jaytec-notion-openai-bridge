@@ -47,6 +47,7 @@ from deepseek_reviewer import (
 )
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from jaytec_protocol_portal import PortalStore, safe_error as portal_safe_error
+from forge_cognition import ForgeMindStore, safe_error as forge_cognition_safe_error
 from manus_adapter import MANUS_API_KEY, ManusClient
 from manus_runtime import ManusLiteRuntime, runtime_error_payload
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
@@ -91,6 +92,10 @@ DATABASE_URL = (
     or os.environ.get("DATABASE_URL", "").strip()
 )
 PROTOCOL_DATABASE_URL = os.environ.get("JAYTEC_PROTOCOL_DATABASE_URL", "").strip()
+FORGE_COGNITION_DATABASE_URL = (
+    os.environ.get("FORGE_COGNITION_DATABASE_URL", "").strip()
+    or PROTOCOL_DATABASE_URL
+)
 
 if not MCP_AUTH_TOKEN:
     raise RuntimeError("MCP_AUTH_TOKEN is required")
@@ -202,6 +207,15 @@ def orchestration_status() -> str:
             "reason": "JAYTEC_PROTOCOL_DATABASE_URL_NOT_CONFIGURED",
         }
     )
+    forge_cognition = (
+        ForgeMindStore(FORGE_COGNITION_DATABASE_URL).probe()
+        if FORGE_COGNITION_DATABASE_URL
+        else {
+            "schema_version": "FORGE_COGNITIVE_CONTINUITY_V1",
+            "status": "BLOCKED",
+            "reason": "FORGE_COGNITION_DATABASE_URL_NOT_CONFIGURED",
+        }
+    )
     return json.dumps(
         {
             "status": "STAGING",
@@ -225,6 +239,7 @@ def orchestration_status() -> str:
             "idempotency_store": IDEMPOTENCY_STORE,
             "autorecovery": autorecovery,
             "protocol_portal": portal,
+            "forge_cognition": forge_cognition,
             "production_ready": False,
         },
         sort_keys=True,
@@ -412,6 +427,58 @@ def jaytec_protocol_transition_task(
     except Exception as exc:
         result = portal_safe_error(exc)
     return json.dumps(result, default=str, sort_keys=True)
+
+
+@mcp.tool
+def forge_cognition_status() -> str:
+    """Read Forge canonical cognition readiness without activating Forge."""
+    if not FORGE_COGNITION_DATABASE_URL:
+        return json.dumps(
+            {
+                "schema_version": "FORGE_COGNITIVE_CONTINUITY_V1",
+                "status": "BLOCKED",
+                "reason": "FORGE_COGNITION_DATABASE_URL_NOT_CONFIGURED",
+                "activated": False,
+            },
+            sort_keys=True,
+        )
+    try:
+        store = ForgeMindStore(FORGE_COGNITION_DATABASE_URL)
+        probe = store.probe()
+        snapshot = store.snapshot("FORGE") if probe.get("status") == "PASS" else None
+        return json.dumps(
+            {
+                **probe,
+                "activated": bool(snapshot and snapshot.get("mode") == "RUNNING"),
+                "forge_snapshot": snapshot,
+            },
+            default=str,
+            sort_keys=True,
+        )
+    except Exception as exc:
+        return json.dumps(forge_cognition_safe_error(exc), sort_keys=True)
+
+
+@mcp.tool
+def forge_cognition_snapshot() -> str:
+    """Read the canonical Forge mind state; no mutation and no model invocation."""
+    if not FORGE_COGNITION_DATABASE_URL:
+        return json.dumps(
+            {
+                "schema_version": "FORGE_COGNITIVE_CONTINUITY_V1",
+                "status": "BLOCKED",
+                "reason": "FORGE_COGNITION_DATABASE_URL_NOT_CONFIGURED",
+            },
+            sort_keys=True,
+        )
+    try:
+        return json.dumps(
+            ForgeMindStore(FORGE_COGNITION_DATABASE_URL).snapshot("FORGE"),
+            default=str,
+            sort_keys=True,
+        )
+    except Exception as exc:
+        return json.dumps(forge_cognition_safe_error(exc), sort_keys=True)
 
 
 @mcp.tool
