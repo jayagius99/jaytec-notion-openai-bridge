@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from manus_policy import ManusProfile, ManusProfilePolicyError
+from orchestration import ExecutionRegistry
 from manus_runtime import (
     ManusLiteRuntime,
     ManusRuntimeError,
@@ -39,6 +40,7 @@ class FakeClient:
         self.prepare_calls = []
         self.stopped = []
         self.created_prompt = None
+        self.create_count = 0
 
     def prepare_route(self, **kwargs):
         self.prepare_calls.append(dict(kwargs))
@@ -56,6 +58,7 @@ class FakeClient:
         )
 
     def create_task(self, route, content, *, title=None, structured_output_schema=None):
+        self.create_count += 1
         self.created_prompt = content
         self.created_schema = structured_output_schema
         self.created_title = title
@@ -177,6 +180,32 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         )
         self.assertNotIn("standard", client.created_prompt.casefold())
         self.assertIn("JAYTEC MANUS TASK PACKET", client.created_prompt)
+
+    def test_idempotent_start_replays_without_duplicate_provider_task(self):
+        client = FakeClient()
+        runtime = ManusLiteRuntime(client)
+        registry = ExecutionRegistry()
+        first = runtime.start_task_idempotent(start_payload(), registry)
+        second = runtime.start_task_idempotent(start_payload(), registry)
+        self.assertEqual(first["provider_task_id"], "provider-123")
+        self.assertEqual(second["provider_task_id"], "provider-123")
+        self.assertTrue(second["idempotent_replay"])
+        self.assertEqual(client.create_count, 1)
+
+    def test_same_task_id_with_changed_request_fails_closed(self):
+        client = FakeClient()
+        runtime = ManusLiteRuntime(client)
+        registry = ExecutionRegistry()
+        runtime.start_task_idempotent(start_payload(), registry)
+        with self.assertRaisesRegex(
+            ManusRuntimeError,
+            "MANUS_RUNTIME_CONFLICTING_DUPLICATE",
+        ):
+            runtime.start_task_idempotent(
+                start_payload(objective="Different objective"),
+                registry,
+            )
+        self.assertEqual(client.create_count, 1)
 
     def test_status_rejects_and_stops_non_lite_task(self):
         client = FakeClient(observed_profile="standard", task_status="running")
