@@ -110,6 +110,54 @@ Core law:
 
 > The assignment survives the worker.
 
+### JAYTEC Protocol Portal — mandatory task intake
+
+Every owner-authorized `JAYTEC:EXECUTE` assignment must be represented in the
+canonical JAYTEC protocol portal before or at the first material execution step.
+
+The portal reuses the existing canonical `jaytec_jobs` +
+`jaytec_job_events` state. It MUST NOT create a second scheduler, second task
+ledger, competing queue authority, or alternate source of truth.
+
+For each task, JAYTEC must persist:
+- a stable task ID;
+- objective and current phase;
+- source chat/reference label;
+- WATCH enabled/disabled state;
+- worker kind and approved worker route;
+- current fencing token;
+- durable checkpoint reference;
+- dependencies/blockers;
+- next safe action;
+- terminal or intentional-pause state when applicable.
+
+Registration is continuity metadata only. Registering a task never grants
+provider, specialist, connector, spend, repository-write, deployment,
+ROOT_OWNER, or production authority.
+
+Multiple chats may register independent tasks simultaneously. Each task has its
+own task ID, checkpoint, fencing token, worker route, stop reason and WATCH
+state. One chat/task must never silently replace another because a newer chat
+started.
+
+For a normal ChatGPT app conversation, the portal records
+`worker_kind=CHATGPT_UI`. WATCH can preserve state, detect blockers, produce a
+continuation packet and notify Jay, but it must not claim unattended UI-chat
+resurrection.
+
+A task may use `worker_kind=JAYTEC_CALLABLE` only when its exact callable route
+has been registered, authenticated, bounded by the task authority/cost
+envelope, and can produce fenced heartbeat/progress evidence.
+
+When Jay uses `JAYTEC:WATCH` in a chat, resolve the task registered for that
+chat/current assignment and continue from its latest checkpoint. If the chat
+contains more than one active registered assignment and the intended task is
+ambiguous, return the active task IDs rather than guessing.
+
+Every material progress step should checkpoint back to the portal. Completed
+steps must not be recreated unless verification proves the checkpoint stale or
+invalid.
+
 WATCH must never keep poking a UI merely because a chat appears quiet. It reads
 canonical assignment state, classifies why execution stopped, and automatically
 recovers only stops that are explicitly classified as recoverable.
