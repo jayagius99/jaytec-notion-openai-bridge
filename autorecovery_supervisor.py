@@ -622,6 +622,7 @@ class PostgresAssignmentStore:
         lease_owner: str,
         lease_seconds: int = 180,
         max_recovery_attempts: int = 3,
+        heartbeat_timeout_seconds: int = 600,
         now: Optional[datetime] = None,
     ) -> Optional[RecoveryLease]:
         if not lease_owner.strip():
@@ -646,7 +647,8 @@ class PostgresAssignmentStore:
                     state.stop_reason is StopReason.RUNNING
                     and (
                         state.last_heartbeat_at is None
-                        or (current - state.last_heartbeat_at).total_seconds() > 600
+                        or (current - state.last_heartbeat_at).total_seconds()
+                        > heartbeat_timeout_seconds
                     )
                 ):
                     raise AutoRecoveryError("ASSIGNMENT_NOT_RECOVERABLE")
@@ -724,6 +726,8 @@ class PostgresAssignmentStore:
                         last_progress_at = CASE WHEN %s IS NULL
                             THEN last_progress_at ELSE %s END,
                         progress_marker = COALESCE(%s, progress_marker),
+                        recovery_attempts = CASE WHEN %s IS NULL
+                            THEN recovery_attempts ELSE 0 END,
                         last_error = NULL,
                         updated_at = %s
                     WHERE task_id = %s
@@ -734,6 +738,7 @@ class PostgresAssignmentStore:
                         current,
                         progress_marker,
                         current,
+                        progress_marker,
                         progress_marker,
                         current,
                         task_id,
@@ -814,6 +819,7 @@ class MemoryAssignmentStore:
         lease_owner: str,
         lease_seconds: int = 180,
         max_recovery_attempts: int = 3,
+        heartbeat_timeout_seconds: int = 600,
         now: Optional[datetime] = None,
     ) -> Optional[RecoveryLease]:
         current = _aware(now or utcnow())
@@ -869,6 +875,7 @@ class MemoryAssignmentStore:
                 "last_heartbeat_at": current,
                 "last_progress_at": current if progress_marker else state.last_progress_at,
                 "progress_marker": progress_marker or state.progress_marker,
+                "recovery_attempts": 0 if progress_marker else state.recovery_attempts,
                 "last_error": None,
                 "updated_at": current,
             }
@@ -1005,6 +1012,7 @@ class AutoRecoverySupervisor:
             task_id,
             lease_owner=self.instance_id,
             max_recovery_attempts=self.max_recovery_attempts,
+            heartbeat_timeout_seconds=self.heartbeat_timeout_seconds,
             now=current,
         )
         if lease is None:
@@ -1031,7 +1039,11 @@ class AutoRecoverySupervisor:
         route = route_for_attempt(lease.attempt_number)
         checkpoint = state.checkpoint
         try:
-            verified, verify_detail = self.verifier.verify(checkpoint)
+            try:
+                verified, verify_detail = self.verifier.verify(checkpoint)
+            except Exception as exc:
+                verified = False
+                verify_detail = "VERIFIER_EXCEPTION:" + type(exc).__name__
             if not verified:
                 self.store.mark_stop(
                     task_id,
@@ -1039,6 +1051,13 @@ class AutoRecoverySupervisor:
                     stop_reason=StopReason.WAITING_FOR_DEPENDENCY,
                     error="CHECKPOINT_VERIFICATION_FAILED:" + str(verify_detail),
                     now=current,
+                )
+                self._notify(
+                    {
+                        "event": "JAYTEC_AUTORECOVERY_CHECKPOINT_BLOCKED",
+                        "task_id": task_id,
+                        "detail": str(verify_detail),
+                    }
                 )
                 return RecoveryDecision(
                     SupervisorAction.NOTIFY_JAY,
@@ -1051,12 +1070,20 @@ class AutoRecoverySupervisor:
                 fencing_token=lease.fencing_token,
                 recovery_route=route,
             )
-            invocation = self.invoker.invoke(
-                checkpoint=checkpoint,
-                continuation_packet=packet,
-                route=route,
-                fencing_token=lease.fencing_token,
-            )
+            try:
+                invocation = self.invoker.invoke(
+                    checkpoint=checkpoint,
+                    continuation_packet=packet,
+                    route=route,
+                    fencing_token=lease.fencing_token,
+                )
+            except Exception as exc:
+                invocation = WorkerInvocation(
+                    accepted=False,
+                    worker_id=None,
+                    route=route,
+                    detail="INVOKER_EXCEPTION:" + type(exc).__name__,
+                )
             if not invocation.accepted:
                 stop_reason = (
                     StopReason.RECOVERY_EXHAUSTED
@@ -1077,12 +1104,21 @@ class AutoRecoverySupervisor:
                     recovery_route=route,
                 )
 
-            health = self.health_probe.wait_for_healthy(
-                task_id=task_id,
-                fencing_token=lease.fencing_token,
-                worker_id=invocation.worker_id,
-                timeout_seconds=self.health_verify_timeout_seconds,
-            )
+            try:
+                health = self.health_probe.wait_for_healthy(
+                    task_id=task_id,
+                    fencing_token=lease.fencing_token,
+                    worker_id=invocation.worker_id,
+                    timeout_seconds=self.health_verify_timeout_seconds,
+                )
+            except Exception as exc:
+                health = WorkerHealth(
+                    healthy=False,
+                    worker_id=invocation.worker_id,
+                    heartbeat_at=None,
+                    progress_marker=None,
+                    detail="HEALTH_PROBE_EXCEPTION:" + type(exc).__name__,
+                )
             if not health.healthy or health.heartbeat_at is None:
                 stop_reason = (
                     StopReason.RECOVERY_EXHAUSTED
