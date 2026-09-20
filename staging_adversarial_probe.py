@@ -168,6 +168,14 @@ def main() -> int:
         if code != 0:
             return code
 
+    # Temporary read-only lifecycle diagnostic. This never creates, stops, or
+    # messages a Manus task. Its nonzero diagnostic status is deliberately
+    # ignored so a readback cannot create a deployment restart loop.
+    if os.environ.get("RUN_LIVE_MANUS_TASK_READBACK", "0").strip() == "1":
+        from staging_manus_review_readback import main as manus_readback_main
+
+        manus_readback_main()
+
     return 0
 
 

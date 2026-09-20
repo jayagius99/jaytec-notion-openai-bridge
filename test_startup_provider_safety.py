@@ -95,7 +95,14 @@ class StartupProviderSafetyTests(unittest.TestCase):
         self.assertGreater(governance_import, governance_flag)
         self.assertGreaterEqual(usability_flag, 0)
         self.assertGreater(usability_import, usability_flag)
+        readback_flag = source.find('RUN_LIVE_MANUS_TASK_READBACK')
+        readback_import = source.find(
+            'from staging_manus_review_readback import main as manus_readback_main'
+        )
+        self.assertGreaterEqual(readback_flag, 0)
+        self.assertGreater(readback_import, readback_flag)
         self.assertIn('== "1"', source)
+        self.assertNotIn('return manus_readback_main()', source)
 
 
 if __name__ == "__main__":
