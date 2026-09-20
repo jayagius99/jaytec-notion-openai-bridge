@@ -55,6 +55,10 @@ OPENROUTER_BASE_URL = validate_openrouter_endpoint(
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+MCP_AUTH_SUBJECT = os.environ.get("MCP_AUTH_SUBJECT", "").strip()
+MCP_AUTH_CLIENT_ID = os.environ.get("MCP_AUTH_CLIENT_ID", "").strip()
+EXPECTED_PRODUCTION_AUTH_SUBJECT = "jaytec-control-plane"
+EXPECTED_PRODUCTION_AUTH_CLIENT_ID = "jaytec-control-plane"
 PORT = int(os.environ.get("PORT", "8000"))
 
 # Timeouts / retries (bounded)
@@ -105,6 +109,15 @@ def _require_startup_prereqs() -> None:
             )
         # Production must not expose MCP without an explicit Host allowlist.
         load_host_origin_policy(os.environ, require_hosts=True)
+        if MCP_AUTH_SUBJECT != EXPECTED_PRODUCTION_AUTH_SUBJECT:
+            raise RuntimeError(
+                "production MCP_AUTH_SUBJECT must be jaytec-control-plane; "
+                "Notion Agent or other transport identities cannot own the execution bridge."
+            )
+        if MCP_AUTH_CLIENT_ID != EXPECTED_PRODUCTION_AUTH_CLIENT_ID:
+            raise RuntimeError(
+                "production MCP_AUTH_CLIENT_ID must be jaytec-control-plane."
+            )
 
 
 
@@ -118,6 +131,8 @@ def compute_production_ready(
     openai_api_key_present: bool,
     openrouter_api_key_present: bool,
     legacy_direct_tools_enabled: bool = False,
+    mcp_auth_subject: str = "",
+    mcp_auth_client_id: str = "",
 ) -> bool:
     """Compute whether this bridge instance is truly production-ready.
 
@@ -148,6 +163,10 @@ def compute_production_ready(
     if not openrouter_api_key_present:
         return False
     if legacy_direct_tools_enabled:
+        return False
+    if mcp_auth_subject != EXPECTED_PRODUCTION_AUTH_SUBJECT:
+        return False
+    if mcp_auth_client_id != EXPECTED_PRODUCTION_AUTH_CLIENT_ID:
         return False
     return True
 
@@ -241,7 +260,10 @@ def _orchestration_status_json(
             "gemini_circuit": gemini_circuit,
             "idempotency_store": idempotency_store,
             "runtime_mode": runtime_mode,
-            "production_ready": production_ready,
+            "production_ready": production_ready,  # legacy bridge-scoped field
+            "bridge_production_ready": production_ready,
+            "readiness_scope": "bridge_only",
+            "system_production_ready": False,
         },
         sort_keys=True,
     )
@@ -379,11 +401,19 @@ def create_mcp_app() -> FastMCP:
     """
     _require_startup_prereqs()
 
+    auth_subject = (
+        MCP_AUTH_SUBJECT
+        or ("jaytec-staging-client" if RUNTIME_MODE != "production" else "")
+    )
+    auth_client_id = (
+        MCP_AUTH_CLIENT_ID
+        or ("jaytec-staging-client" if RUNTIME_MODE != "production" else "")
+    )
     auth = StaticTokenVerifier(
         tokens={
             MCP_AUTH_TOKEN: {
-                "sub": "notion-agent",
-                "client_id": "jaytec-notion-openai-bridge",
+                "sub": auth_subject,
+                "client_id": auth_client_id,
             }
         }
     )
@@ -427,6 +457,8 @@ def create_mcp_app() -> FastMCP:
         openai_api_key_present=bool(OPENAI_API_KEY),
         openrouter_api_key_present=bool(OPENROUTER_API_KEY),
         legacy_direct_tools_enabled=legacy_direct_enabled,
+        mcp_auth_subject=MCP_AUTH_SUBJECT,
+        mcp_auth_client_id=MCP_AUTH_CLIENT_ID,
     )
 
     codex_circuit = CircuitBreaker(
@@ -518,7 +550,7 @@ def create_mcp_app() -> FastMCP:
 
     @mcp.tool
     def bridge_status() -> str:
-        return f"JAYTEC Notion/OpenAI bridge is online. OpenAI model: {OPENAI_MODEL}"
+        return f"JAYTEC controlled execution bridge is online. OpenAI model: {OPENAI_MODEL}"
 
     # ---------------- Unified orchestration surface ----------------
 
