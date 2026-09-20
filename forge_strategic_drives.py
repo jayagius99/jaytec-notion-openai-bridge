@@ -86,6 +86,16 @@ class OpportunityDecision(StrEnum):
     REJECT="REJECT"
 
 
+class CapabilityAcquisitionRoute(StrEnum):
+    USE_EXISTING="USE_EXISTING"
+    IMPROVE_EXISTING="IMPROVE_EXISTING"
+    BUILD_BOUNDED_TOOL="BUILD_BOUNDED_TOOL"
+    ACQUIRE_EXTERNAL="ACQUIRE_EXTERNAL"
+    HUMAN_SPECIALIST="HUMAN_SPECIALIST"
+    OWNER_REVIEW="OWNER_REVIEW"
+    BLOCKED="BLOCKED"
+
+
 def _text(v: Any, name: str, *, required: bool=True, maximum: int=12000) -> str:
     out=str(v or "").strip()
     if required and not out:
@@ -396,6 +406,140 @@ class CapabilityGap:
 
 def rank_capability_gaps(gaps: list[CapabilityGap]) -> list[CapabilityGap]:
     return sorted(gaps,key=lambda g:(-(g.gap*max(g.evidence_confidence,0.05)),g.capability))
+
+
+@dataclass(frozen=True)
+class CapabilityAcquisitionContext:
+    capability: str
+    required_scopes: tuple[str,...]
+    existing_capability_adequate: bool
+    existing_improvement_feasible: bool
+    bounded_build_feasible: bool
+    approved_external_capability_available: bool
+    requires_physical_action: bool
+    requires_legal_or_identity_action: bool
+    requires_external_spend: bool
+    human_specialist_can_act: bool
+
+    @classmethod
+    def parse(cls, value: Mapping[str,Any]) -> "CapabilityAcquisitionContext":
+        return cls(
+            capability=_text(value.get("capability"),"CAPABILITY",maximum=200),
+            required_scopes=tuple(_text(x,"REQUIRED_SCOPE",maximum=500) for x in (value.get("required_scopes") or [])),
+            existing_capability_adequate=value.get("existing_capability_adequate") is True,
+            existing_improvement_feasible=value.get("existing_improvement_feasible") is True,
+            bounded_build_feasible=value.get("bounded_build_feasible") is True,
+            approved_external_capability_available=value.get("approved_external_capability_available") is True,
+            requires_physical_action=value.get("requires_physical_action") is True,
+            requires_legal_or_identity_action=value.get("requires_legal_or_identity_action") is True,
+            requires_external_spend=value.get("requires_external_spend") is True,
+            human_specialist_can_act=value.get("human_specialist_can_act") is True,
+        )
+
+
+@dataclass(frozen=True)
+class CapabilityAcquisitionDecision:
+    route: CapabilityAcquisitionRoute
+    reason: str
+    execution_eligible: bool
+    authority_required: Optional[str]
+
+    def to_dict(self) -> dict[str,Any]:
+        return {
+            "route":self.route.value,
+            "reason":self.reason,
+            "execution_eligible":self.execution_eligible,
+            "authority_required":self.authority_required,
+        }
+
+
+def choose_capability_acquisition_route(
+    ctx: CapabilityAcquisitionContext,
+    authority: Optional[ExecutionAuthorityContext]=None,
+) -> CapabilityAcquisitionDecision:
+    """Choose a route; never convert capability availability into authority."""
+    if touches_root_boundary(ctx.required_scopes):
+        return CapabilityAcquisitionDecision(
+            CapabilityAcquisitionRoute.BLOCKED,
+            "ROOT_CONTROL_PLANE_SCOPE_RESERVED",
+            False,
+            "ROOT_OWNER",
+        )
+
+    if ctx.requires_legal_or_identity_action:
+        return CapabilityAcquisitionDecision(
+            CapabilityAcquisitionRoute.OWNER_REVIEW,
+            "LEGAL_OR_IDENTITY_ACTION_REQUIRES_OWNER_ROUTE",
+            False,
+            "OWNER_OR_LEGAL_HUMAN",
+        )
+
+    if ctx.requires_physical_action:
+        if ctx.human_specialist_can_act:
+            return CapabilityAcquisitionDecision(
+                CapabilityAcquisitionRoute.HUMAN_SPECIALIST,
+                "PHYSICAL_ACTION_REQUIRES_EMBODIED_SPECIALIST",
+                False,
+                "CURRENT_TASK_HUMAN_AUTHORITY",
+            )
+        return CapabilityAcquisitionDecision(
+            CapabilityAcquisitionRoute.OWNER_REVIEW,
+            "PHYSICAL_ACTION_HAS_NO_AUTHORIZED_HUMAN_ROUTE",
+            False,
+            "OWNER",
+        )
+
+    if ctx.existing_capability_adequate:
+        return CapabilityAcquisitionDecision(
+            CapabilityAcquisitionRoute.USE_EXISTING,
+            "EXISTING_CAPABILITY_ADEQUATE",
+            True,
+            None,
+        )
+
+    if ctx.existing_improvement_feasible:
+        return CapabilityAcquisitionDecision(
+            CapabilityAcquisitionRoute.IMPROVE_EXISTING,
+            "LOWEST_DEPENDENCY_CAPABILITY_EXPANSION",
+            True,
+            None,
+        )
+
+    if ctx.bounded_build_feasible:
+        return CapabilityAcquisitionDecision(
+            CapabilityAcquisitionRoute.BUILD_BOUNDED_TOOL,
+            "JAYTEC_OWNED_BUILD_FEASIBLE",
+            True,
+            None,
+        )
+
+    if ctx.approved_external_capability_available:
+        if ctx.requires_external_spend:
+            if (
+                authority is None
+                or not authority.current_task_authorized
+                or not authority.budget_authority_verified
+                or not authority.budget_authority_ref
+            ):
+                return CapabilityAcquisitionDecision(
+                    CapabilityAcquisitionRoute.OWNER_REVIEW,
+                    "EXTERNAL_ACQUISITION_REQUIRES_VERIFIED_BUDGET_AUTHORITY",
+                    False,
+                    "JAYTEC_BUDGET_AUTHORITY",
+                )
+        return CapabilityAcquisitionDecision(
+            CapabilityAcquisitionRoute.ACQUIRE_EXTERNAL,
+            "APPROVED_EXTERNAL_CAPABILITY_AVAILABLE",
+            True,
+            None,
+        )
+
+    return CapabilityAcquisitionDecision(
+        CapabilityAcquisitionRoute.BLOCKED,
+        "NO_CURRENT_SAFE_ROUTE",
+        False,
+        "RESEARCH_NEW_ROUTE",
+    )
 
 
 @dataclass(frozen=True)
