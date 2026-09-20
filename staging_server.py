@@ -682,6 +682,7 @@ def _run_deepseek_route_visibility_probe() -> None:
         "base_host": parsed.netloc or None,
         "model_visible": False,
         "models_count": None,
+        "visible_deepseek_models": [],
         "error_class": None,
     }
 
@@ -697,6 +698,11 @@ def _run_deepseek_route_visibility_probe() -> None:
                 if isinstance(getattr(item, "id", None), str)
             ]
             out["models_count"] = len(model_ids)
+            out["visible_deepseek_models"] = sorted(
+                model_id
+                for model_id in model_ids
+                if model_id.startswith("deepseek/")
+            )[:50]
             out["model_visible"] = DEEPSEEK_REVIEWER_MODEL in model_ids
             out["status"] = "SUCCESS" if out["model_visible"] else "MODEL_NOT_VISIBLE"
         except Exception as exc:
