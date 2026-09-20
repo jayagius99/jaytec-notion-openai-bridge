@@ -202,7 +202,7 @@ class ManusGovernanceTests(unittest.TestCase):
             "GitHub, Neon, and Render only",
             "Manus Lite is the ONLY permitted profile",
             "Never claim success because an action merely ran",
-            "you may not alter, bypass, reinterpret, or supersede it yourself",
+            "You may not alter, bypass, reinterpret, or supersede it yourself",
         ):
             self.assertIn(phrase, text)
         self.assertEqual(len(directive_sha256()), 64)
