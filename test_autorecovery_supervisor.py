@@ -623,6 +623,53 @@ class AutoRecoveryExecutionTests(unittest.TestCase):
         self.assertEqual(decision.action, SupervisorAction.RECOVERY_FAILED)
         self.assertEqual(len(invoker.calls), 1)
 
+    def test_final_failed_closed_recovery_attempt_exhausts_without_fourth_attempt(self):
+        store = MemoryAssignmentStore(
+            state(
+                stop_reason=StopReason.RUNNING,
+                worker_kind=WorkerKind.JAYTEC_CALLABLE,
+                heartbeat_age_seconds=900,
+                recovery_attempts=2,
+            )
+        )
+
+        class FailedClosedHealth(FakeHealth):
+            def wait_for_healthy(self, *, task_id, fencing_token, worker_id, timeout_seconds):
+                return WorkerHealth(
+                    healthy=True,
+                    worker_id=worker_id,
+                    heartbeat_at=NOW,
+                    progress_marker="MANUS_TERMINAL:FAILED_CLOSED:fail-final",
+                    detail="verified complete",
+                )
+
+        invoker = FakeInvoker()
+        notifier = FakeNotifier()
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=invoker,
+            health_probe=FailedClosedHealth(),
+            notifier=notifier,
+            instance_id="watch-a",
+        )
+
+        self.assertTrue(supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW))
+        decision = supervisor.tick("GOD-PREP-0017", now=NOW)
+
+        self.assertEqual(decision.action, SupervisorAction.RECOVERY_FAILED)
+        self.assertEqual(decision.effective_stop_reason, StopReason.RECOVERY_EXHAUSTED)
+        self.assertEqual(decision.reason, "RECOVERY_ATTEMPTS_EXHAUSTED")
+        self.assertEqual(store.state.recovery_attempts, 3)
+        self.assertEqual(store.state.stop_reason, StopReason.RECOVERY_EXHAUSTED)
+        self.assertEqual(len(invoker.calls), 1)
+        self.assertTrue(
+            any(
+                event.get("event") == "JAYTEC_AUTORECOVERY_EXHAUSTED"
+                for event in notifier.events
+            )
+        )
+
     def test_needs_jaytec_terminal_result_is_internal_dependency_not_owner_notification(self):
         seeded = state(
             stop_reason=StopReason.RUNNING,
