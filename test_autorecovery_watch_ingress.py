@@ -104,6 +104,7 @@ class FakeBrokerStore:
             ),
         )
         self.heartbeats = []
+        self.stops = []
 
     def get(self, task_id):
         return self.state if task_id == FORGE_TASK_ID else None
@@ -113,20 +114,34 @@ class FakeBrokerStore:
         assert fencing_token == self.state.fencing_token
         assert worker_id == self.state.worker_id
         self.heartbeats.append(progress_marker)
+        current = now or self.state.updated_at
         self.state = AssignmentState(
             **{
                 **self.state.__dict__,
                 "stop_reason": StopReason.RUNNING,
-                "last_heartbeat_at": self.state.updated_at,
-                "last_progress_at": self.state.updated_at,
-                "progress_marker": progress_marker,
+                "last_heartbeat_at": current,
+                "last_progress_at": current if progress_marker else self.state.last_progress_at,
+                "progress_marker": progress_marker or self.state.progress_marker,
                 "recovery_attempts": 0 if progress_marker is not None else self.state.recovery_attempts,
                 "last_error": None,
+                "updated_at": current,
             }
         )
 
-    def mark_stop(self, *args, **kwargs):
-        raise AssertionError("successful broker handoff must not stop assignment")
+    def mark_stop(self, task_id, *, fencing_token, stop_reason, error=None, now=None):
+        assert task_id == FORGE_TASK_ID
+        assert fencing_token == self.state.fencing_token
+        self.stops.append((stop_reason, error))
+        current = now or self.state.updated_at
+        self.state = AssignmentState(
+            **{
+                **self.state.__dict__,
+                "stop_reason": stop_reason,
+                "completed": stop_reason is StopReason.COMPLETED,
+                "last_error": error,
+                "updated_at": current,
+            }
+        )
 
 
 class FakeBrokerRuntime:
@@ -152,6 +167,37 @@ class FakeBrokerRuntime:
             "requested_profile": "lite",
             "observed_profile_verified": True,
         }
+
+
+
+class FakePendingBrokerRuntime(FakeBrokerRuntime):
+    def task_status_readonly(self, worker_id):
+        assert worker_id == "worker-existing"
+        return {
+            "status": "PENDING",
+            "provider_task_id": worker_id,
+            "requested_profile": "lite",
+            "observed_profile": "lite",
+        }
+
+    def task_status(self, worker_id):
+        return self.task_status_readonly(worker_id)
+
+
+class FakeSuccessBrokerRuntime(FakeBrokerRuntime):
+    def task_status_readonly(self, worker_id):
+        assert worker_id == "worker-existing"
+        return {
+            "status": "VERIFIED_COMPLETE",
+            "result": {
+                "status": "SUCCESS",
+                "summary": "Handoff work completed.",
+                "specialist_requests": [],
+            },
+        }
+
+    def task_status(self, worker_id):
+        return self.task_status_readonly(worker_id)
 
 
 class WatchIngressPolicyTests(unittest.TestCase):
@@ -250,6 +296,103 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(store.state.worker_id, "worker-existing")
         self.assertEqual(store.state.fencing_token, 9)
         self.assertEqual(len(store.heartbeats), 1)
+
+
+    def test_post_handoff_pending_restores_running_without_duplicate_handoff(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "progress_marker": "JAYTEC_BROKER_HANDOFF:already-delivered",
+                "recovery_attempts": 0,
+            }
+        )
+        runtime = FakePendingBrokerRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                {
+                    "task_id": FORGE_TASK_ID,
+                    "observed_refs": refs,
+                    "github_broker_context": broker_payload(refs),
+                },
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["github_broker"], "WORKER_RESUMED_PENDING")
+        self.assertEqual(result["decision"]["action"], "NOOP_HEALTHY")
+        self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
+        self.assertEqual(result["assignment"]["fencing_token"], 9)
+        self.assertEqual(result["assignment"]["recovery_attempts"], 0)
+        self.assertEqual(result["assignment"]["stop_reason"], "RUNNING")
+        self.assertEqual(runtime.handoffs, [])
+        self.assertEqual(store.stops, [])
+
+    def test_post_handoff_new_success_terminal_uses_canonical_terminal_policy(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "progress_marker": "JAYTEC_BROKER_HANDOFF:already-delivered",
+                "recovery_attempts": 0,
+            }
+        )
+        runtime = FakeSuccessBrokerRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                {
+                    "task_id": FORGE_TASK_ID,
+                    "observed_refs": refs,
+                    "github_broker_context": broker_payload(refs),
+                },
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["github_broker"], "WORKER_TERMINAL_ADVANCED")
+        self.assertEqual(result["decision"]["action"], "STOP_WATCH")
+        self.assertEqual(result["assignment"]["stop_reason"], "COMPLETED")
+        self.assertTrue(result["assignment"]["completed"])
+        self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
+        self.assertEqual(result["assignment"]["fencing_token"], 9)
+        self.assertEqual(runtime.handoffs, [])
+
 
 
     def test_broker_request_contract_rejects_unsupported_and_stale_mutations(self):
