@@ -106,13 +106,13 @@ def main() -> int:
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY_REQUIRED")
 
-    prompt = (
+    base_prompt = (
         "You are an independent adversarial software-safety reviewer. "
         "You did not implement this system. Review ONLY the sanitized evidence packet below. "
         "Do not assume unproven facts. Challenge hidden dependencies, replay/duplicate safety, "
         "provider identity, malformed-output handling, concurrency/rate limiting, versioning, "
         "Windows coexistence, destructive isolation, and gate integrity. "
-        "Return ONLY one JSON object with keys: verdict (PASS|PASS_WITH_FINDINGS|FAIL), "
+        "Return ONLY one compact JSON object with keys: verdict (PASS|PASS_WITH_FINDINGS|FAIL), "
         "critical_findings (array of strings), evidence_challenges (array of strings), "
         "missing_evidence (array of strings), confidence (LOW|MEDIUM|HIGH), "
         "safe_to_unlock_v2 (boolean). Never include chain-of-thought. "
@@ -126,29 +126,70 @@ def main() -> int:
         timeout=90.0,
         max_retries=0,
     )
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        max_tokens=2500,
-        stream=False,
-        extra_body={"provider": {"allow_fallbacks": False}},
-    )
-    if not response.choices:
-        raise RuntimeError("INDEPENDENT_REVIEW_NO_CHOICES")
 
-    returned_model = str(getattr(response, "model", "") or "")
-    if returned_model and returned_model != MODEL:
-        raise RuntimeError(f"INDEPENDENT_REVIEW_MODEL_IDENTITY_MISMATCH:{returned_model}")
+    def _call(*, retry_format: bool):
+        prompt = base_prompt
+        if retry_format:
+            prompt += (
+                "\nYour previous answer was empty, malformed, incomplete, or not valid JSON. "
+                "Re-answer from scratch. Return one compact complete JSON object only. "
+                "No markdown, no commentary, no text outside the JSON object."
+            )
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=4096,
+            stream=False,
+            extra_body={"provider": {"allow_fallbacks": False}},
+        )
+        if not response.choices:
+            raise RuntimeError("INDEPENDENT_REVIEW_NO_CHOICES")
+        returned_model = str(getattr(response, "model", "") or "")
+        if returned_model and returned_model != MODEL:
+            raise RuntimeError(
+                f"INDEPENDENT_REVIEW_MODEL_IDENTITY_MISMATCH:{returned_model}"
+            )
+        choice = response.choices[0]
+        finish_reason = str(getattr(choice, "finish_reason", "") or "")
+        if finish_reason in {"length", "content_filter"}:
+            raise RuntimeError(
+                "INDEPENDENT_REVIEW_TRUNCATED_OR_BLOCKED:" + finish_reason
+            )
+        result = json_object(choice.message.content or "")
+        return returned_model, result
 
-    result = json_object(response.choices[0].message.content or "")
+    last_error: Exception | None = None
+    returned_model = ""
+    result = None
+    for retry_format in (False, True):
+        try:
+            returned_model, result = _call(retry_format=retry_format)
+            break
+        except Exception as exc:
+            last_error = exc
+
+    if result is None:
+        print(json.dumps({
+            "event": "JAYTEC_G1_INDEPENDENT_REVIEW",
+            "status": "FAILED_CLOSED",
+            "requested_model": MODEL,
+            "returned_model": returned_model or None,
+            "packet_sha256": packet_sha,
+            "error_class": type(last_error).__name__ if last_error else "UNKNOWN",
+            "safe_to_unlock_v2": False,
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+
     verdict = result.get("verdict")
     if verdict not in {"PASS", "PASS_WITH_FINDINGS", "FAIL"}:
         raise RuntimeError("INDEPENDENT_REVIEW_VERDICT_INVALID")
     if not isinstance(result.get("safe_to_unlock_v2"), bool):
         raise RuntimeError("INDEPENDENT_REVIEW_UNLOCK_FIELD_INVALID")
     for key in ("critical_findings", "evidence_challenges", "missing_evidence"):
-        if not isinstance(result.get(key), list) or not all(isinstance(x, str) for x in result[key]):
+        if not isinstance(result.get(key), list) or not all(
+            isinstance(x, str) for x in result[key]
+        ):
             raise RuntimeError(f"INDEPENDENT_REVIEW_{key.upper()}_INVALID")
 
     print(json.dumps({
