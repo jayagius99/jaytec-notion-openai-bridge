@@ -31,8 +31,10 @@ from specialist_adapters import (
     build_engineering_dispatch,
     build_gemini_dispatch,
     ENGINEERING_PROVIDER_ACTIVE,
+    OPENROUTER_PROVIDER_ACTIVE,
     resolve_engineering_model,
     resolve_engineering_provider_mode,
+    resolve_openrouter_provider_mode,
 )
 
 # --- Runtime configuration (NO secrets in code) ---
@@ -46,6 +48,7 @@ OPENAI_BASE_URL = validate_openai_endpoint(
 ENGINEERING_MODEL = resolve_engineering_model()
 CODEX_MODEL = ENGINEERING_MODEL
 ENGINEERING_PROVIDER_MODE = resolve_engineering_provider_mode()
+OPENROUTER_PROVIDER_MODE = resolve_openrouter_provider_mode()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 
 # OpenRouter route for Gemini research (optional; disabled unless configured).
@@ -101,6 +104,10 @@ def _require_startup_prereqs() -> None:
     )
     if ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE and not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set while ENGINEERING_PROVIDER_MODE=ACTIVE.")
+    if OPENROUTER_PROVIDER_MODE == OPENROUTER_PROVIDER_ACTIVE and not OPENROUTER_API_KEY:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY is not set while OPENROUTER_PROVIDER_MODE=ACTIVE."
+        )
 
     # Fail closed: production requires durable idempotency.
     if RUNTIME_MODE == "production":
@@ -129,6 +136,7 @@ def compute_production_ready(
     codex_model: str,
     gemini_model: str,
     engineering_provider_active: bool,
+    openrouter_provider_active: bool,
     mcp_auth_token_present: bool,
     mcp_auth_token_strong: bool,
     openai_api_key_present: bool,
@@ -160,6 +168,8 @@ def compute_production_ready(
     if not engineering_provider_active:
         return False
     if gemini_model != EXPECTED_GEMINI_MODEL:
+        return False
+    if not openrouter_provider_active:
         return False
     if not mcp_auth_token_present:
         return False
@@ -261,6 +271,7 @@ def _orchestration_status_json(
             "operation": "execute_task_packet",
             "engineering_model": codex_model,
             "engineering_provider_mode": ENGINEERING_PROVIDER_MODE,
+            "openrouter_provider_mode": OPENROUTER_PROVIDER_MODE,
             "codex_model": codex_model,  # legacy compatibility field
             "gemini_model": gemini_model,
             "codex_circuit": codex_circuit,
