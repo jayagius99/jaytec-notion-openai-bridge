@@ -77,6 +77,24 @@ class TestCompatRewrite(unittest.TestCase):
         payload = _rpc(compat_server.RELIABILITY_STATUS_COMMAND, name="bridge_status")
         self.assertEqual(compat_server.rewrite_jsonrpc_payload(payload), payload)
 
+    def test_exact_orchestration_status_pass_through_maps_to_native_tool(self):
+        result = compat_server.rewrite_jsonrpc_payload(
+            _rpc(compat_server.ORCHESTRATION_STATUS_COMMAND)
+        )
+        self.assertEqual(result["params"]["name"], "orchestration_status")
+        self.assertEqual(result["params"]["arguments"], {})
+
+    def test_exact_task_packet_pass_through_maps_to_native_tool(self):
+        packet = {"packet_version": "1.0", "idempotency_key": "one-shot-pass"}
+        result = compat_server.rewrite_jsonrpc_payload(
+            _rpc(
+                compat_server.EXECUTE_TASK_PACKET_PREFIX
+                + json.dumps(packet, sort_keys=True)
+            )
+        )
+        self.assertEqual(result["params"]["name"], "execute_task_packet")
+        self.assertEqual(json.loads(result["params"]["arguments"]["packet_json"]), packet)
+
     def test_reliability_status_maps_to_native_tool(self):
         result = compat_server.rewrite_jsonrpc_payload(_rpc(compat_server.RELIABILITY_STATUS_COMMAND))
         self.assertEqual(result["params"]["name"], "reliability_status")
@@ -231,7 +249,9 @@ for index in range(100):
     assert rewritten["params"]["name"] == "reliability_status"
     ordinary = dict(payload)
     ordinary["params"] = {"name": "collaborate", "arguments": {"task": "ordinary"}}
-    assert compat_server.rewrite_jsonrpc_payload(ordinary) == ordinary
+    ordinary_rewritten = compat_server.rewrite_jsonrpc_payload(ordinary)
+    assert ordinary_rewritten["params"]["name"] == compat_server.REJECTED_TOOL_NAME
+    assert ordinary_rewritten["params"]["arguments"] == {}
 names = {tool.name for tool in asyncio.run(mcp.list_tools())}
 required_control = {"bridge_status", "orchestration_status", "execute_task_packet"}
 forbidden_notion_agent = {"ask_openai", "review_notion_answer", "collaborate"}
