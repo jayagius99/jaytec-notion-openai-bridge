@@ -10,6 +10,7 @@ from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from auth_security import is_strong_mcp_auth_token, require_mcp_auth_token
 from http_security import load_host_origin_policy
 from provider_endpoints import (
     OPENAI_API_BASE,
@@ -94,10 +95,10 @@ def _legacy_direct_openai_tools_enabled(runtime_mode: str, flag: str) -> bool:
 
 
 def _require_startup_prereqs() -> None:
-    if not MCP_AUTH_TOKEN:
-        raise RuntimeError(
-            "MCP_AUTH_TOKEN is not set. Refusing to start an unauthenticated remote MCP server."
-        )
+    require_mcp_auth_token(
+        MCP_AUTH_TOKEN,
+        production=RUNTIME_MODE == "production",
+    )
     if ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE and not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set while ENGINEERING_PROVIDER_MODE=ACTIVE.")
 
@@ -129,6 +130,7 @@ def compute_production_ready(
     gemini_model: str,
     mcp_auth_token_present: bool,
     openai_api_key_present: bool,
+    mcp_auth_token_strong: bool = False,
     openrouter_api_key_present: bool,
     legacy_direct_tools_enabled: bool = False,
     mcp_auth_subject: str = "",
@@ -157,6 +159,8 @@ def compute_production_ready(
     if gemini_model != EXPECTED_GEMINI_MODEL:
         return False
     if not mcp_auth_token_present:
+        return False
+    if not mcp_auth_token_strong:
         return False
     if not openai_api_key_present:
         return False
@@ -455,6 +459,7 @@ def create_mcp_app() -> FastMCP:
         gemini_model=GEMINI_MODEL,
         mcp_auth_token_present=bool(MCP_AUTH_TOKEN),
         openai_api_key_present=bool(OPENAI_API_KEY),
+        mcp_auth_token_strong=is_strong_mcp_auth_token(MCP_AUTH_TOKEN),
         openrouter_api_key_present=bool(OPENROUTER_API_KEY),
         legacy_direct_tools_enabled=legacy_direct_enabled,
         mcp_auth_subject=MCP_AUTH_SUBJECT,
