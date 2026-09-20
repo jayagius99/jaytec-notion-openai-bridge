@@ -194,7 +194,7 @@ class ManusGovernanceTests(unittest.TestCase):
         for phrase in (
             "Manus Home is a subordinate JAYTEC-owned Manus layer",
             "JAYTEC / active owner-authorized work comes first",
-            "Growth/improvement beyond that minimum is spare-capacity work only",
+            "Improvement beyond that minimum is spare-capacity work only",
             "MUST NOT edit",
             "The Notion Agent is NOT JAYTEC",
             '"JAYTEC" always means the JAYTEC system/control',
