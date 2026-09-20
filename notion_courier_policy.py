@@ -90,3 +90,21 @@ def rejection_payload(reason: str) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def completion_payload(operation: str, result: str) -> str:
+    """Wrap a completed courier result with a deterministic stop instruction."""
+    return json.dumps(
+        {
+            "courier_status": "COMPLETE",
+            "operation": str(operation)[:64],
+            "result": str(result),
+            "result_handling": "RETURN_RESULT_VERBATIM",
+            "agent_action": "RETURN_TO_CALLER_AND_STOP",
+            "retry": False,
+            "follow_up": False,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
