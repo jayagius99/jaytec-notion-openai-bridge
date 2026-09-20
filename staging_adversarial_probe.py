@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import unittest
 from typing import Iterable
@@ -149,6 +150,24 @@ def main() -> int:
         tail = buffer.getvalue().splitlines()[-12:]
         print(MARKER + " " + json.dumps({"diagnostic_tail": tail}, sort_keys=True), flush=True)
         return 4
+
+    # Temporary/manual live certification path. Both probes are disabled unless
+    # their exact Render environment flag is set to "1". They run before the
+    # staging server starts, so any failure leaves the deployment fail-closed.
+    if os.environ.get("RUN_LIVE_MANUS_GOVERNANCE_ACCEPTANCE", "0").strip() == "1":
+        from staging_manus_governance_acceptance import main as manus_governance_main
+
+        code = manus_governance_main()
+        if code != 0:
+            return code
+
+    if os.environ.get("RUN_LIVE_MANUS_USABILITY_EVAL", "0").strip() == "1":
+        from staging_manus_usability_eval import main as manus_usability_main
+
+        code = manus_usability_main()
+        if code != 0:
+            return code
+
     return 0
 
 
