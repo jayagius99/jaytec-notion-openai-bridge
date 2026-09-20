@@ -265,6 +265,15 @@ def execute_watch_cycle(
             "worker_route": state.worker_route,
         }
 
+    verified_state, verified_detail = verifier.verify(state.checkpoint)
+    if not verified_state:
+        return {
+            "status": "BLOCKED_FAIL_CLOSED",
+            "task_id": task_id,
+            "reason": "CURRENT_CHECKPOINT_NOT_ATTESTED",
+            "detail": verified_detail,
+        }
+
     invoker = ManusLiteRecoveryInvoker(
         manus_runtime,
         registry,
