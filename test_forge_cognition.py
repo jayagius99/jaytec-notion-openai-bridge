@@ -25,6 +25,8 @@ def state(mode=ForgeMode.RUNNING, goals=()):
         specialist_roster={"SOL":{"role":"PRIMARY_ENGINEERING"}},
         world_model={"phase":"GENESIS"},
         capability_frontier={"execution":"LIMITED"},
+        world_model_digest="cached-world-digest",
+        capability_frontier_digest="cached-capability-digest",
         working_memory={"focus":"current only"},
         goals=tuple(goals),
         unresolved_questions=(),
@@ -153,6 +155,8 @@ class ForgeCognitionTests(unittest.TestCase):
         self.assertFalse(packet["performance_rules"]["full_history_replay"])
         self.assertTrue(packet["performance_rules"]["event_driven"])
         self.assertNotIn("world_model",packet)
+        self.assertEqual(packet["world_model_digest"],"cached-world-digest")
+        self.assertEqual(packet["capability_frontier_digest"],"cached-capability-digest")
         self.assertEqual(packet["working_memory"]["focus"],"current only")
 
 if __name__=="__main__":

@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import select as select_module
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
@@ -190,6 +191,8 @@ class ForgeMindState:
     specialist_roster: Mapping[str, Any]
     world_model: Mapping[str, Any]
     capability_frontier: Mapping[str, Any]
+    world_model_digest: str
+    capability_frontier_digest: str
     working_memory: Mapping[str, Any]
     goals: tuple[ForgeGoal, ...]
     unresolved_questions: tuple[str, ...]
@@ -315,8 +318,8 @@ def build_delta_context(state: ForgeMindState, *, recent_events: list[Mapping[st
         "reasoning_tier": tier.value,
         "reasoning_policy": reasoning_policy_for_tier(tier),
         "selection_reason": reason,
-        "world_model_digest": digest(dict(state.world_model)),
-        "capability_frontier_digest": digest(dict(state.capability_frontier)),
+        "world_model_digest": state.world_model_digest,
+        "capability_frontier_digest": state.capability_frontier_digest,
         "world_model_ref": f"forge_mind_state:{state.forge_id}:world_model:v{state.state_version}",
         "capability_frontier_ref": f"forge_mind_state:{state.forge_id}:capability_frontier:v{state.state_version}",
         "working_memory": _json(dict(state.working_memory)),
@@ -378,6 +381,8 @@ def _mind_state_from_row(row: Mapping[str, Any]) -> ForgeMindState:
         specialist_roster=_mapping(state.get("specialist_roster"), "SPECIALIST_ROSTER"),
         world_model=_mapping(state.get("world_model"), "WORLD_MODEL"),
         capability_frontier=_mapping(state.get("capability_frontier"), "CAPABILITY_FRONTIER"),
+        world_model_digest=str(state.get("world_model_digest") or digest(_mapping(state.get("world_model"), "WORLD_MODEL"))),
+        capability_frontier_digest=str(state.get("capability_frontier_digest") or digest(_mapping(state.get("capability_frontier"), "CAPABILITY_FRONTIER"))),
         working_memory=_mapping(state.get("working_memory"), "WORKING_MEMORY"),
         goals=tuple(ForgeGoal.parse(x) for x in goals_raw),
         unresolved_questions=_list(state.get("unresolved_questions"), "UNRESOLVED_QUESTIONS"),
@@ -520,6 +525,8 @@ class ForgeMindStore:
             "specialist_roster": _json(dict(packet.get("specialist_roster") or {})),
             "world_model": _json(dict(packet.get("world_model") or {})),
             "capability_frontier": _json(dict(packet.get("capability_frontier") or {})),
+            "world_model_digest": digest(dict(packet.get("world_model") or {})),
+            "capability_frontier_digest": digest(dict(packet.get("capability_frontier") or {})),
             "working_memory": _json(dict(packet.get("working_memory") or {})),
             "goals": goals,
             "unresolved_questions": list(_list(packet.get("unresolved_questions"), "UNRESOLVED_QUESTIONS")),
@@ -665,9 +672,11 @@ class ForgeMindStore:
                     packet["next_cycle_delay_seconds"]=0
                 packet["lease_owner"]=worker
                 packet["lease_expires_at"]=expires.isoformat()
-                packet["requires_model_call"]=(
-                    packet["reasoning_tier"] != ReasoningTier.REFLEX.value
-                    or packet["selected_action"] == CycleAction.REFLECT_AND_PLAN.value
+                packet["model_call_policy"]=(
+                    "LOCAL_FIRST"
+                    if packet["reasoning_tier"] == ReasoningTier.REFLEX.value
+                    and packet["selected_action"] == CycleAction.EXECUTE_NEXT.value
+                    else "REQUIRED"
                 )
                 return packet
 
@@ -778,9 +787,12 @@ class ForgeMindStore:
                     if not isinstance(patch,Mapping):
                         raise ForgeCognitionError(name+"_INVALID")
                     target="world_model" if field=="world_model_patch" else "capability_frontier"
-                    current=dict(state.get(target) or {})
-                    current.update(_json(dict(patch)))
-                    state[target]=_json(current)
+                    digest_field="world_model_digest" if target=="world_model" else "capability_frontier_digest"
+                    if patch:
+                        current=dict(state.get(target) or {})
+                        current.update(_json(dict(patch)))
+                        state[target]=_json(current)
+                        state[digest_field]=digest(state[target])
 
                 if "working_memory" in result:
                     state["working_memory"]=_mapping(result.get("working_memory"),"WORKING_MEMORY")
@@ -869,12 +881,31 @@ class ForgeMindStore:
                     """
                     INSERT INTO forge_cognition_inbox(forge_id,dedupe_key,source,event_type,priority,payload)
                     VALUES (%s,%s,%s,%s,%s,%s::jsonb)
-                    ON CONFLICT (forge_id,dedupe_key) DO UPDATE SET dedupe_key=EXCLUDED.dedupe_key
+                    ON CONFLICT (forge_id,dedupe_key) DO NOTHING
                     RETURNING signal_id,status,priority,created_at
                     """,
                     (forge_id,key,src,kind,priority,json.dumps(body)),
                 )
-                signal=dict(cur.fetchone())
+                inserted=cur.fetchone()
+                if inserted is None:
+                    cur.execute(
+                        """
+                        SELECT signal_id,status,priority,created_at
+                          FROM forge_cognition_inbox
+                         WHERE forge_id=%s AND dedupe_key=%s
+                        """,
+                        (forge_id,key),
+                    )
+                    existing=cur.fetchone()
+                    if existing is None:
+                        raise ForgeCognitionError("SIGNAL_DEDUPE_LOOKUP_FAILED")
+                    signal=dict(existing)
+                    signal["deduplicated"]=True
+                    signal["woke_forge"]=False
+                    signal["created_at"]=signal["created_at"].isoformat()
+                    return signal
+                signal=dict(inserted)
+                signal["deduplicated"]=False
                 current=ForgeMode(str(row["mode"]))
                 can_wake=current is ForgeMode.WAITING_FOR_DEPENDENCY or (
                     current is ForgeMode.WAITING_FOR_REQUIRED_INPUT and src.upper() in {"OWNER","HUMAN_SPECIALIST","ROOT_OWNER"}
@@ -887,8 +918,43 @@ class ForgeMindStore:
                     signal["woke_forge"]=True
                 else:
                     signal["woke_forge"]=False
+                cur.execute(
+                    "SELECT pg_notify('forge_cognition_wake', %s)",
+                    (forge_id + ":" + str(signal["signal_id"]),),
+                )
                 signal["created_at"]=signal["created_at"].isoformat()
                 return signal
+
+    def wait_for_wake(self, forge_id: str, *, timeout_seconds: float = 300.0) -> Optional[dict[str, Any]]:
+        """Wait cheaply for a committed cognition signal without polling.
+
+        PostgreSQL LISTEN/NOTIFY is best-effort wake transport only; canonical
+        signals remain durable in forge_cognition_inbox and are re-read before
+        every cognition cycle.
+        """
+        if isinstance(timeout_seconds,bool) or not isinstance(timeout_seconds,(int,float)) or not 0.0 <= float(timeout_seconds) <= 3600.0:
+            raise ForgeCognitionError("WAKE_TIMEOUT_INVALID")
+        conn=self._connect()
+        try:
+            conn.set_session(autocommit=True)
+            with conn.cursor() as cur:
+                cur.execute("LISTEN forge_cognition_wake")
+            if not select_module.select([conn],[],[],float(timeout_seconds))[0]:
+                return None
+            conn.poll()
+            while conn.notifies:
+                notice=conn.notifies.pop(0)
+                payload=str(notice.payload or "")
+                if payload.startswith(forge_id + ":"):
+                    parts=payload.rsplit(":",1)
+                    try:
+                        signal_id=int(parts[1])
+                    except (IndexError,ValueError):
+                        signal_id=None
+                    return {"forge_id":forge_id,"signal_id":signal_id,"channel":"forge_cognition_wake"}
+            return None
+        finally:
+            conn.close()
 
     def pending_signals(self, forge_id: str, *, limit: int = 16) -> list[dict[str, Any]]:
         if isinstance(limit,bool) or not isinstance(limit,int) or not 1 <= limit <= 64:

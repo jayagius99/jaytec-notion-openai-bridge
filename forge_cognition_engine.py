@@ -76,9 +76,11 @@ class ForgeCognitionEngine:
         reason=str(packet.get("selection_reason") or "")
         try:
             result=None
+            used_model_call=False
             if tier is ReasoningTier.REFLEX and self.reflex_executor is not None:
                 result=self.reflex_executor.execute(packet)
             if result is None:
+                used_model_call=True
                 result=self.invoker.invoke(packet,tier=tier)
             if not isinstance(result,Mapping):
                 raise ForgeCognitionError("COGNITION_INVOKER_RESULT_INVALID")
@@ -87,7 +89,7 @@ class ForgeCognitionEngine:
             telemetry=dict(normalized.get("telemetry") or {})
             telemetry.setdefault("reasoning_tier",tier.value)
             telemetry.setdefault("selected_action",action.value)
-            telemetry.setdefault("model_call_used",not (tier is ReasoningTier.REFLEX and self.reflex_executor is not None))
+            telemetry.setdefault("model_call_used",used_model_call)
             telemetry.setdefault("engine_precommit_elapsed_ms",int((time.perf_counter()-started)*1000))
             normalized["telemetry"]=telemetry
             committed=self.store.commit_cycle_result(
@@ -119,3 +121,65 @@ class ForgeCognitionEngine:
             except Exception:
                 pass
             raise
+
+
+    def run_burst(
+        self,
+        forge_id: str,
+        worker_id: str,
+        *,
+        max_cycles: int = 16,
+        max_wall_seconds: float = 30.0,
+    ) -> list[CognitionStepResult]:
+        """Process consecutive runnable cognition cycles without cadence delay.
+
+        The burst is deliberately bounded so a malformed goal loop cannot
+        monopolize the worker. HOLD/wait modes stop the burst immediately.
+        """
+        if isinstance(max_cycles,bool) or not isinstance(max_cycles,int) or not 1 <= max_cycles <= 64:
+            raise ForgeCognitionError("MAX_CYCLES_INVALID")
+        if isinstance(max_wall_seconds,bool) or not isinstance(max_wall_seconds,(int,float)) or not 1.0 <= float(max_wall_seconds) <= 300.0:
+            raise ForgeCognitionError("MAX_WALL_SECONDS_INVALID")
+        started=time.perf_counter()
+        out:list[CognitionStepResult]=[]
+        for _ in range(max_cycles):
+            if time.perf_counter()-started >= float(max_wall_seconds):
+                break
+            state=self.store.load_state(forge_id)
+            if state.mode is not ForgeMode.RUNNING:
+                break
+            result=self.step(forge_id,worker_id)
+            out.append(result)
+            if result.status != "COMMITTED":
+                break
+        return out
+
+    def wait_and_step(
+        self,
+        forge_id: str,
+        worker_id: str,
+        *,
+        timeout_seconds: float = 300.0,
+    ) -> CognitionStepResult:
+        """Wait on PostgreSQL wake notification, then process immediately."""
+        state=self.store.load_state(forge_id)
+        if state.mode is ForgeMode.RUNNING:
+            return self.step(forge_id,worker_id)
+        if state.mode is not ForgeMode.WAITING_FOR_DEPENDENCY:
+            return CognitionStepResult(
+                status="HOLD",
+                action=CycleAction.HOLD.value,
+                tier=ReasoningTier.REFLEX.value,
+                elapsed_ms=0,
+                detail="MODE_HOLD:"+state.mode.value,
+            )
+        notice=self.store.wait_for_wake(forge_id,timeout_seconds=timeout_seconds)
+        if notice is None:
+            return CognitionStepResult(
+                status="IDLE_TIMEOUT",
+                action=CycleAction.HOLD.value,
+                tier=ReasoningTier.REFLEX.value,
+                elapsed_ms=0,
+                detail="NO_WAKE_SIGNAL",
+            )
+        return self.step(forge_id,worker_id)
