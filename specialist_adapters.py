@@ -45,6 +45,8 @@ EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
 GEMINI_MAX_OUTPUT_TOKENS = 4096
 ENGINEERING_PROVIDER_ACTIVE = "ACTIVE"
 ENGINEERING_PROVIDER_LOCKED_RESERVE = "LOCKED_RESERVE"
+OPENROUTER_PROVIDER_ACTIVE = "ACTIVE"
+OPENROUTER_PROVIDER_LOCKED_RESERVE = "LOCKED_RESERVE"
 
 ENGINEERING_CONTRACT = """Return ONLY one JSON object. Preserve task_id and subtask_id.
 
@@ -210,6 +212,20 @@ def resolve_engineering_provider_mode(env: Mapping[str, str] | None = None) -> s
     ).strip().upper()
     if mode not in {ENGINEERING_PROVIDER_ACTIVE, ENGINEERING_PROVIDER_LOCKED_RESERVE}:
         raise RuntimeError(f"invalid ENGINEERING_PROVIDER_MODE: {mode}")
+    return mode
+
+
+def resolve_openrouter_provider_mode(env: Mapping[str, str] | None = None) -> str:
+    source = os.environ if env is None else env
+    mode = str(
+        source.get("OPENROUTER_PROVIDER_MODE", OPENROUTER_PROVIDER_LOCKED_RESERVE)
+        or ""
+    ).strip().upper()
+    if mode not in {
+        OPENROUTER_PROVIDER_ACTIVE,
+        OPENROUTER_PROVIDER_LOCKED_RESERVE,
+    }:
+        raise RuntimeError(f"invalid OPENROUTER_PROVIDER_MODE: {mode}")
     return mode
 
 
