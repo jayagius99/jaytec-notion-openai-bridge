@@ -77,8 +77,10 @@ class SupplyChainPinTests(unittest.TestCase):
             "requirements.lock.txt",
             "provider_endpoints.py",
             "http_security.py",
+            "auth_security.py",
             "test_provider_endpoints.py",
             "test_http_security.py",
+            "test_auth_security.py",
             "test_supply_chain_pins.py",
         ):
             with self.subTest(path=path):
