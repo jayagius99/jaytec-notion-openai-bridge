@@ -25,6 +25,10 @@ from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from deepseek_reviewer import (
+    EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+    build_deepseek_security_review_dispatch,
+)
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
 from specialist_adapters import (
@@ -48,6 +52,13 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
+DEEPSEEK_REVIEWER_MODEL = os.environ.get(
+    "DEEPSEEK_REVIEWER_MODEL",
+    EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+).strip()
+DEEPSEEK_REVIEWER_TIMEOUT_S = float(
+    os.environ.get("DEEPSEEK_REVIEWER_TIMEOUT_S", "120")
+)
 CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
 CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
 DATABASE_URL = (
@@ -87,6 +98,10 @@ GEMINI_CIRCUIT = CircuitBreaker(
     failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
     reset_after_seconds=CIRCUIT_RESET_SECONDS,
 )
+DEEPSEEK_REVIEWER_CIRCUIT = CircuitBreaker(
+    failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+    reset_after_seconds=CIRCUIT_RESET_SECONDS,
+)
 
 OPENAI_CLIENT = (
     OpenAI(api_key=OPENAI_API_KEY)
@@ -116,6 +131,21 @@ GEMINI_DISPATCH = (
     else GEMINI_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on the staging bridge")))
 )
 
+DEEPSEEK_REVIEW_DISPATCH = (
+    build_deepseek_security_review_dispatch(
+        openrouter_client=OPENROUTER_CLIENT,
+        model=DEEPSEEK_REVIEWER_MODEL,
+        timeout_s=DEEPSEEK_REVIEWER_TIMEOUT_S,
+        circuit=DEEPSEEK_REVIEWER_CIRCUIT,
+    )
+    if OPENROUTER_CLIENT
+    else DEEPSEEK_REVIEWER_CIRCUIT.guard(
+        lambda _packet: (_ for _ in ()).throw(
+            RuntimeError("OPENROUTER_API_KEY is not configured on the staging bridge")
+        )
+    )
+)
+
 
 @mcp.tool
 def orchestration_status() -> str:
@@ -132,6 +162,9 @@ def orchestration_status() -> str:
             "gemini_adapter_configured": bool(OPENROUTER_API_KEY),
             "gemini_provider_routing": "price",
             "gemini_circuit": GEMINI_CIRCUIT.snapshot(),
+            "deepseek_reviewer_model": DEEPSEEK_REVIEWER_MODEL,
+            "deepseek_reviewer_configured": bool(OPENROUTER_API_KEY),
+            "deepseek_reviewer_circuit": DEEPSEEK_REVIEWER_CIRCUIT.snapshot(),
             "idempotency_store": IDEMPOTENCY_STORE,
             "production_ready": False,
         },
@@ -360,11 +393,134 @@ def _run_god_project_review_probe() -> None:
     )
 
 
+def _run_deepseek_security_review_probe() -> None:
+    """STAGING-ONLY hash-pinned DeepSeek adversarial security review."""
+    enabled = (
+        os.environ.get("JAYTEC_DEEPSEEK_SECURITY_REVIEW_ENABLED", "").strip()
+        == "1"
+    )
+    if not enabled:
+        return
+
+    encoded = os.environ.get(
+        "JAYTEC_DEEPSEEK_SECURITY_REVIEW_PACKET_B64", ""
+    ).strip()
+    expected_sha = os.environ.get(
+        "JAYTEC_DEEPSEEK_SECURITY_REVIEW_PACKET_SHA256", ""
+    ).strip()
+
+    out = {
+        "status": "FAILED_CLOSED",
+        "model": DEEPSEEK_REVIEWER_MODEL,
+        "packet_sha256": None,
+        "verdict": None,
+        "blockers": [],
+        "required_changes": [],
+        "weaknesses": [],
+        "findings": [],
+        "evidence": [],
+        "confidence": None,
+        "bridge_diagnostics": {},
+    }
+
+    try:
+        if not encoded or not expected_sha:
+            raise RuntimeError("deepseek_review_packet_missing")
+        raw = base64.b64decode(encoded, validate=True)
+        packet_sha = hashlib.sha256(raw).hexdigest()
+        out["packet_sha256"] = packet_sha
+        if packet_sha != expected_sha:
+            raise RuntimeError("deepseek_review_packet_hash_mismatch")
+
+        packet = json.loads(raw.decode("utf-8"))
+        if not isinstance(packet, dict):
+            raise RuntimeError("deepseek_review_packet_not_object")
+
+        reviewed = dict(DEEPSEEK_REVIEW_DISPATCH(packet))
+        if reviewed.get("model") != DEEPSEEK_REVIEWER_MODEL:
+            raise RuntimeError("deepseek_review_model_mismatch")
+        if reviewed.get("side_effects_attempted") not in ([], None):
+            raise RuntimeError("deepseek_review_side_effect_violation")
+        if reviewed.get("requested_operations") not in ([], None):
+            raise RuntimeError("deepseek_review_requested_operations_nonempty")
+
+        conclusion = reviewed.get("conclusion")
+        if not isinstance(conclusion, dict):
+            raise RuntimeError("deepseek_review_conclusion_not_object")
+
+        verdict = conclusion.get("verdict")
+        blockers = conclusion.get("blockers")
+        required_changes = conclusion.get("required_changes")
+        weaknesses = conclusion.get("weaknesses")
+        rationale = conclusion.get("rationale")
+
+        if verdict not in {"PASS", "PASS_WITH_CHANGES", "FAIL"}:
+            raise RuntimeError("deepseek_review_verdict_invalid")
+        for name, value in (
+            ("blockers", blockers),
+            ("required_changes", required_changes),
+            ("weaknesses", weaknesses),
+        ):
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) for item in value
+            ):
+                raise RuntimeError("deepseek_review_" + name + "_invalid")
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise RuntimeError("deepseek_review_rationale_invalid")
+
+        if reviewed.get("status") != "SUCCESS":
+            out["status"] = "FAILED_CLOSED"
+            out["blockers"] = [
+                "deepseek_specialist_status:" + str(reviewed.get("status"))
+            ] + [
+                str(item)
+                for item in reviewed.get("unresolved_items", [])
+                if isinstance(item, str)
+            ]
+        else:
+            out["status"] = verdict
+            out["blockers"] = blockers
+            out["required_changes"] = required_changes
+            out["weaknesses"] = weaknesses
+
+        out["verdict"] = verdict
+        out["rationale"] = rationale
+        out["findings"] = [
+            str(item)
+            for item in reviewed.get("findings", [])
+            if isinstance(item, str)
+        ]
+        out["evidence"] = [
+            str(item)
+            for item in reviewed.get("evidence", [])
+            if isinstance(item, str)
+        ]
+        out["confidence"] = reviewed.get("confidence")
+        out["bridge_diagnostics"] = dict(
+            reviewed.get("bridge_diagnostics") or {}
+        )
+    except Exception as exc:
+        out["blockers"] = [
+            "deepseek_review_probe_error:" + type(exc).__name__
+        ]
+
+    print(
+        "JAYTEC_DEEPSEEK_SECURITY_REVIEW_RESULT="
+        + json.dumps(out, ensure_ascii=False, sort_keys=True),
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
     _run_jaytec_read_bootstrap_probe()
     threading.Thread(
         target=_run_god_project_review_probe,
         name="jaytec-god-project-review",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_run_deepseek_security_review_probe,
+        name="jaytec-deepseek-security-review",
         daemon=True,
     ).start()
     mcp.run(
