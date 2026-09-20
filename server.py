@@ -370,12 +370,12 @@ def create_mcp_app() -> FastMCP:
     auth = StaticTokenVerifier(
         tokens={
             MCP_AUTH_TOKEN: {
-                "sub": "jaytec-control-plane",
-                "client_id": "jaytec-control-plane",
+                "sub": "notion-pass-through",
+                "client_id": "jaytec-notion-pass-through",
             }
         }
     )
-    mcp = FastMCP("JAYTEC Control Plane Bridge", auth=auth)
+    mcp = FastMCP("JAYTEC Notion Pass-Through Bridge", auth=auth)
 
     openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
     openrouter_client = (
