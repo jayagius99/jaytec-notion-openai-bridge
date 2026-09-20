@@ -6,7 +6,7 @@ from forge_cognition import (
     CycleAction, ForgeGoal, ForgeMindState, ForgeMode, GoalStatus,
     ReasoningTier, actionable_goals, build_delta_context,
     choose_cycle, choose_reasoning_tier, next_cycle_delay_seconds,
-    parallel_goal_batch, _validate_goal_graph, ForgeCognitionError
+    parallel_goal_batch, _validate_goal_graph, ForgeCognitionError, ForgeMindStore
 )
 
 NOW=datetime.now(timezone.utc)
@@ -94,6 +94,44 @@ class ForgeCognitionTests(unittest.TestCase):
 
     def test_event_driven_execute_wakes_immediately(self):
         self.assertEqual(next_cycle_delay_seconds(CycleAction.EXECUTE_NEXT,ReasoningTier.REFLEX),0)
+
+    def test_genesis_packet_requires_valid_provenance_before_database(self):
+        store=ForgeMindStore("postgresql://invalid")
+        packet={
+            "forge_id":"FORGE",
+            "genesis_event_id":"bad",
+            "owner_activation_ref":"owner-approval",
+            "life_goal":"Compound capability.",
+            "constitutional_invariants":["Preserve ROOT_OWNER."],
+            "long_horizon_objectives":["Grow capability."],
+            "human_specialist_doctrine":{"role":"HUMAN_SPECIALIST"},
+            "root_owner_continuity":{"override_authority":"ABSOLUTE","physical_continuity_required":True},
+            "specialist_roster":{"SOL":{"role":"PRIMARY_ENGINEERING"}},
+            "world_model":{},
+            "capability_frontier":{},
+            "goals":[],
+        }
+        with self.assertRaisesRegex(ForgeCognitionError,"GENESIS_EVENT_ID_INVALID"):
+            store.seed_pre_genesis(packet)
+
+    def test_genesis_packet_requires_sol_primary_before_database(self):
+        store=ForgeMindStore("postgresql://invalid")
+        packet={
+            "forge_id":"FORGE",
+            "genesis_event_id":"GENESIS_EVENT_0001",
+            "owner_activation_ref":"owner-approval",
+            "life_goal":"Compound capability.",
+            "constitutional_invariants":["Preserve ROOT_OWNER."],
+            "long_horizon_objectives":["Grow capability."],
+            "human_specialist_doctrine":{"role":"HUMAN_SPECIALIST"},
+            "root_owner_continuity":{"override_authority":"ABSOLUTE","physical_continuity_required":True},
+            "specialist_roster":{},
+            "world_model":{},
+            "capability_frontier":{},
+            "goals":[],
+        }
+        with self.assertRaisesRegex(ForgeCognitionError,"SOL_PRIMARY_REQUIRED"):
+            store.seed_pre_genesis(packet)
 
     def test_delta_context_is_bounded(self):
         g=ForgeGoal("g1","Do it.",1)
