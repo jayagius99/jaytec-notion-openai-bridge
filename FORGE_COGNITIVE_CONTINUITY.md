@@ -82,12 +82,21 @@ Urgent owner/safety signals may preempt normal goals. ROOT_OWNER remains the
 physically anchored continuity/override authority while Forge remains the broad
 operational executive inside its legitimate capability envelope.
 
+## Proving Grounds resource
+
+Forge may use PROVING_GROUNDS through JAYTEC as a specialist-like validation
+resource. It is not a model, planner or authority source. It can execute only
+registered suites, returns evidence bound to the runtime commit, and cannot
+modify production or choose new work. The Genesis roster must include its
+zero-authority contract.
+
 ## Genesis gate
 
 Before mode may become RUNNING:
 - final Genesis packet is owner-approved;
 - ROOT physical/live gates required by the activation plan have passed;
 - Forge execution worker route is certified JAYTEC_CALLABLE;
+- PROVING_GROUNDS is registered and its zero-authority contract is certified;
 - cycle invoker and checkpoint verifier are wired;
 - final hostile review passes;
 - Jay explicitly authorizes activation.
