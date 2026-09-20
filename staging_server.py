@@ -436,6 +436,83 @@ async def jaytec_watch_cycle(request: Request) -> JSONResponse:
     return JSONResponse(result, status_code=status_code)
 
 
+@mcp.custom_route("/jaytec/watch-status", methods=["POST"])
+async def jaytec_watch_status(request: Request) -> JSONResponse:
+    """OIDC-authenticated read-only status for the canonical WATCH assignment."""
+
+    auth_header = str(request.headers.get("authorization") or "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_BEARER_REQUIRED"},
+            status_code=401,
+        )
+    raw_token = auth_header[len("Bearer "):].strip()
+    if not raw_token:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_BEARER_REQUIRED"},
+            status_code=401,
+        )
+    try:
+        access = await watch_oidc_auth.verify_token(raw_token)
+    except Exception:
+        access = None
+    if access is None or "jaytec:watch-cycle" not in set(access.scopes or []):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_VERIFICATION_FAILED"},
+            status_code=403,
+        )
+    ok, reason = validate_watch_claims(access.claims)
+    if not ok:
+        return JSONResponse(
+            {"status": "DENIED", "reason": reason},
+            status_code=403,
+        )
+
+    raw = await request.body()
+    if len(raw) > 8_192:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_STATUS_REQUEST_TOO_LARGE"},
+            status_code=413,
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_STATUS_JSON_INVALID"},
+            status_code=400,
+        )
+    if not isinstance(payload, Mapping):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_STATUS_ROOT_INVALID"},
+            status_code=400,
+        )
+
+    task_id = str(payload.get("task_id") or "").strip()
+    if task_id != "FORGE-GENESIS-ACTIVATION-001":
+        return JSONResponse(
+            {"status": "DENIED", "reason": "TASK_ID_NOT_WATCH_AUTHORIZED"},
+            status_code=403,
+        )
+
+    runtime = get_autorecovery_runtime_status(
+        env=os.environ,
+        database_url=DATABASE_URL,
+        runtime_components_registered=_autorecovery_components_registered(),
+    )
+    result = read_autorecovery_assignment_status(
+        DATABASE_URL,
+        task_id,
+        schema_ready_declared=runtime.schema_ready_declared,
+    )
+    result["autorecovery_active"] = runtime.active
+    result["runtime_components_registered"] = runtime.runtime_components_registered
+    result["read_only"] = True
+    result["lease_acquired"] = False
+    result["worker_invoked"] = False
+    return JSONResponse(result, status_code=200)
+
+
+
 def _protocol_portal() -> PortalStore:
     if not PROTOCOL_DATABASE_URL:
         raise RuntimeError("JAYTEC_PROTOCOL_DATABASE_URL_NOT_CONFIGURED")
