@@ -1,5 +1,6 @@
 import json
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from manus_policy import ManusProfile, ManusProfilePolicyError
@@ -121,6 +122,9 @@ def verified_success():
     }
 
 
+ROOT = Path(__file__).resolve().parent
+
+
 class ManusLiteRuntimeTests(unittest.TestCase):
     def test_profile_selection_fields_are_impossible_at_runtime_boundary(self):
         for field in (
@@ -192,6 +196,35 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         result = ManusLiteRuntime(client).task_status("provider-123")
         self.assertEqual(result["status"], "FAILED_CLOSED")
         self.assertEqual(result["reason"], "MANUS_STRUCTURED_RESULT_MISSING")
+
+    def test_production_surface_reuses_v2_dispatch_authority_gate(self):
+        source = (ROOT / "server.py").read_text(encoding="utf-8")
+        self.assertIn("def _manus_dispatch_boundary()", source)
+        self.assertIn(
+            "evaluate_dispatch_boundary(runtime_mode=RUNTIME_MODE)",
+            source,
+        )
+        self.assertIn("def manus_start_task(request_json: str)", source)
+        self.assertIn("def manus_task_status(provider_task_id: str)", source)
+
+    def test_staging_surface_exposes_same_lite_runtime(self):
+        source = (ROOT / "staging_server.py").read_text(encoding="utf-8")
+        self.assertIn("ManusLiteRuntime", source)
+        self.assertIn("def manus_start_task(request_json: str)", source)
+        self.assertIn("def manus_task_status(provider_task_id: str)", source)
+        self.assertIn('"manus_profile_policy": "lite_only_no_exceptions"', source)
+
+    def test_render_blueprint_declares_manus_secret_bindings_without_values(self):
+        source = (ROOT / "render.yaml").read_text(encoding="utf-8")
+        self.assertIn("- key: MANUS_API_KEY\n        sync: false", source)
+        self.assertIn("- key: JAYTEC_MANUS_PROJECT_ID\n        sync: false", source)
+
+    def test_policy_names_only_jaytec_owned_runtime_as_supported_execution_path(self):
+        source = (ROOT / "JAYTEC_COMMAND_POLICY.md").read_text(encoding="utf-8")
+        self.assertIn("JAYTEC_MANUS_LITE_RUNTIME_V1", source)
+        self.assertIn("manus_start_task(request_json)", source)
+        self.assertIn("manus_task_status(provider_task_id)", source)
+        self.assertIn("must never substitute the generic ChatGPT Manus", source)
 
 
 if __name__ == "__main__":
