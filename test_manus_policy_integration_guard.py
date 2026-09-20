@@ -115,5 +115,50 @@ class ManusPolicyIntegrationGuardTests(unittest.TestCase):
         )
 
 
+    def test_manus_home_is_consistently_subordinate_to_jaytec(self):
+        sources = {
+            "runtime": (ROOT / "manus_governance.py").read_text(encoding="utf-8"),
+            "operator": (ROOT / "MANUS_OPERATING_DIRECTIVE.md").read_text(encoding="utf-8"),
+            "policy": (ROOT / "JAYTEC_COMMAND_POLICY.md").read_text(encoding="utf-8"),
+        }
+        required = (
+            "Manus Home",
+            "JAYTEC",
+            "spare-capacity",
+        )
+        for name, source in sources.items():
+            with self.subTest(source=name):
+                for phrase in required:
+                    self.assertIn(phrase, source)
+        self.assertIn(
+            "JAYTEC / active owner-authorized work comes first",
+            sources["runtime"],
+        )
+        self.assertIn(
+            "JAYTEC and current owner-authorized objectives come first",
+            sources["operator"],
+        )
+        self.assertIn(
+            "JAYTEC and the current owner-authorized objective come first",
+            sources["policy"],
+        )
+
+    def test_live_acceptance_uses_canonical_provenance_evidence(self):
+        source = (ROOT / "staging_manus_governance_acceptance.py").read_text(
+            encoding="utf-8"
+        )
+        for field in (
+            '"kind": "provider_observation"',
+            '"source": "Manus v2 task detail"',
+            '"observed_at": observed_at',
+            '"supports": [',
+        ):
+            self.assertIn(field, source)
+        self.assertNotIn(
+            '"evidence": [\n                "structured governance acknowledgement validated"',
+            source,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

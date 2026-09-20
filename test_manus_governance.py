@@ -191,8 +191,11 @@ class ManusGovernanceTests(unittest.TestCase):
 
     def test_directive_contains_nonnegotiable_boundaries(self):
         text = render_directive()
+        normalized = " ".join(text.split()).casefold()
         for phrase in (
-            "Manus may evolve Manus",
+            "Manus Home is a subordinate JAYTEC-owned Manus layer",
+            "JAYTEC / active owner-authorized work comes first",
+            "Improvement beyond that minimum is spare-capacity work only",
             "MUST NOT edit",
             "The Notion Agent is NOT JAYTEC",
             '"JAYTEC" always means the JAYTEC system/control',
@@ -200,9 +203,9 @@ class ManusGovernanceTests(unittest.TestCase):
             "GitHub, Neon, and Render only",
             "Manus Lite is the ONLY permitted profile",
             "Never claim success because an action merely ran",
-            "you may not alter, bypass, reinterpret, or supersede it yourself",
+            "You may not alter, bypass, reinterpret, or supersede it yourself",
         ):
-            self.assertIn(phrase, text)
+            self.assertIn(" ".join(phrase.split()).casefold(), normalized)
         self.assertEqual(len(directive_sha256()), 64)
 
 
