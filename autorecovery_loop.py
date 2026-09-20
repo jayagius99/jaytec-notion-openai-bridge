@@ -108,6 +108,7 @@ class AutoRecoveryLoop:
             results: list[CycleResult] = []
             for task_id in task_ids:
                 try:
+                    self.supervisor.refresh_worker_health(task_id)
                     decision = self.supervisor.tick(task_id)
                     result = CycleResult(
                         task_id=task_id,

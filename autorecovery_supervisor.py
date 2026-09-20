@@ -942,6 +942,7 @@ class AutoRecoverySupervisor:
         instance_id: Optional[str] = None,
         heartbeat_timeout_seconds: int = 600,
         health_verify_timeout_seconds: int = 120,
+        health_refresh_timeout_seconds: int = 15,
         max_recovery_attempts: int = 3,
     ):
         self.store = store
@@ -952,11 +953,62 @@ class AutoRecoverySupervisor:
         self.instance_id = instance_id or ("watch-" + uuid.uuid4().hex[:16])
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self.health_verify_timeout_seconds = health_verify_timeout_seconds
+        self.health_refresh_timeout_seconds = health_refresh_timeout_seconds
         self.max_recovery_attempts = max_recovery_attempts
 
     def _notify(self, payload: Mapping[str, Any]) -> None:
         if self.notifier is not None:
             self.notifier.notify(_json_clone(dict(payload)))
+
+    def refresh_worker_health(
+        self,
+        task_id: str,
+        *,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Refresh a RUNNING callable worker before stale-heartbeat classification.
+
+        A callable worker need not write directly to JAYTEC Postgres. The
+        supervisor may poll its registered health adapter once per canonical
+        cycle and translate that proof into a fenced heartbeat. A stale fencing
+        token or any probe failure fails closed and never revives an old worker.
+        """
+
+        state = self.store.get(task_id)
+        if state is None:
+            return False
+        if (
+            state.completed
+            or state.stop_reason is not StopReason.RUNNING
+            or state.worker_kind is not WorkerKind.JAYTEC_CALLABLE
+            or not state.worker_id
+        ):
+            return False
+
+        try:
+            health = self.health_probe.wait_for_healthy(
+                task_id=task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                timeout_seconds=self.health_refresh_timeout_seconds,
+            )
+        except Exception:
+            return False
+
+        if not health.healthy or health.heartbeat_at is None:
+            return False
+
+        try:
+            self.store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=health.worker_id or state.worker_id,
+                progress_marker=health.progress_marker,
+                now=health.heartbeat_at,
+            )
+        except Exception:
+            return False
+        return True
 
     def tick(
         self,

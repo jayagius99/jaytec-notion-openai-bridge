@@ -407,6 +407,77 @@ class AutoRecoveryExecutionTests(unittest.TestCase):
         self.assertEqual(store.state.stop_reason, StopReason.STALLED_RECOVERABLE)
         self.assertEqual(store.state.recovery_attempts, 1)
 
+    def test_health_refresh_keeps_callable_worker_alive_before_tick(self):
+        store = MemoryAssignmentStore(
+            state(
+                stop_reason=StopReason.RUNNING,
+                worker_kind=WorkerKind.JAYTEC_CALLABLE,
+                heartbeat_age_seconds=900,
+            )
+        )
+        health = FakeHealth(healthy=True, progress_marker="still-running")
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=FakeInvoker(),
+            health_probe=health,
+            instance_id="watch-a",
+        )
+        refreshed = supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW)
+        self.assertTrue(refreshed)
+        decision = supervisor.tick("GOD-PREP-0017", now=NOW)
+        self.assertEqual(decision.action, SupervisorAction.NOOP_HEALTHY)
+        self.assertEqual(store.state.progress_marker, "still-running")
+
+    def test_failed_health_refresh_allows_same_cycle_recovery_of_stale_worker(self):
+        store = MemoryAssignmentStore(
+            state(
+                stop_reason=StopReason.RUNNING,
+                worker_kind=WorkerKind.JAYTEC_CALLABLE,
+                heartbeat_age_seconds=900,
+            )
+        )
+        invoker = FakeInvoker()
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=invoker,
+            health_probe=FakeHealth(healthy=False),
+            instance_id="watch-a",
+        )
+        refreshed = supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW)
+        self.assertFalse(refreshed)
+        decision = supervisor.tick("GOD-PREP-0017", now=NOW)
+        self.assertEqual(decision.action, SupervisorAction.RECOVERY_FAILED)
+        self.assertEqual(len(invoker.calls), 1)
+
+    def test_stale_fence_during_refresh_cannot_revive_old_worker(self):
+        store = MemoryAssignmentStore(
+            state(
+                stop_reason=StopReason.RUNNING,
+                worker_kind=WorkerKind.JAYTEC_CALLABLE,
+                heartbeat_age_seconds=900,
+                fencing_token=10,
+            )
+        )
+        health = FakeHealth(healthy=True)
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=FakeInvoker(),
+            health_probe=health,
+            instance_id="watch-a",
+        )
+        # Simulate a newer recovery fencing transition after health state was read.
+        original = store.heartbeat
+        def reject_old(*args, **kwargs):
+            raise AutoRecoveryError("STALE_FENCING_TOKEN")
+        store.heartbeat = reject_old
+        try:
+            self.assertFalse(supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW))
+        finally:
+            store.heartbeat = original
+
     def test_ui_chat_never_calls_invoker(self):
         store = MemoryAssignmentStore(
             state(
