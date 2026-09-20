@@ -90,6 +90,7 @@ class ForgeCognitionEngine:
                 fencing_token=token,
                 expected_state_version=expected_version,
                 result=normalized,
+                consumed_signal_ids=tuple(int(x) for x in packet.get("signal_ids", [])),
             )
             elapsed=int((time.perf_counter()-started)*1000)
             return CognitionStepResult(
