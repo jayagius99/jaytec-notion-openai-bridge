@@ -237,6 +237,35 @@ Rules:
 
 Executable profile enforcement lives in `manus_policy.py`.
 
+### JAYTEC-owned Manus execution surface
+
+The only supported JAYTEC execution path for Manus automation is the
+`JAYTEC_MANUS_LITE_RUNTIME_V1` surface exposed through:
+
+- `manus_start_task(request_json)`
+- `manus_task_status(provider_task_id)`
+
+The caller cannot select a Manus profile. Profile/model/override fields are
+rejected at the runtime boundary, and the adapter hardcodes `lite` before any
+Manus discovery or task call. The provider-observed task profile is verified as
+Lite immediately after creation and again on status/result readback. A
+mismatch or unobservable profile fails closed; a mismatched task is stopped on
+a best-effort basis and is never accepted as JAYTEC work.
+
+These tools use the existing JAYTEC Manus governance/relationship/connector
+contracts. Connector scope is explicit and minimal. They do not create a new
+authority path, do not bypass the current-task authorization requirement, and
+do not permit Manus to self-dispatch another specialist.
+
+Production use is additionally subject to the same V2 dispatch-authority gate
+as JAYTEC provider execution. Until that production authority contract is
+integrated, the production Manus runtime returns `POLICY_BLOCKED`; staging may
+exercise the runtime for bounded verification.
+
+If `MANUS_API_KEY` or the exact MANUS project binding is unavailable, the
+runtime fails closed. It must never substitute the generic ChatGPT Manus
+surface or a paid profile.
+
 ## Manus behavioural and authority hard gate
 
 Manus is JAYTEC's bounded automation specialist. The authority chain is:
