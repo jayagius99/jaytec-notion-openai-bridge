@@ -38,3 +38,12 @@ def test_watch_status_route_is_oidc_only_and_read_only():
     assert "acquire_recovery_lease" not in route
     assert "MCP_AUTH_TOKEN" not in route
     assert "static_auth" not in route
+
+
+def test_watch_status_only_peeks_existing_invocation_record():
+    route = SERVER.split('@mcp.custom_route("/jaytec/watch-status", methods=["POST"])', 1)[1]
+    route = route.split("def _protocol_portal", 1)[0]
+    assert "REGISTRY.peek_result(recovery_key)" in route
+    assert '"last_invocation_record"' in route
+    assert "_manus_runtime()" not in route
+    assert "execute_watch_cycle(" not in route
