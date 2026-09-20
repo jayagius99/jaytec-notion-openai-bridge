@@ -321,6 +321,42 @@ def execute_watch_cycle(
                         progress_marker=delivered_marker,
                     )
                     github_broker = "HANDOFF_CONTINUED"
+                    final = store.get(task_id)
+                    return {
+                        "status": "PASS",
+                        "task_id": task_id,
+                        "bootstrapped": bootstrapped,
+                        "health_refreshed": False,
+                        "github_broker": github_broker,
+                        "decision": {
+                            "action": "NOOP_HEALTHY",
+                            "effective_stop_reason": StopReason.RUNNING.value,
+                            "reason": "JAYTEC_INTERNAL_HANDOFF_CONTINUED",
+                            "recovery_route": None,
+                        },
+                        "assignment": {
+                            "stop_reason": final.stop_reason.value if final else None,
+                            "worker_kind": final.worker_kind.value if final else None,
+                            "worker_id": final.worker_id if final else None,
+                            "worker_route": final.worker_route if final else None,
+                            "checkpoint_number": (
+                                final.checkpoint.checkpoint_number if final else None
+                            ),
+                            "repo": final.checkpoint.repo if final else None,
+                            "branch": final.checkpoint.branch if final else None,
+                            "verified_head": (
+                                final.checkpoint.commit_head if final else None
+                            ),
+                            "recovery_attempts": (
+                                final.recovery_attempts if final else None
+                            ),
+                            "fencing_token": final.fencing_token if final else None,
+                            "progress_marker": (
+                                final.progress_marker if final else None
+                            ),
+                            "completed": final.completed if final else None,
+                        },
+                    }
                 else:
                     original_marker = str(
                         state.last_error
