@@ -29,6 +29,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 engineering_provider_active=True,
+                openrouter_provider_active=True,
                 mcp_auth_token_present=True,
                 mcp_auth_token_strong=True,
                 openai_api_key_present=True,
@@ -59,6 +60,26 @@ class TestProductionReady(unittest.TestCase):
             )
         )
 
+
+    def test_production_ready_false_when_openrouter_provider_locked(self):
+        server = self._reload()
+        self.assertFalse(
+            server.compute_production_ready(
+                runtime_mode="production",
+                idempotency_store="postgres",
+                codex_model="gpt-5.6-sol",
+                gemini_model="google/gemini-3.1-pro-preview",
+                engineering_provider_active=True,
+                openrouter_provider_active=False,
+                mcp_auth_token_present=True,
+                mcp_auth_token_strong=True,
+                openai_api_key_present=True,
+                openrouter_api_key_present=True,
+                mcp_auth_subject="jaytec-control-plane",
+                mcp_auth_client_id="jaytec-control-plane",
+            )
+        )
+
     def test_production_ready_false_when_mcp_token_is_weak(self):
         server = self._reload()
         self.assertFalse(
@@ -68,6 +89,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model="gpt-5.6-sol",
                 gemini_model="google/gemini-3.1-pro-preview",
                 engineering_provider_active=True,
+                openrouter_provider_active=True,
                 mcp_auth_token_present=True,
                 mcp_auth_token_strong=False,
                 openai_api_key_present=True,
@@ -97,6 +119,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 engineering_provider_active=True,
+                openrouter_provider_active=True,
                 mcp_auth_token_present=True,
                 mcp_auth_token_strong=True,
                 openai_api_key_present=True,
@@ -115,6 +138,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model="gpt-5.6-sol",
                 gemini_model="google/gemini-3.1-pro-preview",
                 engineering_provider_active=True,
+                openrouter_provider_active=True,
                 mcp_auth_token_present=True,
                 mcp_auth_token_strong=True,
                 openai_api_key_present=True,
@@ -146,6 +170,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 engineering_provider_active=True,
+                openrouter_provider_active=True,
                 mcp_auth_token_present=True,
                 mcp_auth_token_strong=True,
                 openai_api_key_present=True,
@@ -173,6 +198,7 @@ class TestProductionReady(unittest.TestCase):
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
                 engineering_provider_active=True,
+                openrouter_provider_active=True,
                 mcp_auth_token_present=True,
                 mcp_auth_token_strong=True,
                 openai_api_key_present=True,
