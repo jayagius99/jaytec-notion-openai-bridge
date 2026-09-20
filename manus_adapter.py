@@ -395,7 +395,7 @@ class ManusClient:
             scope=scope,
             authority_source=authority_source,
             current_task_authorized=current_task_authorized,
-            requested_profile=preflight.profile.requested_profile.value,
+            requested_profile=lite_policy.requested_profile.value,
             route_supports_profile_selector=True,
             notion_authorized_by_jay_via_chatgpt=notion_authorized_by_jay_via_chatgpt,
         )
