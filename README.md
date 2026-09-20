@@ -1,77 +1,40 @@
-# JAYTEC Notion AI ↔ OpenAI MCP Bridge
+# JAYTEC Controlled Execution Bridge
 
-This package creates a real remote MCP server that a Notion Agent can call when it wants help from an OpenAI model.
+Historical repository name: `jaytec-notion-openai-bridge`.
 
-## What it does
+The current architecture is **not** a free-form Notion-to-OpenAI bridge. The production surface is a JAYTEC-controlled execution bridge with bounded task packets, exact provider/model policy, durable idempotency, fail-closed cost/provider behavior, and explicit HTTP trust configuration.
 
-It exposes four MCP tools:
+## Current authority boundary
 
-- `ask_openai(question, context)` — independent answer / second opinion
-- `review_notion_answer(question, notion_answer, context)` — audits Notion AI's draft
-- `collaborate(task, notion_analysis, context)` — two-agent engineering collaboration
-- `bridge_status()` — connection test
+- Jay supplies owner authority.
+- ChatGPT coordinates on Jay's behalf.
+- JAYTEC is the control plane.
+- Specialists receive bounded task packets.
+- The Notion Agent is optional strict pass-through transport only and is **not** the authenticated production execution principal.
 
-Default OpenAI model: `gpt-5.6-sol`.
+Production MCP authentication must identify the client as `jaytec-control-plane`. A Notion Agent identity is not production-ready.
 
-## Security design
+## Production tools
 
-There are **two different secrets**:
+The governed execution surface is:
+- `orchestration_status()`
+- `execute_task_packet(packet_json)`
+- `bridge_status()`
 
-1. `OPENAI_API_KEY` — your OpenAI API secret. Keep it only on the server host.
-2. `MCP_AUTH_TOKEN` — a different random bearer token that Notion uses to authenticate to your bridge.
+Legacy free-form `ask_openai`, `review_notion_answer`, and free-form `collaborate` are disabled in production and may exist only behind an explicit staging-only compatibility switch.
 
-Never put the OpenAI API key in Notion pages, prompts, GitHub, or this ZIP.
+## Readiness semantics
 
-## Local test
+A true bridge readiness result means **this bridge instance only** has satisfied its own prerequisites. It never means the whole JAYTEC/GOD Mode system is ready for production or activation.
 
-Python 3.11+ recommended.
+## Required production controls
 
-```bash
-pip install -r requirements.txt
-export OPENAI_API_KEY="..."
-export MCP_AUTH_TOKEN="..."
-python server.py
-```
+- durable Postgres idempotency;
+- exact approved engineering and research model identities;
+- explicit JAYTEC control-plane MCP auth identity;
+- explicit Host/Origin allowlist;
+- pinned provider endpoints;
+- no free-form legacy provider path;
+- provider credentials remain server-side.
 
-On Windows PowerShell:
-
-```powershell
-$env:OPENAI_API_KEY="..."
-$env:MCP_AUTH_TOKEN="..."
-python server.py
-```
-
-The MCP endpoint is:
-
-```text
-http://localhost:8000/mcp
-```
-
-Notion cannot reach localhost. For Notion, deploy it to a public HTTPS host.
-
-## Deployment
-
-A Dockerfile and `render.yaml` are included. Any host that can run a Python/Docker web service and supply HTTPS is suitable.
-
-Required environment secrets:
-- `OPENAI_API_KEY`
-- `MCP_AUTH_TOKEN`
-
-Optional:
-- `OPENAI_MODEL=gpt-5.6-sol`
-
-After deployment, connect Notion to:
-
-```text
-https://YOUR-SERVICE-HOST/mcp
-```
-
-Configure header/bearer authentication with the value of `MCP_AUTH_TOKEN`.
-
-## API key
-
-Create the OpenAI API key yourself in the OpenAI API platform. The bridge cannot create, recover, or safely embed your account key.
-
-## Important limitation
-
-This calls an OpenAI API model. It does **not** attach Notion to an existing ChatGPT conversation, ChatGPT account memory, or this exact live chat session. If Notion wants the OpenAI peer to know project context, it should pass that context in the MCP call.
+ROOT_OWNER, hardware-key, production topology, signer custody, rollback, hostile-review and final owner-activation gates remain separate and must all pass independently.
