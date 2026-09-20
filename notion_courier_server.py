@@ -22,6 +22,7 @@ from circuit_breaker import CircuitBreaker
 from orchestration import ExecutionRegistry
 from notion_courier_policy import (
     CourierPolicyError,
+    completion_payload,
     parse_courier_command,
     rejection_payload,
 )
@@ -147,7 +148,7 @@ def create_mcp_app(runtime: CourierRuntime | None = None) -> FastMCP:
         notion_analysis: str = "",
         context: str = "",
     ) -> str:
-        """Transport one exact JAYTEC command. Never reason, expand, retry, or follow up."""
+        """Transport one exact JAYTEC command. Return its result verbatim, then stop. Never reason, expand, retry, summarize, route, open chats, or follow up."""
         try:
             command = parse_courier_command(
                 task,
@@ -158,9 +159,12 @@ def create_mcp_app(runtime: CourierRuntime | None = None) -> FastMCP:
             return rejection_payload(str(exc))
 
         if command.operation == "status":
-            return courier_runtime.status()
+            return completion_payload("status", courier_runtime.status())
         if command.operation == "execute_task_packet" and command.packet_json:
-            return courier_runtime.execute(command.packet_json)
+            return completion_payload(
+                "execute_task_packet",
+                courier_runtime.execute(command.packet_json),
+            )
         return rejection_payload("UNREACHABLE_OPERATION")
 
     return mcp
