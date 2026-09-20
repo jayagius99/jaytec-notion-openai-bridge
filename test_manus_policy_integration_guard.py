@@ -54,6 +54,41 @@ class ManusPolicyIntegrationGuardTests(unittest.TestCase):
             + ", ".join(violations),
         )
 
+    def test_no_operational_source_can_enable_paid_manus_override(self):
+        violations = []
+        for path in sorted(ROOT.glob("*.py")):
+            if path.name.startswith("test_") or path.name == "manus_policy.py":
+                continue
+            source = path.read_text(encoding="utf-8")
+            compact = source.replace(" ", "").replace("\n", "")
+            if "explicit_paid_override=True" in compact:
+                violations.append(path.name)
+        self.assertEqual(
+            violations,
+            [],
+            "Operational source contains a paid Manus override: "
+            + ", ".join(violations),
+        )
+
+    def test_adapter_checks_lite_policy_before_any_manus_discovery_read(self):
+        source = (ROOT / "manus_adapter.py").read_text(encoding="utf-8")
+        prepare = source.index("def prepare_route(")
+        policy = source.index("authorize_manus_route(", prepare)
+        project = source.index("self.resolve_manus_project()", prepare)
+        self.assertLess(
+            policy,
+            project,
+            "Manus profile policy must fail closed before provider discovery reads",
+        )
+
+    def test_command_policy_marks_unpinnable_manus_surfaces_unavailable(self):
+        source = (ROOT / "JAYTEC_COMMAND_POLICY.md").read_text(encoding="utf-8")
+        self.assertIn("Lite-only, permanently and without exception", source)
+        self.assertIn(
+            "does not expose a Lite\n  selector and observable profile verification",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

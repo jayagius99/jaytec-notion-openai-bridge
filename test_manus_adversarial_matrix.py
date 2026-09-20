@@ -159,32 +159,28 @@ class ManusAdversarialMatrixTests(unittest.TestCase):
         for profile in ("standard", "max", "1.6", "2.0-max"):
             with self.subTest(profile=profile):
                 with self.assertRaisesRegex(
-                    ManusProfilePolicyError, "MANUS_PAID_PROFILE_BLOCKED"
+                    ManusProfilePolicyError,
+                    "MANUS_NON_LITE_PROFILE_PERMANENTLY_BLOCKED",
                 ):
                     authorize_manus_route(
                         requested_profile=profile,
                         route_supports_profile_selector=True,
                     )
 
-    def test_paid_override_requires_current_user_message(self):
+    def test_paid_override_is_permanently_disabled(self):
         for profile in ("standard", "max"):
             with self.subTest(profile=profile):
-                with self.assertRaisesRegex(
-                    ManusProfilePolicyError, "MANUS_PAID_OVERRIDE_NOT_CURRENT"
-                ):
-                    authorize_manus_route(
-                        requested_profile=profile,
-                        route_supports_profile_selector=True,
-                        explicit_paid_override=True,
-                        paid_override_authority=None,
-                    )
-                decision = authorize_manus_route(
-                    requested_profile=profile,
-                    route_supports_profile_selector=True,
-                    explicit_paid_override=True,
-                    paid_override_authority=PaidOverrideAuthority.CURRENT_USER_MESSAGE,
-                )
-                self.assertTrue(decision.paid_profile)
+                for authority in (None, PaidOverrideAuthority.CURRENT_USER_MESSAGE):
+                    with self.assertRaisesRegex(
+                        ManusProfilePolicyError,
+                        "MANUS_PAID_OVERRIDE_PERMANENTLY_DISABLED",
+                    ):
+                        authorize_manus_route(
+                            requested_profile=profile,
+                            route_supports_profile_selector=True,
+                            explicit_paid_override=True,
+                            paid_override_authority=authority,
+                        )
 
     def test_no_profile_fallback_exists_between_any_tiers(self):
         for source in ManusProfile:

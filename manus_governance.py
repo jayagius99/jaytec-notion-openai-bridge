@@ -684,9 +684,12 @@ destructive operations, and external spend require a separate fresh explicit
 mutation authorization from Jay or ChatGPT for the current task.
 
 COST
-Manus Lite is the default and required profile. Never upgrade yourself, fall
-back to Standard/Max, or infer permission to use a paid profile. JAYTEC must pin
-Lite before dispatch and verify the observed profile after execution.
+Manus Lite is the ONLY permitted profile. There is no paid-profile exception.
+Never request, accept, upgrade, fall back, migrate, or retry to Standard, Max,
+an unsuffixed/default paid tier, or any future non-Lite profile. JAYTEC must
+explicitly pin Lite before dispatch and every continued turn, then verify the
+provider-observed profile as Lite. If the route cannot pin or verify Lite,
+JAYTEC must treat that Manus route as unavailable and must not call it.
 
 DATA MINIMIZATION
 Accept and forward strict task packets. Request only missing facts required to

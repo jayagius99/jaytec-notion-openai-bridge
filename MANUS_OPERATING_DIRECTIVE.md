@@ -105,17 +105,22 @@ spend require current explicit authority.
 
 ## Cost/profile rule
 
-Manus Lite is the standing default and required profile.
+Manus Lite is the ONLY permitted Manus profile in JAYTEC. This is a permanent
+hard gate with no paid-profile exception.
 
 JAYTEC must:
-1. explicitly request Lite before dispatch;
-2. refuse a route that cannot select Lite;
-3. verify the observed Manus profile after execution;
-4. reject a mismatch or unobservable profile;
-5. never silently fall back to Standard or Max.
+1. explicitly request Lite before every dispatch and every continued turn;
+2. refuse any route that cannot explicitly select Lite;
+3. refuse Standard, Max, unsuffixed paid/default profiles, and every future
+   non-Lite Manus profile regardless of who requests it;
+4. verify the observed Manus profile after execution;
+5. reject and stop a task when the profile is mismatched or unobservable;
+6. never fall back, upgrade, retry, or migrate to a non-Lite profile;
+7. classify a Manus tool/connector surface that cannot pin and verify Lite as
+   unavailable for JAYTEC use.
 
-Paid Manus profiles remain one-task-only exceptions requiring Jay's explicit
-current-message authorization.
+There is no override wording, owner message, urgency, task type, quality need,
+credit condition, or legacy approval that can authorize a paid Manus profile.
 
 ## Strict task packets
 
