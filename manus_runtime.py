@@ -14,6 +14,7 @@ must apply that boundary before invoking this module.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -253,6 +254,37 @@ def parse_start_request(raw: str) -> StartRequest:
         constraints=_strings(value.get("constraints", []), field="constraints"),
         reference_ids=_strings(value.get("reference_ids", []), field="reference_ids"),
         title=title[:200],
+    )
+
+
+def start_request_identity(raw: str) -> tuple[str, str]:
+    """Return stable idempotency key/digest without touching Manus."""
+    req = parse_start_request(raw)
+    normalized = {
+        "schema_version": SCHEMA_VERSION,
+        "task_id": req.task_id,
+        "objective": req.objective,
+        "scope": req.scope,
+        "authority_source": req.authority_source,
+        "current_task_authorized": req.current_task_authorized,
+        "allowed_actions": list(req.allowed_actions),
+        "connector_purposes": dict(sorted(req.connector_purposes.items())),
+        "connector_mutation_authorized": req.connector_mutation_authorized,
+        "required_context": dict(req.required_context),
+        "constraints": list(req.constraints),
+        "reference_ids": list(req.reference_ids),
+        "title": req.title,
+        "profile": "lite",
+    }
+    canonical = json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return (
+        "manus:" + req.task_id,
+        hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     )
 
 
