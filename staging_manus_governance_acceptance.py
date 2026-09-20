@@ -236,8 +236,12 @@ def _wait_until_stopped(
         detail = client.verify_task_profile(route, task_id)
         task = detail.get("task") if isinstance(detail.get("task"), Mapping) else {}
         status = str(task.get("status") or "").casefold()
-        if status in {"stopped", "error", "waiting"}:
+        if status in {"stopped", "error"}:
             return detail
+        # Manus may briefly report waiting during task startup before it
+        # transitions to running. Do not classify that transient state as a
+        # terminal failure. A genuine waiting-for-user state remains bounded by
+        # the acceptance timeout and is handled fail-closed below.
         time.sleep(POLL_SECONDS)
     return detail
 
@@ -309,12 +313,16 @@ def main() -> int:
         task = detail.get("task") if isinstance(detail.get("task"), Mapping) else {}
         task_status = str(task.get("status") or "").casefold()
         if task_status != "stopped":
-            if task_status == "running":
+            if task_status in {"running", "waiting"}:
                 try:
                     client.stop_task(task_id)
                 except Exception:
                     pass
-                output["error"] = "MANUS_ACCEPTANCE_TIMEOUT"
+                output["error"] = (
+                    "MANUS_ACCEPTANCE_WAITING_TIMEOUT"
+                    if task_status == "waiting"
+                    else "MANUS_ACCEPTANCE_TIMEOUT"
+                )
             else:
                 output["error"] = f"MANUS_ACCEPTANCE_TASK_{task_status or 'UNKNOWN'}"
             print(json.dumps(output, sort_keys=True), flush=True)
