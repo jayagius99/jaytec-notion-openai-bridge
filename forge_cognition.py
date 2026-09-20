@@ -38,6 +38,30 @@ MAX_ITEMS = 256
 MAX_TEXT = 24_000
 GOAL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
 
+ALLOWED_CYCLE_RESULT_FIELDS=frozenset({
+    "schema_version",
+    "summary",
+    "next_mode",
+    "goal_updates",
+    "new_goals",
+    "world_model_patch",
+    "capability_frontier_patch",
+    "working_memory",
+    "unresolved_questions",
+    "current_focus",
+    "telemetry",
+})
+IMMUTABLE_COGNITIVE_FIELDS=frozenset({
+    "forge_id",
+    "genesis_event_id",
+    "owner_activation_ref",
+    "life_goal",
+    "constitutional_invariants",
+    "root_owner_continuity",
+    "strategic_drives",
+    "provenance_boundary",
+})
+
 
 class ForgeCognitionError(RuntimeError):
     pass
@@ -718,6 +742,7 @@ class ForgeMindStore:
     ) -> dict[str, Any]:
         if not isinstance(result,Mapping):
             raise ForgeCognitionError("CYCLE_RESULT_INVALID")
+        validate_cycle_result_shape(result)
         if str(result.get("schema_version") or RESULT_VERSION) != RESULT_VERSION:
             raise ForgeCognitionError("CYCLE_RESULT_VERSION_INVALID")
         summary=_text(result.get("summary"),"CYCLE_SUMMARY",maximum=8000)
@@ -1004,6 +1029,17 @@ class ForgeMindStore:
                 for row in reversed(cur.fetchall()):
                     d=dict(row); d["created_at"]=d["created_at"].isoformat(); rows.append(d)
                 return rows
+
+
+def validate_cycle_result_shape(result: Mapping[str,Any]) -> None:
+    extras=set(result)-ALLOWED_CYCLE_RESULT_FIELDS
+    if extras:
+        if extras & IMMUTABLE_COGNITIVE_FIELDS:
+            raise ForgeCognitionError(
+                "IMMUTABLE_COGNITIVE_FIELD_MUTATION_FORBIDDEN:"
+                + ",".join(sorted(extras & IMMUTABLE_COGNITIVE_FIELDS))
+            )
+        raise ForgeCognitionError("CYCLE_RESULT_FIELDS_INVALID:"+",".join(sorted(extras)))
 
 
 def safe_error(exc: Exception) -> dict[str, Any]:
