@@ -1278,6 +1278,45 @@ class AutoRecoverySupervisor:
                 health=health,
             )
             if terminal is not None:
+                # A replacement worker that immediately terminates FAILED_CLOSED
+                # has consumed this recovery attempt. Do not return a raw
+                # RECOVER action from inside the recovery execution path: that
+                # would blur attempt accounting and could encourage same-cycle
+                # recursion. Record the failed attempt and let the next
+                # canonical WATCH cycle decide whether another bounded attempt
+                # remains.
+                if terminal.action is SupervisorAction.RECOVER:
+                    exhausted = lease.attempt_number >= self.max_recovery_attempts
+                    stop_reason = (
+                        StopReason.RECOVERY_EXHAUSTED
+                        if exhausted
+                        else StopReason.STALLED_RECOVERABLE
+                    )
+                    if exhausted:
+                        self.store.mark_stop(
+                            task_id,
+                            fencing_token=lease.fencing_token,
+                            stop_reason=stop_reason,
+                            error="RECOVERY_WORKER_TERMINATED_FAILED_CLOSED",
+                            now=health.heartbeat_at or current,
+                        )
+                        self._notify(
+                            {
+                                "event": "JAYTEC_AUTORECOVERY_EXHAUSTED",
+                                "task_id": task_id,
+                                "recovery_attempts": lease.attempt_number,
+                            }
+                        )
+                    return RecoveryDecision(
+                        SupervisorAction.RECOVERY_FAILED,
+                        stop_reason,
+                        (
+                            "RECOVERY_ATTEMPTS_EXHAUSTED"
+                            if exhausted
+                            else "RECOVERY_WORKER_TERMINATED_FAILED_CLOSED"
+                        ),
+                        recovery_route=route,
+                    )
                 return terminal
 
             self.store.heartbeat(
