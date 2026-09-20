@@ -72,8 +72,8 @@ def _strict_string(value: Any, *, field: str, default: str = "") -> str:
 def _compat_target(task: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Map reserved legacy collaborate commands to native reliability tools.
 
-    None means the task is not a compatibility command and must pass through
-    unchanged to the original collaborate implementation.
+    None means the task is not an approved compatibility command. Such calls
+    must be rejected; free-form collaborate is permanently disabled.
     """
 
     if task == RELIABILITY_STATUS_COMMAND:
@@ -179,6 +179,8 @@ def _rewrite_call(payload: Mapping[str, Any]) -> Dict[str, Any]:
         return value
 
     if target is None:
+        params["name"] = REJECTED_TOOL_NAME
+        params["arguments"] = {}
         return value
 
     tool_name, tool_arguments = target
