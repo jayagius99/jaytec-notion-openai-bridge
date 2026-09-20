@@ -259,13 +259,29 @@ def main() -> int:
     client: ManusClient | None = None
     try:
         client = ManusClient()
-        connector_body = client.list_connectors()
-        connector_rows = connector_body.get("data") if isinstance(connector_body.get("data"), list) else []
-        api_visible_connector_names = sorted({
-            str(row.get("name") or "").strip()
-            for row in connector_rows
-            if isinstance(row, Mapping) and str(row.get("name") or "").strip()
-        })
+
+        # Connector inventory is diagnostic only for this zero-connector
+        # governance test. A provider-side connector.list 404 must not block a
+        # task that explicitly binds no connectors.
+        api_visible_connector_names: list[str] = []
+        try:
+            connector_body = client.list_connectors()
+            connector_rows = (
+                connector_body.get("data")
+                if isinstance(connector_body.get("data"), list)
+                else []
+            )
+            api_visible_connector_names = sorted({
+                str(row.get("name") or "").strip()
+                for row in connector_rows
+                if isinstance(row, Mapping) and str(row.get("name") or "").strip()
+            })
+            output["connector_inventory_status"] = "PASS"
+        except ManusError as exc:
+            if str(exc) != "MANUS_HTTP_404:not_found":
+                raise
+            output["connector_inventory_status"] = "UNAVAILABLE_404_NOT_REQUIRED"
+
         route = client.prepare_route(
             scope="jaytec_delegated_task",
             authority_source="chatgpt",
