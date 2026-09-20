@@ -108,7 +108,7 @@ def _require_startup_prereqs() -> None:
 
 
 
-def compute_production_ready(
+def compute_bridge_prerequisites_ready(
     *,
     runtime_mode: str,
     idempotency_store: str,
@@ -119,19 +119,11 @@ def compute_production_ready(
     openrouter_api_key_present: bool,
     legacy_direct_tools_enabled: bool = False,
 ) -> bool:
-    """Compute whether this bridge instance is truly production-ready.
+    """Compute bridge-local prerequisites only.
 
-    This is intentionally fail-closed: any missing prerequisite should return False.
-
-    Required conditions:
-    - RUNTIME_MODE == 'production'
-    - durable idempotency store is 'postgres'
-    - exact specialist model identities match the required locks
-    - MCP auth + provider startup prerequisites are satisfied
-    - Gemini production adapter is actually configured (OPENROUTER_API_KEY present)
-
-    NOTE: Startup may still be allowed in some partially-configured states; this flag
-    is strictly about readiness, not liveness.
+    A True result means only that this bridge process has the expected local
+    runtime prerequisites. It is NOT JAYTEC, ROOT_OWNER, V2, or GOD Mode
+    production/activation readiness and grants no execution authority.
     """
     if runtime_mode != "production":
         return False
@@ -150,6 +142,14 @@ def compute_production_ready(
     if legacy_direct_tools_enabled:
         return False
     return True
+
+
+def compute_production_ready(**kwargs) -> bool:
+    """Deprecated compatibility alias for bridge-local prerequisite readiness.
+
+    Callers MUST NOT interpret True as system activation readiness.
+    """
+    return compute_bridge_prerequisites_ready(**kwargs)
 
 
 
@@ -227,7 +227,7 @@ def _orchestration_status_json(
     codex_circuit: Any,
     gemini_circuit: Any,
     idempotency_store: str,
-    production_ready: bool,
+    bridge_prerequisites_ready: bool,
 ) -> str:
     return json.dumps(
         {
@@ -241,7 +241,11 @@ def _orchestration_status_json(
             "gemini_circuit": gemini_circuit,
             "idempotency_store": idempotency_store,
             "runtime_mode": runtime_mode,
-            "production_ready": production_ready,
+            "readiness_scope": "BRIDGE_PROCESS_ONLY",
+            "bridge_prerequisites_ready": bridge_prerequisites_ready,
+            "production_ready": False,
+            "system_activation_ready": False,
+            "root_owner_activation_authority": "EXTERNAL_OWNER_ONLY",
         },
         sort_keys=True,
     )
@@ -336,7 +340,7 @@ PROJECT_CONTEXT = (
     else ""
 )
 
-BASE_INSTRUCTIONS = """You are the OpenAI engineering peer connected to a Notion AI agent through a private MCP bridge.
+BASE_INSTRUCTIONS = """You are the OpenAI engineering specialist operating behind the JAYTEC controlled orchestration bridge.
 
 Your job is to improve accuracy and usefulness, not merely agree with the other AI.
 
@@ -382,8 +386,8 @@ def create_mcp_app() -> FastMCP:
     auth = StaticTokenVerifier(
         tokens={
             MCP_AUTH_TOKEN: {
-                "sub": "notion-agent",
-                "client_id": "jaytec-notion-openai-bridge",
+                "sub": "jaytec-control-plane-client",
+                "client_id": "jaytec-control-plane-bridge",
             }
         }
     )
@@ -418,7 +422,7 @@ def create_mcp_app() -> FastMCP:
         RUNTIME_MODE, ENABLE_LEGACY_DIRECT_OPENAI_TOOLS
     )
 
-    production_ready = compute_production_ready(
+    bridge_prerequisites_ready = compute_bridge_prerequisites_ready(
         runtime_mode=RUNTIME_MODE,
         idempotency_store=idempotency_store,
         codex_model=CODEX_MODEL,
@@ -473,7 +477,7 @@ def create_mcp_app() -> FastMCP:
             codex_circuit=codex_circuit.snapshot(),
             gemini_circuit=gemini_circuit.snapshot(),
             idempotency_store=idempotency_store,
-            production_ready=production_ready,
+            bridge_prerequisites_ready=bridge_prerequisites_ready,
         )
 
     def _packet_json(packet_json: str) -> str:
@@ -518,7 +522,11 @@ def create_mcp_app() -> FastMCP:
 
     @mcp.tool
     def bridge_status() -> str:
-        return f"JAYTEC Notion/OpenAI bridge is online. OpenAI model: {OPENAI_MODEL}"
+        return (
+            "JAYTEC control-plane bridge is online. "
+            "This is liveness only, not GOD Mode/JAYTEC activation readiness. "
+            f"OpenAI model: {OPENAI_MODEL}"
+        )
 
     # ---------------- Unified orchestration surface ----------------
 
