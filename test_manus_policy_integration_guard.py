@@ -89,6 +89,31 @@ class ManusPolicyIntegrationGuardTests(unittest.TestCase):
             source,
         )
 
+    def test_no_stale_paid_profile_exception_in_live_manus_material(self):
+        forbidden = (
+            "unless Jay explicitly authorizes a paid profile",
+            "paid profiles remain one-task-only exceptions",
+            "paid-profile override is one-task-only",
+        )
+        paths = (
+            "JAYTEC_COMMAND_POLICY.md",
+            "MANUS_OPERATING_DIRECTIVE.md",
+            "manus_governance.py",
+            "staging_manus_governance_acceptance.py",
+            "staging_gemini_manus_governance_review.py",
+        )
+        violations = []
+        for name in paths:
+            source = (ROOT / name).read_text(encoding="utf-8")
+            for phrase in forbidden:
+                if phrase.casefold() in source.casefold():
+                    violations.append(f"{name}:{phrase}")
+        self.assertEqual(
+            violations,
+            [],
+            "Stale paid Manus exception survived: " + ", ".join(violations),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
