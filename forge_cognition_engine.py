@@ -55,14 +55,14 @@ class ForgeCognitionEngine:
 
     def step(self, forge_id: str, worker_id: str) -> CognitionStepResult:
         before=self.store.load_state(forge_id)
-        action,goal,tier,reason=choose_cycle(before)
-        if action is CycleAction.HOLD:
+        pre_action,_,pre_tier,pre_reason=choose_cycle(before)
+        if pre_action is CycleAction.HOLD:
             return CognitionStepResult(
                 status="HOLD",
-                action=action.value,
-                tier=tier.value,
+                action=pre_action.value,
+                tier=pre_tier.value,
                 elapsed_ms=0,
-                detail=reason,
+                detail=pre_reason,
             )
         if before.mode is not ForgeMode.RUNNING:
             raise ForgeCognitionError("FORGE_NOT_RUNNING")
@@ -71,6 +71,9 @@ class ForgeCognitionEngine:
         packet=self.store.prepare_cycle(forge_id,worker_id)
         token=int(packet["fencing_token"])
         expected_version=int(packet["state_version"])
+        action=CycleAction(str(packet["selected_action"]))
+        tier=ReasoningTier(str(packet["reasoning_tier"]))
+        reason=str(packet.get("selection_reason") or "")
         try:
             result=None
             if tier is ReasoningTier.REFLEX and self.reflex_executor is not None:
