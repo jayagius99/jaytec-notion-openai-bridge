@@ -96,7 +96,16 @@ MANUS_RESULT_JSON_SCHEMA: dict[str, Any] = {
         },
         "changes_made": {"type": "array", "items": {"type": "string"}},
         "unresolved_items": {"type": "array", "items": {"type": "string"}},
-        "specialist_requests": {"type": "array", "items": {"type": "object"}},
+        "specialist_requests": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "description": (
+                    "Optional canonical JSON SPECIALIST_REQUEST packets. "
+                    "Each string is parsed and validated by JAYTEC before use."
+                ),
+            },
+        },
         "verification": {
             "type": "object",
             "properties": {
@@ -133,6 +142,109 @@ class ManusRuntimeError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+_MANUS_SCHEMA_ALLOWED_BY_TYPE = {
+    "object": frozenset({"type", "properties", "required", "additionalProperties", "description"}),
+    "array": frozenset({"type", "items", "description"}),
+    "string": frozenset({"type", "enum", "description"}),
+    "number": frozenset({"type", "enum", "description"}),
+    "integer": frozenset({"type", "enum", "description"}),
+    "boolean": frozenset({"type", "description"}),
+    "null": frozenset({"type", "description"}),
+}
+
+
+def validate_manus_structured_output_schema(
+    schema: Mapping[str, Any],
+    *,
+    _path: str = "$",
+    _root: bool = True,
+) -> None:
+    """Fail closed against Manus v2's strict structured-output subset.
+
+    The provider rejects invalid schemas as HTTP 400 invalid_argument. Validate
+    locally before any Manus network access so recovery attempts are not burned
+    on deterministic contract errors.
+    """
+
+    if not isinstance(schema, Mapping):
+        raise ManusRuntimeError("MANUS_STRUCTURED_SCHEMA_NODE_INVALID:" + _path)
+
+    node_type = schema.get("type")
+    if not isinstance(node_type, str) or node_type not in _MANUS_SCHEMA_ALLOWED_BY_TYPE:
+        raise ManusRuntimeError("MANUS_STRUCTURED_SCHEMA_TYPE_INVALID:" + _path)
+    if _root and node_type != "object":
+        raise ManusRuntimeError("MANUS_STRUCTURED_SCHEMA_ROOT_NOT_OBJECT")
+
+    unknown = sorted(set(schema) - _MANUS_SCHEMA_ALLOWED_BY_TYPE[node_type])
+    if unknown:
+        raise ManusRuntimeError(
+            "MANUS_STRUCTURED_SCHEMA_UNSUPPORTED_KEYWORD:"
+            + _path
+            + ":"
+            + ",".join(unknown)
+        )
+
+    enum = schema.get("enum")
+    if enum is not None:
+        if not isinstance(enum, list) or not enum:
+            raise ManusRuntimeError("MANUS_STRUCTURED_SCHEMA_ENUM_INVALID:" + _path)
+
+    if node_type == "object":
+        properties = schema.get("properties")
+        required = schema.get("required")
+        if not isinstance(properties, Mapping):
+            raise ManusRuntimeError(
+                "MANUS_STRUCTURED_SCHEMA_OBJECT_PROPERTIES_INVALID:" + _path
+            )
+        if schema.get("additionalProperties") is not False:
+            raise ManusRuntimeError(
+                "MANUS_STRUCTURED_SCHEMA_OBJECT_ADDITIONAL_PROPERTIES_REQUIRED:"
+                + _path
+            )
+        if (
+            not isinstance(required, list)
+            or any(not isinstance(item, str) for item in required)
+            or set(required) != set(properties)
+            or len(required) != len(set(required))
+        ):
+            raise ManusRuntimeError(
+                "MANUS_STRUCTURED_SCHEMA_OBJECT_REQUIRED_MISMATCH:" + _path
+            )
+        for name, child in properties.items():
+            if not isinstance(name, str) or not name:
+                raise ManusRuntimeError(
+                    "MANUS_STRUCTURED_SCHEMA_PROPERTY_NAME_INVALID:" + _path
+                )
+            validate_manus_structured_output_schema(
+                child,
+                _path=_path + "." + name,
+                _root=False,
+            )
+    elif node_type == "array":
+        items = schema.get("items")
+        if not isinstance(items, Mapping):
+            raise ManusRuntimeError("MANUS_STRUCTURED_SCHEMA_ARRAY_ITEMS_INVALID:" + _path)
+        validate_manus_structured_output_schema(
+            items,
+            _path=_path + "[]",
+            _root=False,
+        )
+
+
+def _decode_specialist_request(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        raise ManusRuntimeError("MANUS_RUNTIME_SPECIALIST_REQUEST_INVALID")
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ManusRuntimeError(
+            "MANUS_RUNTIME_SPECIALIST_REQUEST_JSON_INVALID"
+        ) from exc
+    if not isinstance(decoded, Mapping):
+        raise ManusRuntimeError("MANUS_RUNTIME_SPECIALIST_REQUEST_INVALID")
+    return decoded
 
 
 @dataclass(frozen=True)
@@ -334,6 +446,7 @@ class ManusLiteRuntime:
 
     def start_task(self, request_json: str) -> dict[str, Any]:
         req = parse_start_request(request_json)
+        validate_manus_structured_output_schema(MANUS_RESULT_JSON_SCHEMA)
 
         packet = build_minimal_task_packet(
             task_id=req.task_id,
@@ -504,10 +617,7 @@ class ManusLiteRuntime:
         requests = result.get("specialist_requests")
         if isinstance(requests, list):
             for request in requests:
-                if isinstance(request, Mapping):
-                    validate_specialist_request(request)
-                else:
-                    raise ManusRuntimeError("MANUS_RUNTIME_SPECIALIST_REQUEST_INVALID")
+                validate_specialist_request(_decode_specialist_request(request))
 
         verify_manus_completion(result)
         out["status"] = "VERIFIED_COMPLETE"

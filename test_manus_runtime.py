@@ -5,11 +5,14 @@ from types import SimpleNamespace
 
 from manus_policy import ManusProfile, ManusProfilePolicyError
 from orchestration import ExecutionRegistry
+from manus_governance import specialist_request
 from manus_runtime import (
+    MANUS_RESULT_JSON_SCHEMA,
     ManusLiteRuntime,
     ManusRuntimeError,
     parse_start_request,
     start_request_identity,
+    validate_manus_structured_output_schema,
 )
 
 
@@ -130,6 +133,89 @@ ROOT = Path(__file__).resolve().parent
 
 
 class ManusLiteRuntimeTests(unittest.TestCase):
+    def test_runtime_schema_matches_manus_strict_subset(self):
+        validate_manus_structured_output_schema(MANUS_RESULT_JSON_SCHEMA)
+        self.assertEqual(
+            MANUS_RESULT_JSON_SCHEMA["properties"]["specialist_requests"]["items"]["type"],
+            "string",
+        )
+
+    def test_bare_nested_object_is_rejected_before_network(self):
+        bad = {
+            "type": "object",
+            "properties": {
+                "requests": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                }
+            },
+            "required": ["requests"],
+            "additionalProperties": False,
+        }
+        with self.assertRaisesRegex(
+            ManusRuntimeError,
+            "MANUS_STRUCTURED_SCHEMA_OBJECT_PROPERTIES_INVALID",
+        ):
+            validate_manus_structured_output_schema(bad)
+
+    def test_structured_schema_adversarial_matrix_fails_locally(self):
+        cases = {
+            "missing_additional_properties": {
+                "type": "object",
+                "properties": {"x": {"type": "string"}},
+                "required": ["x"],
+            },
+            "required_mismatch": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "string"},
+                    "y": {"type": "string"},
+                },
+                "required": ["x"],
+                "additionalProperties": False,
+            },
+            "unsupported_keyword": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "string", "maxLength": 3},
+                },
+                "required": ["x"],
+                "additionalProperties": False,
+            },
+            "array_without_items": {
+                "type": "object",
+                "properties": {"x": {"type": "array"}},
+                "required": ["x"],
+                "additionalProperties": False,
+            },
+            "non_object_root": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        }
+        for name, schema in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(ManusRuntimeError):
+                    validate_manus_structured_output_schema(schema)
+
+    def test_specialist_request_json_string_is_validated_after_completion(self):
+        request = specialist_request(
+            parent_task_id="task-1",
+            specialist="engineer",
+            objective="Review one bounded software issue.",
+            reason="Independent specialist input is required.",
+            required_context={"reference": "issue-59"},
+        )
+        result = verified_success()
+        result["specialist_requests"] = [json.dumps(request, sort_keys=True)]
+        client = FakeClient(
+            observed_profile="lite",
+            task_status="stopped",
+            result=result,
+        )
+        out = ManusLiteRuntime(client).task_status("provider-123")
+        self.assertEqual(out["status"], "VERIFIED_COMPLETE")
+
     def test_profile_selection_fields_are_impossible_at_runtime_boundary(self):
         for field in (
             "profile",

@@ -119,6 +119,23 @@ class RuntimeComponentTests(unittest.TestCase):
         )
         self.assertFalse(result.accepted)
 
+    def test_rejected_manus_start_preserves_safe_provider_error(self):
+        runtime = FakeRuntime(start={
+            "status": "FAILED_CLOSED",
+            "error": "MANUS_HTTP_400:invalid_argument",
+        })
+        result = ManusLiteRecoveryInvoker(runtime, FakeRegistry()).invoke(
+            checkpoint=checkpoint(),
+            continuation_packet={},
+            route=RecoveryRoute.SAME_WORKER_PROVIDER,
+            fencing_token=1,
+        )
+        self.assertFalse(result.accepted)
+        self.assertEqual(
+            result.detail,
+            "MANUS_RECOVERY_NOT_STARTED:FAILED_CLOSED:MANUS_HTTP_400:invalid_argument",
+        )
+
     def test_health_pending_is_healthy(self):
         health = ManusLiteHealthProbe(FakeRuntime()).wait_for_healthy(
             task_id="task",
