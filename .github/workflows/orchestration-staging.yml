@@ -35,6 +35,7 @@ on:
       - 'manus_policy.py'
       - 'manus_governance.py'
       - 'manus_dispatch_contract.py'
+      - 'manus_runtime.py'
       - 'relationship_policy.py'
       - 'participant_contracts.py'
       - 'MANUS_OPERATING_DIRECTIVE.md'
@@ -48,6 +49,7 @@ on:
       - 'test_participant_contracts.py'
       - 'test_participant_prompt_injection.py'
       - 'test_manus_policy_integration_guard.py'
+      - 'test_manus_runtime.py'
       - 'test_manus_adversarial_matrix.py'
       - 'test_provider_credit_topup.py'
       - 'staging_gemini_manus_governance_review.py'
@@ -93,13 +95,13 @@ jobs:
             orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py deepseek_reviewer.py provider_endpoints.py http_security.py auth_security.py dispatch_authority_boundary.py test_deepseek_reviewer.py test_auth_security.py test_dispatch_authority_boundary.py \
             server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py staging_independent_g1_review.py test_staging_independent_g1_review.py startup_probe_guard.py staging_codex_429_diagnostic.py test_startup_probe_guard.py test_startup_provider_safety.py \
             staging_engineering_provider_probe.py staging_gemini_migration_review.py staging_gemini_manus_governance_review.py staging_manus_review_readback.py staging_manus_governance_acceptance.py staging_manus_usability_eval.py manus_adapter.py \
-            manus_policy.py manus_governance.py manus_dispatch_contract.py relationship_policy.py participant_contracts.py \
+            manus_policy.py manus_governance.py manus_dispatch_contract.py manus_runtime.py relationship_policy.py participant_contracts.py \
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
             test_worker_output_parsing.py test_idempotency_postgres.py test_dockerfile_packaging.py \
             test_contract_equivalence.py test_server_candidate_probe.py test_engineering_migration_guard.py \
             test_manus_adapter.py test_manus_policy.py test_manus_governance.py test_manus_dispatch_contract.py \
-            test_relationship_policy.py test_participant_contracts.py test_participant_prompt_injection.py test_manus_policy_integration_guard.py \
+            test_relationship_policy.py test_participant_contracts.py test_participant_prompt_injection.py test_manus_policy_integration_guard.py test_manus_runtime.py \
             test_manus_adversarial_matrix.py test_provider_credit_topup.py test_manus_governance_acceptance.py test_manus_usability_eval.py test_gemini_manus_governance_review.py
       - name: Import guard (server.py must be importable without secrets)
         run: python -c "import server; print('server_import_ok')"
