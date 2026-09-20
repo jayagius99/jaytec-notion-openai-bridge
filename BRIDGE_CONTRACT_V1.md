@@ -78,6 +78,11 @@ Every Manus task is explicitly pinned to `lite`; the provider-observed profile
 must verify as Lite after creation and on readback. Non-Lite or unobservable
 identity fails closed. There is no Standard/Max/paid fallback.
 
+Task starts use the existing durable JAYTEC idempotency registry. Same task id
+plus the same normalized request replays; the same task id with changed scope,
+context, connectors, objective, or authority fails closed rather than creating
+competing Manus work.
+
 The production surface is subject to the V2 dispatch-authority boundary.
 Staging can exercise the same runtime for bounded validation. Missing Manus
 credentials/project binding is a blocked Manus route, not permission to use a
