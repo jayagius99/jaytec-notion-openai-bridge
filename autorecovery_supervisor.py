@@ -960,6 +960,38 @@ class AutoRecoverySupervisor:
         if self.notifier is not None:
             self.notifier.notify(_json_clone(dict(payload)))
 
+    def _terminal_worker_result(
+        self,
+        task_id: str,
+        *,
+        fencing_token: int,
+        health: WorkerHealth,
+    ) -> RecoveryDecision | None:
+        marker = str(health.progress_marker or "")
+        if not marker.startswith("MANUS_TERMINAL:"):
+            return None
+        self.store.mark_stop(
+            task_id,
+            fencing_token=fencing_token,
+            stop_reason=StopReason.WAITING_FOR_REQUIRED_INPUT,
+            error=marker[:2000],
+            now=health.heartbeat_at or utcnow(),
+        )
+        self._notify(
+            {
+                "event": "JAYTEC_AUTORECOVERY_WORKER_TERMINAL",
+                "task_id": task_id,
+                "worker_id": health.worker_id,
+                "progress_marker": marker,
+                "next_state": StopReason.WAITING_FOR_REQUIRED_INPUT.value,
+            }
+        )
+        return RecoveryDecision(
+            SupervisorAction.NOTIFY_JAY,
+            StopReason.WAITING_FOR_REQUIRED_INPUT,
+            "CALLABLE_WORKER_FINISHED_REVIEW_REQUIRED",
+        )
+
     def refresh_worker_health(
         self,
         task_id: str,
@@ -999,6 +1031,13 @@ class AutoRecoverySupervisor:
             return False
 
         try:
+            terminal = self._terminal_worker_result(
+                task_id,
+                fencing_token=state.fencing_token,
+                health=health,
+            )
+            if terminal is not None:
+                return True
             self.store.heartbeat(
                 task_id,
                 fencing_token=state.fencing_token,
@@ -1189,6 +1228,14 @@ class AutoRecoverySupervisor:
                     "RECOVERY_HEALTH_VERIFY_FAILED",
                     recovery_route=route,
                 )
+
+            terminal = self._terminal_worker_result(
+                task_id,
+                fencing_token=lease.fencing_token,
+                health=health,
+            )
+            if terminal is not None:
+                return terminal
 
             self.store.heartbeat(
                 task_id,
