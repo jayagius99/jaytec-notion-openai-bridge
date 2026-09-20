@@ -401,6 +401,7 @@ class ValueOpportunity:
     regulated_or_licensed_activity: bool
     required_scopes: tuple[str,...]
     requires_external_spend: bool
+    within_preapproved_budget: bool
     requires_new_legal_entity_or_account: bool
     known_obligations_covered: bool
     funds_or_resources_available: bool
@@ -424,6 +425,7 @@ class ValueOpportunity:
             regulated_or_licensed_activity=value.get("regulated_or_licensed_activity") is True,
             required_scopes=tuple(_text(x,"REQUIRED_SCOPE",maximum=500) for x in (value.get("required_scopes") or [])),
             requires_external_spend=value.get("requires_external_spend") is True,
+            within_preapproved_budget=value.get("within_preapproved_budget") is True,
             requires_new_legal_entity_or_account=value.get("requires_new_legal_entity_or_account") is True,
             known_obligations_covered=value.get("known_obligations_covered") is True,
             funds_or_resources_available=value.get("funds_or_resources_available") is True,
@@ -450,7 +452,9 @@ def evaluate_value_opportunity(o: ValueOpportunity) -> OpportunityDecision:
         return OpportunityDecision.RESEARCH
     if not o.known_obligations_covered or not o.funds_or_resources_available:
         return OpportunityDecision.RESEARCH
-    if o.regulated_or_licensed_activity or o.requires_external_spend or o.requires_new_legal_entity_or_account:
+    if o.regulated_or_licensed_activity or o.requires_new_legal_entity_or_account:
+        return OpportunityDecision.OWNER_REVIEW
+    if o.requires_external_spend and not o.within_preapproved_budget:
         return OpportunityDecision.OWNER_REVIEW
     return OpportunityDecision.EXECUTE
 
@@ -458,6 +462,125 @@ def evaluate_value_opportunity(o: ValueOpportunity) -> OpportunityDecision:
 def rank_value_opportunities(opportunities: list[ValueOpportunity]) -> list[ValueOpportunity]:
     eligible=[o for o in opportunities if evaluate_value_opportunity(o) is not OpportunityDecision.REJECT]
     return sorted(eligible,key=lambda o:(-value_opportunity_score(o),o.opportunity_id))
+
+
+
+@dataclass(frozen=True)
+class LearningEvidence:
+    evaluation_id: str
+    executed: bool
+    source_before: float
+    source_after: float
+    transfer_before: float
+    transfer_after: float
+    retention_before: float
+    retention_after: float
+    critical_regressions: tuple[str,...]
+
+    @classmethod
+    def parse(cls, value: Mapping[str,Any]) -> "LearningEvidence":
+        def metric(name: str) -> float:
+            raw=value.get(name)
+            if isinstance(raw,bool) or not isinstance(raw,(int,float)):
+                raise StrategicDriveError(name.upper()+"_INVALID")
+            return float(raw)
+        return cls(
+            evaluation_id=_text(value.get("evaluation_id"),"EVALUATION_ID",maximum=200),
+            executed=value.get("executed") is True,
+            source_before=metric("source_before"),
+            source_after=metric("source_after"),
+            transfer_before=metric("transfer_before"),
+            transfer_after=metric("transfer_after"),
+            retention_before=metric("retention_before"),
+            retention_after=metric("retention_after"),
+            critical_regressions=tuple(_text(x,"CRITICAL_REGRESSION",maximum=1000) for x in (value.get("critical_regressions") or [])),
+        )
+
+
+def learning_update_is_verified(e: LearningEvidence, *, max_retention_regression: float=0.02) -> bool:
+    if not e.executed or e.critical_regressions:
+        return False
+    source_gain=e.source_after-e.source_before
+    transfer_gain=e.transfer_after-e.transfer_before
+    retention_delta=e.retention_after-e.retention_before
+    return source_gain > 0 and transfer_gain > 0 and retention_delta >= -abs(max_retention_regression)
+
+
+@dataclass(frozen=True)
+class ReinvestmentTarget:
+    target_id: str
+    category: str
+    expected_capability_multiplier: int
+    expected_value_multiplier: int
+    capital_efficiency: int
+    evidence_confidence: float
+    recurring_burden: int
+    lawful: bool
+    sustainable: bool
+    required_scopes: tuple[str,...]
+    requires_external_spend: bool
+    within_preapproved_budget: bool
+    funds_available: bool
+    known_obligations_covered: bool
+
+    @classmethod
+    def parse(cls, value: Mapping[str,Any]) -> "ReinvestmentTarget":
+        return cls(
+            target_id=_text(value.get("target_id"),"TARGET_ID",maximum=200),
+            category=_text(value.get("category"),"CATEGORY",maximum=200),
+            expected_capability_multiplier=_score100(value.get("expected_capability_multiplier"),"EXPECTED_CAPABILITY_MULTIPLIER"),
+            expected_value_multiplier=_score100(value.get("expected_value_multiplier"),"EXPECTED_VALUE_MULTIPLIER"),
+            capital_efficiency=_score100(value.get("capital_efficiency"),"CAPITAL_EFFICIENCY"),
+            evidence_confidence=_ratio(value.get("evidence_confidence"),"EVIDENCE_CONFIDENCE"),
+            recurring_burden=_score100(value.get("recurring_burden"),"RECURRING_BURDEN"),
+            lawful=value.get("lawful") is True,
+            sustainable=value.get("sustainable") is True,
+            required_scopes=tuple(_text(x,"REQUIRED_SCOPE",maximum=500) for x in (value.get("required_scopes") or [])),
+            requires_external_spend=value.get("requires_external_spend") is True,
+            within_preapproved_budget=value.get("within_preapproved_budget") is True,
+            funds_available=value.get("funds_available") is True,
+            known_obligations_covered=value.get("known_obligations_covered") is True,
+        )
+
+
+def reinvestment_target_score(t: ReinvestmentTarget) -> float:
+    leverage=(
+        t.expected_capability_multiplier*0.45
+        + t.expected_value_multiplier*0.30
+        + t.capital_efficiency*0.25
+    )
+    return round(leverage*t.evidence_confidence - t.recurring_burden*0.25,4)
+
+
+def reinvestment_target_decision(t: ReinvestmentTarget) -> OpportunityDecision:
+    if not t.lawful or not t.sustainable or touches_root_boundary(t.required_scopes):
+        return OpportunityDecision.REJECT
+    if t.evidence_confidence < 0.35 or not t.funds_available or not t.known_obligations_covered:
+        return OpportunityDecision.RESEARCH
+    if t.requires_external_spend and not t.within_preapproved_budget:
+        return OpportunityDecision.OWNER_REVIEW
+    return OpportunityDecision.EXECUTE
+
+
+def build_aggressive_reinvestment_plan(targets: list[ReinvestmentTarget]) -> list[dict[str,Any]]:
+    eligible=[
+        t for t in targets
+        if reinvestment_target_decision(t) in {OpportunityDecision.EXECUTE,OpportunityDecision.OWNER_REVIEW}
+    ]
+    ranked=sorted(eligible,key=lambda t:(-reinvestment_target_score(t),t.target_id))
+    positive=[max(reinvestment_target_score(t),0.0) for t in ranked]
+    total=sum(positive)
+    out=[]
+    for target,score in zip(ranked,positive):
+        weight=(score/total) if total>0 else (1.0/len(ranked) if ranked else 0.0)
+        out.append({
+            "target_id":target.target_id,
+            "category":target.category,
+            "decision":reinvestment_target_decision(target).value,
+            "priority_score":reinvestment_target_score(target),
+            "surplus_allocation_weight":round(weight,6),
+        })
+    return out
 
 
 def build_strategic_drive_packet(
