@@ -84,6 +84,12 @@ class ForgeCognitionEngine:
                 raise ForgeCognitionError("COGNITION_INVOKER_RESULT_INVALID")
             normalized=dict(result)
             normalized.setdefault("schema_version",RESULT_VERSION)
+            telemetry=dict(normalized.get("telemetry") or {})
+            telemetry.setdefault("reasoning_tier",tier.value)
+            telemetry.setdefault("selected_action",action.value)
+            telemetry.setdefault("model_call_used",not (tier is ReasoningTier.REFLEX and self.reflex_executor is not None))
+            telemetry.setdefault("engine_precommit_elapsed_ms",int((time.perf_counter()-started)*1000))
+            normalized["telemetry"]=telemetry
             committed=self.store.commit_cycle_result(
                 forge_id,
                 worker_id=worker_id,
