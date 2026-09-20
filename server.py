@@ -10,6 +10,10 @@ from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from dispatch_authority_boundary import (
+    evaluate_dispatch_boundary,
+    production_dispatch_authority_integrated,
+)
 from auth_security import is_strong_mcp_auth_token, require_mcp_auth_token
 from http_security import load_host_origin_policy
 from provider_endpoints import (
@@ -129,6 +133,7 @@ def compute_production_ready(
     codex_model: str,
     gemini_model: str,
     engineering_provider_active: bool,
+    v2_dispatch_authority_integrated: bool,
     mcp_auth_token_present: bool,
     mcp_auth_token_strong: bool,
     openai_api_key_present: bool,
@@ -158,6 +163,8 @@ def compute_production_ready(
     if codex_model != EXPECTED_CODEX_MODEL:
         return False
     if not engineering_provider_active:
+        return False
+    if not v2_dispatch_authority_integrated:
         return False
     if gemini_model != EXPECTED_GEMINI_MODEL:
         return False
@@ -461,6 +468,7 @@ def create_mcp_app() -> FastMCP:
         codex_model=CODEX_MODEL,
         gemini_model=GEMINI_MODEL,
         engineering_provider_active=ENGINEERING_PROVIDER_MODE == ENGINEERING_PROVIDER_ACTIVE,
+        v2_dispatch_authority_integrated=production_dispatch_authority_integrated(),
         mcp_auth_token_present=bool(MCP_AUTH_TOKEN),
         mcp_auth_token_strong=is_strong_mcp_auth_token(MCP_AUTH_TOKEN),
         openai_api_key_present=bool(OPENAI_API_KEY),
@@ -518,6 +526,20 @@ def create_mcp_app() -> FastMCP:
         )
 
     def _packet_json(packet_json: str) -> str:
+        dispatch_boundary = evaluate_dispatch_boundary(runtime_mode=RUNTIME_MODE)
+        if not dispatch_boundary.allowed:
+            return json.dumps(
+                {
+                    "execution_id": "blocked",
+                    "task_id": "",
+                    "subtask_id": "",
+                    "overall_status": "POLICY_BLOCKED",
+                    "unresolved_items": [dispatch_boundary.reason],
+                    "approval_required": True,
+                    "return_schema_version": "1.0",
+                },
+                sort_keys=True,
+            )
         return _execute_task_packet_json(
             packet_json,
             registry=registry,
