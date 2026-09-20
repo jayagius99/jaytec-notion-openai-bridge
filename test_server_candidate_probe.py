@@ -8,7 +8,7 @@ class TestServerCandidateProbe(unittest.TestCase):
         # Default runtime should be PRODUCTION when unset.
         os.environ.pop("RUNTIME_MODE", None)
         os.environ.pop("DATABASE_URL", None)
-        os.environ["MCP_AUTH_TOKEN"] = "test"
+        os.environ["MCP_AUTH_TOKEN"] = "Ab9_xY7-Qp2Lm8Nv4Rs6Tu1Wx3Za5BcD"
         os.environ["OPENAI_API_KEY"] = "test"
 
         import server
@@ -20,7 +20,7 @@ class TestServerCandidateProbe(unittest.TestCase):
     def test_explicit_production_requires_database_url(self):
         os.environ["RUNTIME_MODE"] = "production"
         os.environ.pop("DATABASE_URL", None)
-        os.environ["MCP_AUTH_TOKEN"] = "test"
+        os.environ["MCP_AUTH_TOKEN"] = "Ab9_xY7-Qp2Lm8Nv4Rs6Tu1Wx3Za5BcD"
         os.environ["OPENAI_API_KEY"] = "test"
 
         import server
