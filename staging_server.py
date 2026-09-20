@@ -27,6 +27,12 @@ from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 
+from autorecovery_runtime import (
+    assignment_status as read_autorecovery_assignment_status,
+    runtime_status as get_autorecovery_runtime_status,
+    schema_probe as probe_autorecovery_schema,
+    validate_checkpoint_payload,
+)
 from circuit_breaker import CircuitBreaker
 from http_security import load_host_origin_policy
 from provider_endpoints import (
@@ -165,6 +171,10 @@ DEEPSEEK_REVIEW_DISPATCH = (
 
 @mcp.tool
 def orchestration_status() -> str:
+    autorecovery = get_autorecovery_runtime_status(
+        env=os.environ,
+        database_url=DATABASE_URL,
+    ).to_dict()
     return json.dumps(
         {
             "status": "STAGING",
@@ -183,10 +193,58 @@ def orchestration_status() -> str:
             "deepseek_reviewer_circuit": DEEPSEEK_REVIEWER_CIRCUIT.snapshot(),
             "deepseek_reviewer_route_policy": "exact_model_bounded_same_model_provider_retry",
             "idempotency_store": IDEMPOTENCY_STORE,
+            "autorecovery": autorecovery,
             "production_ready": False,
         },
         sort_keys=True,
     )
+
+
+@mcp.tool
+def autorecovery_runtime_status() -> str:
+    """Read fail-closed WATCH + AUTORECOVERY installation/activation state.
+
+    This tool is status-only. It never creates schema, registers an assignment,
+    acquires a lease, or invokes a worker.
+    """
+    status = get_autorecovery_runtime_status(
+        env=os.environ,
+        database_url=DATABASE_URL,
+    )
+    result = status.to_dict()
+    result["schema_probe"] = probe_autorecovery_schema(DATABASE_URL)
+    return json.dumps(result, sort_keys=True)
+
+
+@mcp.tool
+def autorecovery_checkpoint_validate(checkpoint_json: str) -> str:
+    """Validate a resurrection checkpoint without registering or executing it."""
+    try:
+        result = validate_checkpoint_payload(checkpoint_json)
+    except Exception as exc:
+        result = {
+            "status": "INVALID",
+            "automatic_recovery_authorized": False,
+            "reason": type(exc).__name__ + ":" + str(exc),
+        }
+    return json.dumps(result, sort_keys=True)
+
+
+@mcp.tool
+def autorecovery_assignment_status(task_id: str) -> str:
+    """Read canonical task state only; never mutate/recover the assignment."""
+    status = get_autorecovery_runtime_status(
+        env=os.environ,
+        database_url=DATABASE_URL,
+    )
+    result = read_autorecovery_assignment_status(
+        DATABASE_URL,
+        str(task_id or "").strip(),
+        schema_ready_declared=status.schema_ready_declared,
+    )
+    result["autorecovery_active"] = status.active
+    result["ui_chat_autoresume_supported"] = False
+    return json.dumps(result, sort_keys=True)
 
 
 @mcp.tool
