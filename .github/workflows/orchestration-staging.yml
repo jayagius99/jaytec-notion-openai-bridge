@@ -91,6 +91,7 @@ on:
       - 'forge_strategy_engine.py'
       - 'test_forge_strategic_drives.py'
       - 'test_forge_strategy_engine.py'
+      - 'test_forge_strategic_adversarial.py'
       - 'FORGE_STRATEGIC_DRIVES.md'
 
 permissions:
@@ -121,7 +122,7 @@ jobs:
             test_worker_output_parsing.py test_idempotency_postgres.py test_dockerfile_packaging.py \
             test_contract_equivalence.py test_server_candidate_probe.py test_engineering_migration_guard.py \
             autorecovery_supervisor.py autorecovery_runtime.py autorecovery_loop.py jaytec_protocol_portal.py forge_cognition.py forge_cognition_engine.py forge_cognition_benchmark.py forge_strategic_drives.py forge_strategy_engine.py \
-            test_autorecovery_supervisor.py test_autorecovery_runtime.py test_autorecovery_loop.py test_jaytec_watch_command_policy.py test_jaytec_protocol_portal.py test_forge_cognition.py test_forge_cognition_engine.py test_forge_strategic_drives.py test_forge_strategy_engine.py \
+            test_autorecovery_supervisor.py test_autorecovery_runtime.py test_autorecovery_loop.py test_jaytec_watch_command_policy.py test_jaytec_protocol_portal.py test_forge_cognition.py test_forge_cognition_engine.py test_forge_strategic_drives.py test_forge_strategy_engine.py test_forge_strategic_adversarial.py \
             test_manus_adapter.py test_manus_policy.py test_manus_governance.py test_manus_dispatch_contract.py \
             test_relationship_policy.py test_participant_contracts.py test_participant_prompt_injection.py test_manus_policy_integration_guard.py test_manus_runtime.py \
             test_manus_adversarial_matrix.py test_provider_credit_topup.py test_manus_governance_acceptance.py test_manus_usability_eval.py test_gemini_manus_governance_review.py
