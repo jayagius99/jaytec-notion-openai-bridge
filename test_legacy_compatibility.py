@@ -9,6 +9,27 @@ from orchestration import ExecutionRegistry
 
 
 class TestLegacyCompatibility(unittest.TestCase):
+
+    def test_legacy_direct_openai_tools_disabled_in_production(self):
+        self.assertFalse(
+            server._legacy_direct_openai_tools_enabled("production", "1")
+        )
+        self.assertFalse(
+            server._legacy_direct_openai_tools_enabled("production", "0")
+        )
+
+    def test_legacy_direct_openai_tools_require_exact_staging_opt_in(self):
+        self.assertTrue(
+            server._legacy_direct_openai_tools_enabled("staging_candidate", "1")
+        )
+        for value in ("0", "true", "yes", "TRUE", ""):
+            with self.subTest(value=value):
+                self.assertFalse(
+                    server._legacy_direct_openai_tools_enabled(
+                        "staging_candidate", value
+                    )
+                )
+
     def test_ordinary_collaborate_path_and_prompt_remain_unchanged(self):
         self.assertIsNone(
             server._legacy_collaborate_command(
