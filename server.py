@@ -58,10 +58,23 @@ CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
 # - staging_candidate exists only as an explicit escape hatch for CI / candidate validation
 RUNTIME_MODE = os.environ.get("RUNTIME_MODE", "production").strip().lower()
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+ENABLE_LEGACY_DIRECT_OPENAI_TOOLS = os.environ.get(
+    "ENABLE_LEGACY_DIRECT_OPENAI_TOOLS", "0"
+).strip()
 
 BRIDGE_ID_CODEX = "BRIDGE_CODEX_ENGINEERING"
 LEGACY_ORCHESTRATION_STATUS_TASK = "JAYTEC_ORCHESTRATION_STATUS"
 LEGACY_EXECUTE_TASK_PACKET_PREFIX = "JAYTEC_EXECUTE_TASK_PACKET_JSON:"
+
+
+def _legacy_direct_openai_tools_enabled(runtime_mode: str, flag: str) -> bool:
+    """Allow ungoverned legacy OpenAI tools only in explicit staging compatibility mode.
+
+    Production must never expose free-form provider calls that bypass the unified
+    JAYTEC task-packet policy. A truthy-looking value other than exact "1" is
+    intentionally not accepted.
+    """
+    return runtime_mode == "staging_candidate" and flag == "1"
 
 
 def _require_startup_prereqs() -> None:
@@ -90,6 +103,7 @@ def compute_production_ready(
     mcp_auth_token_present: bool,
     openai_api_key_present: bool,
     openrouter_api_key_present: bool,
+    legacy_direct_tools_enabled: bool = False,
 ) -> bool:
     """Compute whether this bridge instance is truly production-ready.
 
@@ -118,6 +132,8 @@ def compute_production_ready(
     if not openai_api_key_present:
         return False
     if not openrouter_api_key_present:
+        return False
+    if legacy_direct_tools_enabled:
         return False
     return True
 
@@ -384,6 +400,10 @@ def create_mcp_app() -> FastMCP:
         registry = ExecutionRegistry()
         idempotency_store = "process_memory"
 
+    legacy_direct_enabled = _legacy_direct_openai_tools_enabled(
+        RUNTIME_MODE, ENABLE_LEGACY_DIRECT_OPENAI_TOOLS
+    )
+
     production_ready = compute_production_ready(
         runtime_mode=RUNTIME_MODE,
         idempotency_store=idempotency_store,
@@ -392,6 +412,7 @@ def create_mcp_app() -> FastMCP:
         mcp_auth_token_present=bool(MCP_AUTH_TOKEN),
         openai_api_key_present=bool(OPENAI_API_KEY),
         openrouter_api_key_present=bool(OPENROUTER_API_KEY),
+        legacy_direct_tools_enabled=legacy_direct_enabled,
     )
 
     codex_circuit = CircuitBreaker(
@@ -450,23 +471,34 @@ def create_mcp_app() -> FastMCP:
             gemini_dispatch=gemini_dispatch,
         )
 
-    # ---------------- Legacy tools (preserved) ----------------
+    # ---------------- Legacy compatibility surface ----------------
+    # Free-form direct OpenAI calls bypass the unified JAYTEC task-packet policy.
+    # They are therefore unavailable in production and disabled by default.
+    if legacy_direct_enabled:
+        @mcp.tool
+        def ask_openai(question: str, context: str = "") -> str:
+            prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nQUESTION:\n{question}\n\nProduce a self-contained answer. Clearly mark uncertainty where appropriate."""
+            return _call_openai(openai_client, OPENAI_MODEL, prompt)
 
-    @mcp.tool
-    def ask_openai(question: str, context: str = "") -> str:
-        prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nQUESTION:\n{question}\n\nProduce a self-contained answer. Clearly mark uncertainty where appropriate."""
-        return _call_openai(openai_client, OPENAI_MODEL, prompt)
-
-    @mcp.tool
-    def review_notion_answer(question: str, notion_answer: str, context: str = "") -> str:
-        prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nORIGINAL USER QUESTION:\n{question}\n\nNOTION AI DRAFT:\n{notion_answer}\n\nAct as an independent senior reviewer.\n1. Check factual and technical correctness.\n2. Find unsupported assumptions, omissions, contradictions, and unsafe shortcuts.\n3. Preserve correct content.\n4. Produce a corrected final answer Notion AI can use.\n"""
-        return _call_openai(openai_client, OPENAI_MODEL, prompt)
+        @mcp.tool
+        def review_notion_answer(question: str, notion_answer: str, context: str = "") -> str:
+            prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nORIGINAL USER QUESTION:\n{question}\n\nNOTION AI DRAFT:\n{notion_answer}\n\nAct as an independent senior reviewer.\n1. Check factual and technical correctness.\n2. Find unsupported assumptions, omissions, contradictions, and unsafe shortcuts.\n3. Preserve correct content.\n4. Produce a corrected final answer Notion AI can use.\n"""
+            return _call_openai(openai_client, OPENAI_MODEL, prompt)
 
     @mcp.tool
     def collaborate(task: str, notion_analysis: str = "", context: str = "") -> str:
         legacy_result = _legacy_collaborate_command(task, _status_json, _packet_json)
         if legacy_result is not None:
             return legacy_result
+        if not legacy_direct_enabled:
+            return json.dumps(
+                {
+                    "status": "POLICY_BLOCKED",
+                    "error": "LEGACY_DIRECT_PROVIDER_PATH_DISABLED",
+                    "required_route": "execute_task_packet",
+                },
+                sort_keys=True,
+            )
         prompt = _build_collaborate_prompt(PROJECT_CONTEXT, context, task, notion_analysis)
         return _call_openai(openai_client, OPENAI_MODEL, prompt)
 
