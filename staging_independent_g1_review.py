@@ -6,6 +6,7 @@ No tools, provider fallback, code, credentials, personal data, or side effects.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import Any
@@ -37,10 +38,25 @@ FORBIDDEN_KEYS = {
 }
 
 
+def _canonical_packet_json(value: dict[str, Any]) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _packet_sha256(value: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        _canonical_packet_json(value).encode("utf-8")
+    ).hexdigest()
+
+
 def _validate_packet(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("REVIEW_PACKET_MUST_BE_OBJECT")
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    encoded = _canonical_packet_json(value)
     if len(encoded) > MAX_PACKET_CHARS:
         raise ValueError("REVIEW_PACKET_TOO_LARGE")
 
@@ -79,6 +95,12 @@ def main() -> int:
     if not raw:
         raise RuntimeError("JAYTEC_G1_REVIEW_PACKET_JSON_REQUIRED")
     packet = _validate_packet(json.loads(raw))
+    expected_sha = os.environ.get("JAYTEC_G1_REVIEW_PACKET_SHA256", "").strip()
+    if not expected_sha:
+        raise RuntimeError("JAYTEC_G1_REVIEW_PACKET_SHA256_REQUIRED")
+    packet_sha = _packet_sha256(packet)
+    if packet_sha != expected_sha:
+        raise RuntimeError("INDEPENDENT_REVIEW_PACKET_HASH_MISMATCH")
 
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:
@@ -134,6 +156,7 @@ def main() -> int:
         "status": "SUCCESS",
         "requested_model": MODEL,
         "returned_model": returned_model or MODEL,
+        "packet_sha256": packet_sha,
         "review": result,
     }, ensure_ascii=False, sort_keys=True))
     return 0
