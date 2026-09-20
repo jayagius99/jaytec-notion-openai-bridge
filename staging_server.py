@@ -1301,7 +1301,11 @@ def _run_independent_g1_review_server_oneshot() -> None:
 
 
 if __name__ == "__main__":
-    _run_jaytec_read_bootstrap_probe()
+    threading.Thread(
+        target=_run_jaytec_read_bootstrap_probe,
+        name="jaytec-read-bootstrap-oneshot",
+        daemon=True,
+    ).start()
     threading.Thread(
         target=_run_independent_g1_review_server_oneshot,
         name="jaytec-independent-g1-review-oneshot",
