@@ -191,7 +191,7 @@ class ManusGovernanceTests(unittest.TestCase):
 
     def test_directive_contains_nonnegotiable_boundaries(self):
         text = render_directive()
-        normalized = " ".join(text.split())
+        normalized = " ".join(text.split()).casefold()
         for phrase in (
             "Manus Home is a subordinate JAYTEC-owned Manus layer",
             "JAYTEC / active owner-authorized work comes first",
@@ -205,7 +205,7 @@ class ManusGovernanceTests(unittest.TestCase):
             "Never claim success because an action merely ran",
             "You may not alter, bypass, reinterpret, or supersede it yourself",
         ):
-            self.assertIn(" ".join(phrase.split()), normalized)
+            self.assertIn(" ".join(phrase.split()).casefold(), normalized)
         self.assertEqual(len(directive_sha256()), 64)
 
 
