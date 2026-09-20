@@ -9,6 +9,7 @@ from specialist_adapters import (
     EXPECTED_ENGINEERING_MODEL,
     resolve_engineering_model,
     resolve_engineering_provider_mode,
+    resolve_openrouter_provider_mode,
 )
 
 
@@ -72,6 +73,19 @@ class TestEngineeringMigrationGuard(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             resolve_engineering_provider_mode({"ENGINEERING_PROVIDER_MODE": "fallback"})
 
+    def test_openrouter_provider_door_defaults_locked(self):
+        self.assertEqual("LOCKED_RESERVE", resolve_openrouter_provider_mode({}))
+        self.assertEqual(
+            "ACTIVE",
+            resolve_openrouter_provider_mode(
+                {"OPENROUTER_PROVIDER_MODE": "ACTIVE"}
+            ),
+        )
+        with self.assertRaises(RuntimeError):
+            resolve_openrouter_provider_mode(
+                {"OPENROUTER_PROVIDER_MODE": "fallback"}
+            )
+
     def test_active_runtime_has_no_legacy_53_model_lock(self):
         active = [
             "specialist_adapters.py",
@@ -94,6 +108,7 @@ class TestEngineeringMigrationGuard(unittest.TestCase):
         self.assertIn("JAYTEC ENGINEERING SPECIALIST — GPT-5.6 SOL", adapter)
         self.assertIn("ENGINEERING_MODEL", render)
         self.assertIn("ENGINEERING_PROVIDER_MODE", render)
+        self.assertIn("OPENROUTER_PROVIDER_MODE", render)
         self.assertIn("LOCKED_RESERVE", render)
         self.assertNotIn("(python staging_engineering_provider_probe.py || true)", render)
         self.assertNotIn("staging_codex_429_diagnostic.py", render)

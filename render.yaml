@@ -26,6 +26,8 @@ services:
         value: gpt-5.6-sol
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: OPENROUTER_PROVIDER_MODE
+        value: LOCKED_RESERVE
       - key: GEMINI_MODEL
         value: google/gemini-3.1-pro-preview
       - key: JAYTEC_READ_BOOTSTRAP_ENABLED
