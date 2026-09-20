@@ -170,11 +170,17 @@ class ManusLiteRecoveryInvoker:
             )
 
         if result.get("status") != "STARTED":
+            status = str(result.get("status") or "UNKNOWN")[:80]
+            error = str(result.get("error") or "").strip()
+            safe_error = re.sub(r"[^A-Za-z0-9_.:/-]", "_", error)[:240]
+            detail = "MANUS_RECOVERY_NOT_STARTED:" + status
+            if safe_error:
+                detail += ":" + safe_error
             return WorkerInvocation(
                 accepted=False,
                 worker_id=None,
                 route=route,
-                detail="MANUS_RECOVERY_NOT_STARTED:" + str(result.get("status") or "UNKNOWN"),
+                detail=detail,
             )
         worker_id = str(result.get("provider_task_id") or "").strip()
         if not worker_id:
