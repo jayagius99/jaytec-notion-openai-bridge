@@ -1,56 +1,181 @@
+"""Minimal Notion-facing JAYTEC MCP courier.
+
+The exposed MCP catalog contains exactly one tool: collaborate.
+That tool can only:
+  * return JAYTEC orchestration status; or
+  * forward one exact JAYTEC task packet.
+
+No native JAYTEC worker, guardian, meeting, research, provider, or reliability
+tool is exposed to Notion. No background worker or autonomous loop is started.
+"""
 from __future__ import annotations
+
 import json
-import uvicorn
-from starlette.middleware import Middleware
-import reliable_server
+from typing import Any, Protocol
+
+from fastmcp import FastMCP
+from fastmcp.server.auth import StaticTokenVerifier
+from openai import OpenAI
+
 import server as legacy_server
-from notion_courier_policy import rewrite_call
+from circuit_breaker import CircuitBreaker
+from orchestration import ExecutionRegistry
+from notion_courier_policy import (
+    CourierPolicyError,
+    parse_courier_command,
+    rejection_payload,
+)
 
-MAX_BODY = 1_048_576
-PATHS = {"/mcp", "/mcp/"}
 
-class CourierBoundary:
-    def __init__(self, app): self.app = app
-    async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or scope.get("method") != "POST" or scope.get("path") not in PATHS:
-            return await self.app(scope, receive, send)
-        headers = dict((k.lower(), v) for k, v in scope.get("headers", []))
-        if headers.get(b"content-type", b"").split(b";",1)[0].strip().lower() != b"application/json":
-            return await self.app(scope, receive, send)
-        chunks=[]; total=0
-        while True:
-            msg=await receive(); chunks.append(msg)
-            if msg.get("type")=="http.request":
-                total += len(msg.get("body", b""))
-                if total > MAX_BODY:
-                    body=b"request body too large"
-                    await send({"type":"http.response.start","status":413,"headers":[(b"content-length",str(len(body)).encode())]})
-                    return await send({"type":"http.response.body","body":body,"more_body":False})
-            if msg.get("type")!="http.request" or not msg.get("more_body",False): break
-        body=b"".join(m.get("body",b"") for m in chunks if m.get("type")=="http.request")
+class CourierRuntime(Protocol):
+    def status(self) -> str: ...
+    def execute(self, packet_json: str) -> str: ...
+
+
+class JaytecCourierRuntime:
+    """Synchronous, request-scoped JAYTEC runtime with no background loops."""
+
+    def __init__(self) -> None:
+        legacy_server._require_startup_prereqs()
+
+        if legacy_server.DATABASE_URL:
+            from idempotency_postgres import PostgresExecutionRegistry
+
+            self.registry: ExecutionRegistry = PostgresExecutionRegistry(
+                database_url=legacy_server.DATABASE_URL,
+                ttl_seconds=ExecutionRegistry().ttl_seconds,
+            )
+            self.registry.ensure_schema()
+            self.idempotency_store = "postgres"
+        else:
+            self.registry = ExecutionRegistry()
+            self.idempotency_store = "process_memory"
+
+        self.codex_circuit = CircuitBreaker(
+            failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
+            reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
+        )
+        self.gemini_circuit = CircuitBreaker(
+            failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
+            reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
+        )
+
+        self.openrouter_client = (
+            OpenAI(
+                api_key=legacy_server.OPENROUTER_API_KEY,
+                base_url=legacy_server.OPENROUTER_BASE_URL,
+            )
+            if legacy_server.OPENROUTER_API_KEY
+            else None
+        )
+
+        if self.openrouter_client is not None:
+            self.codex_dispatch = legacy_server.build_codex_dispatch(
+                openai_client=self.openrouter_client,
+                codex_model=legacy_server.CODEX_MODEL,
+                circuit=self.codex_circuit,
+                **legacy_server.engineering_dispatch_kwargs(),
+            )
+            self.gemini_dispatch = legacy_server.build_gemini_dispatch(
+                openrouter_client=self.openrouter_client,
+                gemini_model=legacy_server.GEMINI_MODEL,
+                gemini_timeout_s=legacy_server.GEMINI_TIMEOUT_S,
+                circuit=self.gemini_circuit,
+            )
+        else:
+            self.codex_dispatch = self.codex_circuit.guard(
+                lambda _packet: (_ for _ in ()).throw(
+                    RuntimeError("OPENROUTER_API_KEY is not configured")
+                )
+            )
+            self.gemini_dispatch = self.gemini_circuit.guard(
+                lambda _packet: (_ for _ in ()).throw(
+                    RuntimeError("OPENROUTER_API_KEY is not configured")
+                )
+            )
+
+        self.production_ready = legacy_server.compute_production_ready(
+            runtime_mode=legacy_server.RUNTIME_MODE,
+            idempotency_store=self.idempotency_store,
+            codex_model=legacy_server.CODEX_MODEL,
+            gemini_model=legacy_server.GEMINI_MODEL,
+            mcp_auth_token_present=bool(legacy_server.MCP_AUTH_TOKEN),
+            openai_api_key_present=bool(legacy_server.OPENAI_API_KEY),
+            openrouter_api_key_present=bool(legacy_server.OPENROUTER_API_KEY),
+        )
+
+    def status(self) -> str:
+        return legacy_server._orchestration_status_json(
+            runtime_mode=legacy_server.RUNTIME_MODE,
+            codex_model=legacy_server.CODEX_MODEL,
+            gemini_model=legacy_server.GEMINI_MODEL,
+            codex_circuit=self.codex_circuit.snapshot(),
+            gemini_circuit=self.gemini_circuit.snapshot(),
+            idempotency_store=self.idempotency_store,
+            production_ready=self.production_ready,
+        )
+
+    def execute(self, packet_json: str) -> str:
+        return legacy_server._execute_task_packet_json(
+            packet_json,
+            registry=self.registry,
+            idempotency_store=self.idempotency_store,
+            codex_dispatch=self.codex_dispatch,
+            gemini_dispatch=self.gemini_dispatch,
+        )
+
+
+def create_mcp_app(runtime: CourierRuntime | None = None) -> FastMCP:
+    """Create a one-tool authenticated courier server."""
+    if not legacy_server.MCP_AUTH_TOKEN:
+        raise RuntimeError("MCP_AUTH_TOKEN is required")
+
+    auth = StaticTokenVerifier(
+        tokens={
+            legacy_server.MCP_AUTH_TOKEN: {
+                "sub": "notion-pass-through",
+                "client_id": "jaytec-notion-pass-through",
+            }
+        }
+    )
+    mcp = FastMCP("JAYTEC Notion Courier", auth=auth)
+    courier_runtime = runtime or JaytecCourierRuntime()
+
+    @mcp.tool
+    def collaborate(
+        task: str,
+        notion_analysis: str = "",
+        context: str = "",
+    ) -> str:
+        """Transport one exact JAYTEC command. Never reason, expand, retry, or follow up."""
         try:
-            payload=json.loads(body.decode())
-            if isinstance(payload,dict): rewritten=rewrite_call(payload)
-            elif isinstance(payload,list): rewritten=[rewrite_call(x) if isinstance(x,dict) else x for x in payload]
-            else: rewritten=payload
-            new_body=json.dumps(rewritten,separators=(",",":"),sort_keys=True).encode()
-        except Exception:
-            new_body=body
-        new_scope=dict(scope)
-        new_headers=[(k,v) for k,v in scope.get("headers",[]) if k.lower()!=b"content-length"]
-        new_headers.append((b"content-length",str(len(new_body)).encode()))
-        new_scope["headers"]=new_headers
-        delivered=False
-        async def recv2():
-            nonlocal delivered
-            if not delivered:
-                delivered=True
-                return {"type":"http.request","body":new_body,"more_body":False}
-            return await receive()
-        return await self.app(new_scope,recv2,send)
+            command = parse_courier_command(
+                task,
+                notion_analysis=notion_analysis,
+                context=context,
+            )
+        except CourierPolicyError as exc:
+            return rejection_payload(str(exc))
 
-def create_mcp_app(): return reliable_server.create_mcp_app()
-def create_http_app():
-    return create_mcp_app().http_app(middleware=[Middleware(CourierBoundary)],stateless_http=True,host_origin_protection=False)
-def main(): uvicorn.run(create_http_app(),host="0.0.0.0",port=legacy_server.PORT,log_level="info")
-if __name__=="__main__": main()
+        if command.operation == "status":
+            return courier_runtime.status()
+        if command.operation == "execute_task_packet" and command.packet_json:
+            return courier_runtime.execute(command.packet_json)
+        return rejection_payload("UNREACHABLE_OPERATION")
+
+    return mcp
+
+
+def main() -> None:
+    mcp = create_mcp_app()
+    mcp.run(
+        transport="http",
+        host="0.0.0.0",
+        port=legacy_server.PORT,
+        stateless_http=True,
+        host_origin_protection=False,
+    )
+
+
+if __name__ == "__main__":
+    main()
