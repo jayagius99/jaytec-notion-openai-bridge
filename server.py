@@ -59,6 +59,14 @@ CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
 RUNTIME_MODE = os.environ.get("RUNTIME_MODE", "production").strip().lower()
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
+# OWNER COST-SAFETY INVARIANT:
+# "Use JAYTEC" NEVER authorizes Notion Agent usage.
+# Notion may be used only by an explicitly requested one-shot MCP pass-through
+# or for an explicitly requested workspace-authority operation. This bridge
+# exposes no Notion Agent/free-form collaboration surface.
+NOTION_AGENT_RUNTIME_ENABLED = False
+NOTION_USAGE_POLICY = "EXPLICIT_ONE_SHOT_MCP_OR_WORKSPACE_AUTHORITY_ONLY"
+
 BRIDGE_ID_CODEX = "BRIDGE_CODEX_ENGINEERING"
 LEGACY_ORCHESTRATION_STATUS_TASK = "JAYTEC_ORCHESTRATION_STATUS"
 LEGACY_EXECUTE_TASK_PACKET_PREFIX = "JAYTEC_EXECUTE_TASK_PACKET_JSON:"
@@ -362,12 +370,12 @@ def create_mcp_app() -> FastMCP:
     auth = StaticTokenVerifier(
         tokens={
             MCP_AUTH_TOKEN: {
-                "sub": "notion-agent",
-                "client_id": "jaytec-notion-openai-bridge",
+                "sub": "jaytec-control-plane",
+                "client_id": "jaytec-control-plane",
             }
         }
     )
-    mcp = FastMCP("JAYTEC OpenAI Engineering Bridge", auth=auth)
+    mcp = FastMCP("JAYTEC Control Plane Bridge", auth=auth)
 
     openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
     openrouter_client = (
@@ -453,30 +461,22 @@ def create_mcp_app() -> FastMCP:
             gemini_dispatch=gemini_dispatch,
         )
 
-    # ---------------- Legacy tools (preserved) ----------------
-
-    @mcp.tool
-    def ask_openai(question: str, context: str = "") -> str:
-        prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nQUESTION:\n{question}\n\nProduce a self-contained answer. Clearly mark uncertainty where appropriate."""
-        return _call_openai(openai_client, OPENAI_MODEL, prompt)
-
-    @mcp.tool
-    def review_notion_answer(question: str, notion_answer: str, context: str = "") -> str:
-        prompt = f"""PROJECT CONTEXT:\n{PROJECT_CONTEXT}\n\nCONTEXT FROM NOTION:\n{context}\n\nORIGINAL USER QUESTION:\n{question}\n\nNOTION AI DRAFT:\n{notion_answer}\n\nAct as an independent senior reviewer.\n1. Check factual and technical correctness.\n2. Find unsupported assumptions, omissions, contradictions, and unsafe shortcuts.\n3. Preserve correct content.\n4. Produce a corrected final answer Notion AI can use.\n"""
-        return _call_openai(openai_client, OPENAI_MODEL, prompt)
-
-    @mcp.tool
-    def collaborate(task: str, notion_analysis: str = "", context: str = "") -> str:
-        legacy_result = _legacy_collaborate_command(task, _status_json, _packet_json)
-        if legacy_result is not None:
-            return legacy_result
-        prompt = _build_collaborate_prompt(PROJECT_CONTEXT, context, task, notion_analysis)
-        return _call_openai(openai_client, OPENAI_MODEL, prompt)
+    # ---------------- Legacy Notion-agent tools: HARD DISABLED ----------------
+    # These names are intentionally NOT registered as MCP tools:
+    # - ask_openai
+    # - review_notion_answer
+    # - collaborate
+    #
+    # They previously allowed free-form Notion-Agent collaboration and could
+    # consume Notion credits. Owner policy forbids that route. Exact JAYTEC
+    # task packets remain available below through the control-plane surface.
 
     @mcp.tool
     def bridge_status() -> str:
         return (
-            "JAYTEC bridge is online. "
+            "JAYTEC control-plane bridge is online. "
+            "Notion Agent/free-form collaboration tools are hard-disabled. "
+            f"Notion policy: {NOTION_USAGE_POLICY}. "
             f"Primary engineering model: {CODEX_MODEL} via OpenRouter. "
             f"Independent reviewer: {GEMINI_MODEL}. "
             f"OpenAI premium reserve configured: {bool(OPENAI_API_KEY)}"
