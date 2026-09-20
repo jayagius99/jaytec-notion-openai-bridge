@@ -68,7 +68,7 @@ MANUS_RESULT_JSON_SCHEMA: dict[str, Any] = {
     "properties": {
         "status": {
             "type": "string",
-            "enum": ["SUCCESS", "PARTIAL_SUCCESS", "NEEDS_JAYTEC", "FAILED_CLOSED"],
+            "enum": ["SUCCESS", "PARTIAL_SUCCESS", "NEEDS_JAYTEC", "NEEDS_OWNER", "FAILED_CLOSED"],
         },
         "summary": {"type": "string"},
         "evidence": {
@@ -434,8 +434,10 @@ def _prompt(packet: Mapping[str, Any]) -> str:
     return (
         "JAYTEC MANUS TASK PACKET\n"
         "Execute only this bounded packet. Do not expand scope or authority. "
-        "Return the required structured result only. If blocked or uncertain, "
-        "return NEEDS_JAYTEC or FAILED_CLOSED rather than guessing.\n\n"
+        "Return the required structured result only. If JAYTEC can resolve the "
+        "blocker, return NEEDS_JAYTEC. Use NEEDS_OWNER only for a genuine owner, "
+        "physical, credential, spend, or irreversible-decision boundary. Use "
+        "FAILED_CLOSED for bounded execution failure rather than guessing.\n\n"
         + json.dumps(packet, ensure_ascii=False, sort_keys=True)
     )
 
