@@ -25,6 +25,7 @@ from manus_dispatch_contract import (
     ManusDispatchAuthorization,
     ManusDispatchContractError,
     authorize_manus_dispatch,
+    authorize_manus_preflight,
     verify_manus_dispatch_result,
 )
 from manus_governance import AuthoritySource, ManusScope, render_directive
@@ -344,7 +345,6 @@ class ManusClient:
             route_supports_profile_selector=True,
         )
 
-        project_id, project_name = self.resolve_manus_project()
         requested = dict(requested_connector_purposes or {})
         canonical_purposes: list[tuple[str, str]] = []
         actor_for = {
@@ -383,8 +383,26 @@ class ManusClient:
             )
             canonical_purposes.append((key, purpose.value))
 
+        requested_connector_names = tuple(
+            name for name, _ in canonical_purposes
+        )
+
+        # Complete profile, authority, relationship and connector policy checks
+        # before the first external Manus API call.
+        preflight = authorize_manus_preflight(
+            connectors=list(requested_connector_names),
+            connectors_explicit=True,
+            scope=scope,
+            authority_source=authority_source,
+            current_task_authorized=current_task_authorized,
+            requested_profile=lite_policy.requested_profile.value,
+            route_supports_profile_selector=True,
+            notion_authorized_by_jay_via_chatgpt=notion_authorized_by_jay_via_chatgpt,
+        )
+
+        project_id, project_name = self.resolve_manus_project()
         connector_names, connector_ids = self.resolve_approved_connector_ids(
-            [name for name, _ in canonical_purposes]
+            requested_connector_names
         )
         expected_project_id = JAYTEC_MANUS_PROJECT_ID or project_id
 

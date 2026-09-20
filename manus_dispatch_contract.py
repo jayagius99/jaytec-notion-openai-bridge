@@ -37,12 +37,75 @@ class ManusDispatchContractError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ManusPreflightAuthorization:
+    connectors: tuple[str, ...]
+    profile: ManusRouteDecision
+    authority: AuthorityDecision
+
+
+@dataclass(frozen=True)
 class ManusDispatchAuthorization:
     project_id: str
     project_name: str
     connectors: tuple[str, ...]
     profile: ManusRouteDecision
     authority: AuthorityDecision
+
+
+def authorize_manus_preflight(
+    *,
+    connectors: Sequence[str],
+    connectors_explicit: bool,
+    scope: str | ManusScope,
+    authority_source: str | AuthoritySource,
+    current_task_authorized: bool,
+    requested_profile: str | None = "lite",
+    route_supports_profile_selector: bool = True,
+    explicit_paid_override: bool = False,
+    paid_override_authority: str | None = None,
+    notion_authorized_by_jay_via_chatgpt: bool = False,
+) -> ManusPreflightAuthorization:
+    """Authorize Manus policy before any external/provider call.
+
+    This phase intentionally excludes live project/connector IDs so it can run
+    before project lookup or connector discovery. Final dispatch authorization
+    repeats these checks after live identity resolution.
+    """
+    if type(connectors_explicit) is not bool or connectors_explicit is not True:
+        raise ManusDispatchContractError("MANUS_CONNECTORS_MUST_BE_EXPLICIT")
+    if not isinstance(connectors, (list, tuple)):
+        raise ManusDispatchContractError("MANUS_CONNECTORS_INVALID")
+
+    approved = assert_approved_manus_connectors(list(connectors))
+
+    profile = authorize_manus_route(
+        requested_profile=requested_profile,
+        route_supports_profile_selector=route_supports_profile_selector,
+        explicit_paid_override=explicit_paid_override,
+        paid_override_authority=paid_override_authority,
+    )
+
+    authority = authorize_manus_action(
+        scope=scope,
+        authority_source=authority_source,
+        explicit_current_task_authorization=current_task_authorized,
+        notion_authorized_by_jay_via_chatgpt=notion_authorized_by_jay_via_chatgpt,
+    )
+    if not authority.allowed:
+        raise ManusDispatchContractError("MANUS_ACTION_NOT_AUTHORIZED")
+
+    authorize_relationship(
+        source=Actor.JAYTEC,
+        destination=Actor.MANUS,
+        purpose=Purpose.TASK_PACKET,
+        current_task_authorized=current_task_authorized,
+    )
+
+    return ManusPreflightAuthorization(
+        connectors=approved,
+        profile=profile,
+        authority=authority,
+    )
 
 
 def authorize_manus_dispatch(
@@ -72,44 +135,25 @@ def authorize_manus_dispatch(
     if str(project_name).strip().casefold() != "manus":
         raise ManusDispatchContractError("MANUS_PROJECT_NAME_MISMATCH")
 
-    if type(connectors_explicit) is not bool or connectors_explicit is not True:
-        # Manus API can inherit project/user defaults when connector IDs are
-        # omitted. JAYTEC forbids that hidden route.
-        raise ManusDispatchContractError("MANUS_CONNECTORS_MUST_BE_EXPLICIT")
-
-    if not isinstance(connectors, (list, tuple)):
-        raise ManusDispatchContractError("MANUS_CONNECTORS_INVALID")
-    approved = assert_approved_manus_connectors(list(connectors))
-
-    profile = authorize_manus_route(
+    preflight = authorize_manus_preflight(
+        connectors=connectors,
+        connectors_explicit=connectors_explicit,
+        scope=scope,
+        authority_source=authority_source,
+        current_task_authorized=current_task_authorized,
         requested_profile=requested_profile,
         route_supports_profile_selector=route_supports_profile_selector,
         explicit_paid_override=explicit_paid_override,
         paid_override_authority=paid_override_authority,
-    )
-
-    authority = authorize_manus_action(
-        scope=scope,
-        authority_source=authority_source,
-        explicit_current_task_authorization=current_task_authorized,
         notion_authorized_by_jay_via_chatgpt=notion_authorized_by_jay_via_chatgpt,
-    )
-    if not authority.allowed:
-        raise ManusDispatchContractError("MANUS_ACTION_NOT_AUTHORIZED")
-
-    authorize_relationship(
-        source=Actor.JAYTEC,
-        destination=Actor.MANUS,
-        purpose=Purpose.TASK_PACKET,
-        current_task_authorized=current_task_authorized,
     )
 
     return ManusDispatchAuthorization(
         project_id=project_id.strip(),
         project_name="MANUS",
-        connectors=approved,
-        profile=profile,
-        authority=authority,
+        connectors=preflight.connectors,
+        profile=preflight.profile,
+        authority=preflight.authority,
     )
 
 
