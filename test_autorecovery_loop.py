@@ -20,6 +20,11 @@ class FakeSupervisor:
         self.decisions = decisions or {}
         self.fail_task = fail_task
         self.calls = []
+        self.refresh_calls = []
+
+    def refresh_worker_health(self, task_id):
+        self.refresh_calls.append(task_id)
+        return True
 
     def tick(self, task_id):
         self.calls.append(task_id)
@@ -56,6 +61,7 @@ class LoopTests(unittest.TestCase):
             task_source=lambda: ["task-a", "task-a", "", "task-b"],
         )
         results = loop.run_cycle()
+        self.assertEqual(sup.refresh_calls, ["task-a", "task-b"])
         self.assertEqual(sup.calls, ["task-a", "task-b"])
         self.assertEqual([r.task_id for r in results], ["task-a", "task-b"])
 
