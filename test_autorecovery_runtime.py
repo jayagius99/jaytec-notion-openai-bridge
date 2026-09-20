@@ -42,6 +42,8 @@ class AutoRecoveryRuntimeTests(unittest.TestCase):
         self.assertEqual(status.mode, "DISABLED")
         self.assertFalse(status.ui_chat_autoresume_supported)
         self.assertEqual(status.max_recovery_attempts, 3)
+        self.assertEqual(status.supervisor_interval_seconds, 300)
+        self.assertFalse(status.runtime_components_registered)
 
     def test_requested_activation_fails_closed_without_all_prerequisites(self):
         status = runtime_status(
@@ -73,6 +75,7 @@ class AutoRecoveryRuntimeTests(unittest.TestCase):
                 "JAYTEC_AUTORECOVERY_NOTIFICATION_MODE": "event_log_v1",
             },
             database_url="postgresql://placeholder/not-used-by-status",
+            runtime_components_registered=True,
         )
         self.assertTrue(status.active)
         self.assertEqual(status.mode, "ACTIVE_CALLABLE_WORKERS_ONLY")
@@ -126,6 +129,28 @@ class AutoRecoveryRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "BLOCKED")
         self.assertEqual(result["reason"], "AUTORECOVERY_SCHEMA_NOT_READY")
+
+
+    def test_env_flags_cannot_activate_without_concrete_runtime_components(self):
+        status = runtime_status(
+            env={
+                "JAYTEC_AUTORECOVERY_ENABLED": "1",
+                "JAYTEC_AUTORECOVERY_SCHEMA_READY": "1",
+                "JAYTEC_AUTORECOVERY_CALLABLE_ROUTES": json.dumps(
+                    ["jaytec-worker-v1"]
+                ),
+                "JAYTEC_AUTORECOVERY_CHECKPOINT_VERIFIER": "github_exact_head_v1",
+                "JAYTEC_AUTORECOVERY_HEARTBEAT_MODE": "fenced_postgres_v1",
+                "JAYTEC_AUTORECOVERY_NOTIFICATION_MODE": "event_log_v1",
+            },
+            database_url="postgresql://placeholder/not-used-by-status",
+            runtime_components_registered=False,
+        )
+        self.assertFalse(status.active)
+        self.assertIn(
+            "CALLABLE_RUNTIME_COMPONENTS_NOT_REGISTERED",
+            status.blockers,
+        )
 
 
 if __name__ == "__main__":
