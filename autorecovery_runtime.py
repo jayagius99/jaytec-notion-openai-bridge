@@ -14,6 +14,7 @@ from typing import Any, Mapping, Optional
 import psycopg2
 import psycopg2.extras
 
+from autorecovery_loop import SUPERVISOR_INTERVAL_SECONDS
 from autorecovery_supervisor import (
     AssignmentCheckpoint,
     AutoRecoveryError,
@@ -77,6 +78,8 @@ class RuntimeStatus:
     heartbeat_mode: str
     notification_mode: str
     max_recovery_attempts: int
+    supervisor_interval_seconds: int
+    runtime_components_registered: bool
     ui_chat_autoresume_supported: bool
     observer_role: str
     blockers: tuple[str, ...]
@@ -92,6 +95,7 @@ def runtime_status(
     *,
     env: Optional[Mapping[str, str]] = None,
     database_url: str = "",
+    runtime_components_registered: bool = False,
 ) -> RuntimeStatus:
     source = dict(os.environ if env is None else env)
     blockers: list[str] = []
@@ -147,6 +151,8 @@ def runtime_status(
     db_configured = bool(str(database_url or "").strip())
 
     if requested:
+        if not runtime_components_registered:
+            blockers.append("CALLABLE_RUNTIME_COMPONENTS_NOT_REGISTERED")
         if not db_configured:
             blockers.append("DATABASE_URL_NOT_CONFIGURED")
         if not schema_ready:
@@ -180,6 +186,8 @@ def runtime_status(
         heartbeat_mode=heartbeat,
         notification_mode=notification,
         max_recovery_attempts=MAX_RECOVERY_ATTEMPTS,
+        supervisor_interval_seconds=SUPERVISOR_INTERVAL_SECONDS,
+        runtime_components_registered=bool(runtime_components_registered),
         ui_chat_autoresume_supported=False,
         observer_role="READ_ONLY_GITHUB_EVIDENCE",
         blockers=tuple(blockers),
