@@ -256,10 +256,10 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         self.assertIn("def manus_task_status(provider_task_id: str)", source)
         self.assertIn('"manus_profile_policy": "lite_only_no_exceptions"', source)
 
-    def test_render_blueprint_declares_manus_secret_bindings_without_values(self):
+    def test_persistent_staging_blueprint_remains_manus_credential_free(self):
         source = (ROOT / "render.yaml").read_text(encoding="utf-8")
-        self.assertIn("- key: MANUS_API_KEY\n        sync: false", source)
-        self.assertIn("- key: JAYTEC_MANUS_PROJECT_ID\n        sync: false", source)
+        self.assertNotIn("MANUS_API_KEY", source)
+        self.assertNotIn("JAYTEC_MANUS_PROJECT_ID", source)
 
     def test_policy_names_only_jaytec_owned_runtime_as_supported_execution_path(self):
         source = (ROOT / "JAYTEC_COMMAND_POLICY.md").read_text(encoding="utf-8")
