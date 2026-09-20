@@ -1,8 +1,10 @@
 """WATCH-only runtime ingress for one canonical JAYTEC autorecovery cycle."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 from dataclasses import asdict
 from typing import Any, Mapping
 
@@ -24,6 +26,11 @@ from autorecovery_supervisor import (
 
 FORGE_TASK_ID = "FORGE-GENESIS-ACTIVATION-001"
 MAX_REQUEST_REFS = 128
+MAX_BROKER_CONTEXT_BYTES = 4500
+_BROKER_SECRET_KEY = re.compile(
+    r"(api[_-]?key|authorization|bearer|password|secret|credential|token)",
+    re.I,
+)
 
 
 class WatchIngressError(RuntimeError):
@@ -52,6 +59,85 @@ def _observed_refs(value: Any) -> dict[str, str]:
             raise WatchIngressError("OBSERVED_REF_NAME_INVALID")
         refs[ref] = sha
     return refs
+
+
+
+def _broker_has_secret_key(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if _BROKER_SECRET_KEY.search(str(key)):
+                return True
+            if _broker_has_secret_key(child):
+                return True
+    elif isinstance(value, list):
+        return any(_broker_has_secret_key(item) for item in value)
+    return False
+
+
+def _broker_context(value: Any, refs: Mapping[str, str]) -> dict[str, Any]:
+    if value in (None, {}):
+        return {}
+    if not isinstance(value, Mapping):
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_INVALID")
+    context = dict(value)
+    required = {
+        "schema_version",
+        "kind",
+        "repo",
+        "refs",
+        "issues",
+        "pull_requests",
+        "open_pull_requests",
+        "authority",
+        "sha256",
+    }
+    if set(context) != required:
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_FIELDS_INVALID")
+    if context.get("schema_version") != "JAYTEC_GITHUB_BROKER_CONTEXT_V1":
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_VERSION_INVALID")
+    if context.get("kind") not in {
+        "PRIVATE_REPO_BOOTSTRAP",
+        "SPECIALIST_REQUEST_RESULTS",
+    }:
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_KIND_INVALID")
+    if context.get("repo") != "jayagius99/jaytec-work-engine-v2-g1":
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_REPO_MISMATCH")
+    if context.get("authority") != "READ_EVIDENCE_ONLY_NO_TOKEN_EXPORT":
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_AUTHORITY_INVALID")
+    if _broker_has_secret_key(context):
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_SECRET_FIELD_FORBIDDEN")
+
+    context_refs = context.get("refs")
+    if not isinstance(context_refs, Mapping):
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_REFS_INVALID")
+    normalized_refs = {str(k): str(v).lower() for k, v in context_refs.items()}
+    for ref, sha in refs.items():
+        if normalized_refs.get(ref) != sha:
+            raise WatchIngressError("GITHUB_BROKER_CONTEXT_REF_MISMATCH")
+
+    supplied_digest = str(context.get("sha256") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", supplied_digest):
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_DIGEST_INVALID")
+    unsigned = {k: v for k, v in context.items() if k != "sha256"}
+    encoded = json.dumps(
+        unsigned,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(encoded) > MAX_BROKER_CONTEXT_BYTES:
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_TOO_LARGE")
+    if hashlib.sha256(encoded).hexdigest() != supplied_digest:
+        raise WatchIngressError("GITHUB_BROKER_CONTEXT_DIGEST_MISMATCH")
+    return context
+
+
+def _needs_jaytec_state(state: Any) -> bool:
+    if state is None or not getattr(state, "worker_id", None):
+        return False
+    marker = str(getattr(state, "last_error", "") or "")
+    return marker.startswith("MANUS_TERMINAL:NEEDS_JAYTEC:")
+
 
 
 def _decision_dict(decision) -> dict[str, Any]:
@@ -90,6 +176,7 @@ def execute_watch_cycle(
         raise WatchIngressError("TASK_ID_NOT_WATCH_AUTHORIZED")
 
     refs = _observed_refs(payload.get("observed_refs"))
+    broker_context = _broker_context(payload.get("github_broker_context"), refs)
     verifier = ObservedRefsCheckpointVerifier(refs)
 
     schema = prepare_schema_if_authorized(database_url, env=source)
@@ -178,10 +265,84 @@ def execute_watch_cycle(
             "worker_route": state.worker_route,
         }
 
+    invoker = ManusLiteRecoveryInvoker(
+        manus_runtime,
+        registry,
+        broker_context=broker_context,
+    )
+    github_broker = "AVAILABLE" if broker_context else "NONE"
+
+    # NEEDS_JAYTEC is an internal orchestration handoff, not an owner boundary.
+    # Continue the SAME fenced worker with evidence supplied by GitHub Actions.
+    if _needs_jaytec_state(state):
+        if not broker_context:
+            github_broker = "CONTEXT_REQUIRED"
+        else:
+            readonly = manus_runtime.task_status_readonly(state.worker_id)
+            terminal = (
+                readonly.get("result")
+                if isinstance(readonly, Mapping)
+                and isinstance(readonly.get("result"), Mapping)
+                else {}
+            )
+            if (
+                readonly.get("status") != "VERIFIED_COMPLETE"
+                or terminal.get("status") != "NEEDS_JAYTEC"
+            ):
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": "NEEDS_JAYTEC_TERMINAL_RESULT_NOT_VERIFIED",
+                }
+
+            handoff_digest = str(broker_context.get("sha256") or "")[:16]
+            delivered_marker = "JAYTEC_BROKER_HANDOFF:" + handoff_digest
+            if state.progress_marker == delivered_marker:
+                github_broker = "WAITING_FOR_NEW_CONTEXT"
+            else:
+                claim_marker = "JAYTEC_BROKER_HANDOFF_CLAIM:" + handoff_digest
+                store.heartbeat(
+                    task_id,
+                    fencing_token=state.fencing_token,
+                    worker_id=state.worker_id,
+                    progress_marker=claim_marker,
+                )
+                handoff = invoker.continue_existing(
+                    checkpoint=state.checkpoint,
+                    worker_id=state.worker_id,
+                    fencing_token=state.fencing_token,
+                    broker_context=broker_context,
+                )
+                if handoff.accepted:
+                    store.heartbeat(
+                        task_id,
+                        fencing_token=state.fencing_token,
+                        worker_id=state.worker_id,
+                        progress_marker=delivered_marker,
+                    )
+                    github_broker = "HANDOFF_CONTINUED"
+                else:
+                    original_marker = str(
+                        state.last_error
+                        or "MANUS_TERMINAL:NEEDS_JAYTEC:unknown"
+                    )
+                    store.mark_stop(
+                        task_id,
+                        fencing_token=state.fencing_token,
+                        stop_reason=StopReason.WAITING_FOR_DEPENDENCY,
+                        error=(
+                            original_marker
+                            + "|JAYTEC_HANDOFF_FAILED:"
+                            + str(handoff.detail or "unknown")[:500]
+                        ),
+                    )
+                    github_broker = "HANDOFF_FAILED_CLOSED"
+                state = store.get(task_id)
+
     supervisor = AutoRecoverySupervisor(
         store=store,
         verifier=verifier,
-        invoker=ManusLiteRecoveryInvoker(manus_runtime, registry),
+        invoker=invoker,
         health_probe=ManusLiteHealthProbe(manus_runtime),
         notifier=JsonLogRecoveryNotifier(),
         instance_id="github-watch-cycle",
@@ -195,6 +356,7 @@ def execute_watch_cycle(
         "task_id": task_id,
         "bootstrapped": bootstrapped,
         "health_refreshed": refreshed,
+        "github_broker": github_broker,
         "decision": _decision_dict(decision),
         "assignment": {
             "stop_reason": final.stop_reason.value if final else None,
