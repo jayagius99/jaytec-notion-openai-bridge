@@ -596,6 +596,31 @@ class ManusLiteRuntime:
             raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_CONTEXT_TOO_LARGE")
 
         validate_manus_structured_output_schema(MANUS_RESULT_JSON_SCHEMA)
+
+        # Handoff idempotency: if a prior send reached Manus but the caller
+        # lost the response, detect the deterministic handoff id in task
+        # messages and treat it as already delivered instead of duplicating it.
+        try:
+            existing_messages = self.client.list_messages(task_id, limit=100)
+            existing_text = json.dumps(
+                existing_messages,
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception:
+            existing_text = ""
+        if hid in existing_text:
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "status": "CONTINUED",
+                "provider_task_id": task_id,
+                "handoff_id": hid,
+                "requested_profile": "lite",
+                "observed_profile_verified": True,
+                "idempotent_replay": True,
+            }
+
         route = self.client.prepare_route(
             scope=scope,
             authority_source=authority_source,
