@@ -33,7 +33,7 @@ ROOT_RESERVED_PREFIXES=(
     "root_firewall",
     "root_rollback",
     "execution_authority_firewall",
-    "system_role_registry:JAY_ROOT_OWNER",
+    "system_role_registry:jay_root_owner",
 )
 
 GENERAL_CAPABILITY_DIMENSIONS=(
@@ -225,9 +225,15 @@ class StrategicDriveConfig:
         )
         if not obj.capability_growth_enabled or not obj.sustainable_value_growth_enabled:
             raise StrategicDriveError("PERMANENT_DRIVES_MUST_BE_ENABLED")
-        if set(obj.general_capability_dimensions) != set(GENERAL_CAPABILITY_DIMENSIONS):
+        if (
+            len(obj.general_capability_dimensions) != len(GENERAL_CAPABILITY_DIMENSIONS)
+            or set(obj.general_capability_dimensions) != set(GENERAL_CAPABILITY_DIMENSIONS)
+        ):
             raise StrategicDriveError("GENERAL_CAPABILITY_DIMENSIONS_INVALID")
-        if set(obj.value_capability_dimensions) != set(VALUE_CAPABILITY_DIMENSIONS):
+        if (
+            len(obj.value_capability_dimensions) != len(VALUE_CAPABILITY_DIMENSIONS)
+            or set(obj.value_capability_dimensions) != set(VALUE_CAPABILITY_DIMENSIONS)
+        ):
             raise StrategicDriveError("VALUE_CAPABILITY_DIMENSIONS_INVALID")
         if not obj.retain_only_verified_improvements:
             raise StrategicDriveError("VERIFIED_RETENTION_REQUIRED")
@@ -384,6 +390,34 @@ def rank_capability_gaps(gaps: list[CapabilityGap]) -> list[CapabilityGap]:
 
 
 @dataclass(frozen=True)
+class ExecutionAuthorityContext:
+    """Verified execution authority supplied by JAYTEC, never self-asserted by Forge."""
+
+    source: str
+    current_task_authorized: bool
+    budget_authority_verified: bool
+    budget_authority_ref: Optional[str]
+
+    @classmethod
+    def parse(cls, value: Mapping[str,Any]) -> "ExecutionAuthorityContext":
+        source=_text(value.get("source"),"AUTHORITY_SOURCE",maximum=200)
+        if source != "JAYTEC_EXECUTION_AUTHORITY":
+            raise StrategicDriveError("AUTHORITY_SOURCE_INVALID")
+        ref=value.get("budget_authority_ref")
+        ref_text=None if ref is None else _text(ref,"BUDGET_AUTHORITY_REF",maximum=500)
+        verified=value.get("budget_authority_verified") is True
+        current=value.get("current_task_authorized") is True
+        if verified and (not current or not ref_text):
+            raise StrategicDriveError("BUDGET_AUTHORITY_PROOF_INCOMPLETE")
+        return cls(
+            source=source,
+            current_task_authorized=current,
+            budget_authority_verified=verified,
+            budget_authority_ref=ref_text,
+        )
+
+
+@dataclass(frozen=True)
 class ValueOpportunity:
     opportunity_id: str
     mechanism: str
@@ -401,7 +435,6 @@ class ValueOpportunity:
     regulated_or_licensed_activity: bool
     required_scopes: tuple[str,...]
     requires_external_spend: bool
-    within_preapproved_budget: bool
     requires_new_legal_entity_or_account: bool
     known_obligations_covered: bool
     funds_or_resources_available: bool
@@ -425,7 +458,6 @@ class ValueOpportunity:
             regulated_or_licensed_activity=value.get("regulated_or_licensed_activity") is True,
             required_scopes=tuple(_text(x,"REQUIRED_SCOPE",maximum=500) for x in (value.get("required_scopes") or [])),
             requires_external_spend=value.get("requires_external_spend") is True,
-            within_preapproved_budget=value.get("within_preapproved_budget") is True,
             requires_new_legal_entity_or_account=value.get("requires_new_legal_entity_or_account") is True,
             known_obligations_covered=value.get("known_obligations_covered") is True,
             funds_or_resources_available=value.get("funds_or_resources_available") is True,
@@ -443,7 +475,10 @@ def value_opportunity_score(o: ValueOpportunity) -> float:
     return round((upside*o.evidence_confidence) - burden*0.35,4)
 
 
-def evaluate_value_opportunity(o: ValueOpportunity) -> OpportunityDecision:
+def evaluate_value_opportunity(
+    o: ValueOpportunity,
+    authority: Optional[ExecutionAuthorityContext]=None,
+) -> OpportunityDecision:
     if not o.lawful or not o.sustainable or o.deceptive or o.unauthorized_access:
         return OpportunityDecision.REJECT
     if touches_root_boundary(o.required_scopes):
@@ -454,8 +489,14 @@ def evaluate_value_opportunity(o: ValueOpportunity) -> OpportunityDecision:
         return OpportunityDecision.RESEARCH
     if o.regulated_or_licensed_activity or o.requires_new_legal_entity_or_account:
         return OpportunityDecision.OWNER_REVIEW
-    if o.requires_external_spend and not o.within_preapproved_budget:
-        return OpportunityDecision.OWNER_REVIEW
+    if o.requires_external_spend:
+        if (
+            authority is None
+            or not authority.current_task_authorized
+            or not authority.budget_authority_verified
+            or not authority.budget_authority_ref
+        ):
+            return OpportunityDecision.OWNER_REVIEW
     return OpportunityDecision.EXECUTE
 
 
@@ -483,7 +524,10 @@ class LearningEvidence:
             raw=value.get(name)
             if isinstance(raw,bool) or not isinstance(raw,(int,float)):
                 raise StrategicDriveError(name.upper()+"_INVALID")
-            return float(raw)
+            out=float(raw)
+            if not 0.0 <= out <= 1.0:
+                raise StrategicDriveError(name.upper()+"_OUT_OF_RANGE")
+            return out
         return cls(
             evaluation_id=_text(value.get("evaluation_id"),"EVALUATION_ID",maximum=200),
             executed=value.get("executed") is True,
@@ -552,33 +596,49 @@ def reinvestment_target_score(t: ReinvestmentTarget) -> float:
     return round(leverage*t.evidence_confidence - t.recurring_burden*0.25,4)
 
 
-def reinvestment_target_decision(t: ReinvestmentTarget) -> OpportunityDecision:
+def reinvestment_target_decision(
+    t: ReinvestmentTarget,
+    authority: Optional[ExecutionAuthorityContext]=None,
+) -> OpportunityDecision:
     if not t.lawful or not t.sustainable or touches_root_boundary(t.required_scopes):
         return OpportunityDecision.REJECT
     if t.evidence_confidence < 0.35 or not t.funds_available or not t.known_obligations_covered:
         return OpportunityDecision.RESEARCH
-    if t.requires_external_spend and not t.within_preapproved_budget:
-        return OpportunityDecision.OWNER_REVIEW
+    if t.requires_external_spend:
+        if (
+            authority is None
+            or not authority.current_task_authorized
+            or not authority.budget_authority_verified
+            or not authority.budget_authority_ref
+        ):
+            return OpportunityDecision.OWNER_REVIEW
     return OpportunityDecision.EXECUTE
 
 
-def build_aggressive_reinvestment_plan(targets: list[ReinvestmentTarget]) -> list[dict[str,Any]]:
+def build_aggressive_reinvestment_plan(
+    targets: list[ReinvestmentTarget],
+    authority: Optional[ExecutionAuthorityContext]=None,
+) -> list[dict[str,Any]]:
     eligible=[
         t for t in targets
-        if reinvestment_target_decision(t) in {OpportunityDecision.EXECUTE,OpportunityDecision.OWNER_REVIEW}
+        if reinvestment_target_decision(t,authority) in {OpportunityDecision.EXECUTE,OpportunityDecision.OWNER_REVIEW}
     ]
     ranked=sorted(eligible,key=lambda t:(-reinvestment_target_score(t),t.target_id))
-    positive=[max(reinvestment_target_score(t),0.0) for t in ranked]
-    total=sum(positive)
+    executable=[t for t in ranked if reinvestment_target_decision(t,authority) is OpportunityDecision.EXECUTE]
+    exec_scores=[max(reinvestment_target_score(t),0.0) for t in executable]
+    exec_total=sum(exec_scores)
+    weights={}
+    for target,score in zip(executable,exec_scores):
+        weights[target.target_id]=(score/exec_total) if exec_total>0 else (1.0/len(executable) if executable else 0.0)
     out=[]
-    for target,score in zip(ranked,positive):
-        weight=(score/total) if total>0 else (1.0/len(ranked) if ranked else 0.0)
+    for target in ranked:
+        decision=reinvestment_target_decision(target,authority)
         out.append({
             "target_id":target.target_id,
             "category":target.category,
-            "decision":reinvestment_target_decision(target).value,
+            "decision":decision.value,
             "priority_score":reinvestment_target_score(target),
-            "surplus_allocation_weight":round(weight,6),
+            "surplus_allocation_weight":round(weights.get(target.target_id,0.0),6),
         })
     return out
 
