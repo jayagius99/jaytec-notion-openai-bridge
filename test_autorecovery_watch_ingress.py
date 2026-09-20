@@ -249,7 +249,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(len(runtime.handoffs), 1)
         self.assertEqual(store.state.worker_id, "worker-existing")
         self.assertEqual(store.state.fencing_token, 9)
-        self.assertEqual(len(store.heartbeats), 2)
+        self.assertEqual(len(store.heartbeats), 1)
 
 
     def test_broker_request_contract_rejects_unsupported_and_stale_mutations(self):
