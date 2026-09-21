@@ -904,6 +904,14 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
                     }
                 result["current_worker_result"] = safe_worker
 
+    result["runtime_deployment"] = {
+        "render": os.environ.get("RENDER", "").strip().lower() == "true",
+        "git_commit": os.environ.get("RENDER_GIT_COMMIT", "").strip().lower(),
+        "git_branch": os.environ.get("RENDER_GIT_BRANCH", "").strip(),
+        "git_repo_slug": os.environ.get("RENDER_GIT_REPO_SLUG", "").strip(),
+        "exact_head_observable": bool(os.environ.get("RENDER_GIT_COMMIT", "").strip()),
+        "read_only": True,
+    }
     result["specialist_fabric"] = {
         "default_watch_trio": ["sol", "deepseek", "nemo"],
         "sol": {
