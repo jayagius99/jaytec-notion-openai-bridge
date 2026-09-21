@@ -276,7 +276,7 @@ class FakeBrokerRuntime:
     def __init__(self):
         self.handoffs = []
 
-    def task_status_readonly(self, worker_id):
+    def task_status_readonly(self, worker_id, *, parent_task_id=None):
         assert worker_id == "worker-existing"
         return {
             "status": "VERIFIED_COMPLETE",
@@ -299,7 +299,7 @@ class FakeBrokerRuntime:
 
 
 class FakePendingBrokerRuntime(FakeBrokerRuntime):
-    def task_status_readonly(self, worker_id):
+    def task_status_readonly(self, worker_id, *, parent_task_id=None):
         assert worker_id == "worker-existing"
         return {
             "status": "PENDING",
@@ -308,12 +308,12 @@ class FakePendingBrokerRuntime(FakeBrokerRuntime):
             "observed_profile": "lite",
         }
 
-    def task_status(self, worker_id):
+    def task_status(self, worker_id, *, parent_task_id=None):
         return self.task_status_readonly(worker_id)
 
 
 class FakeSuccessBrokerRuntime(FakeBrokerRuntime):
-    def task_status_readonly(self, worker_id):
+    def task_status_readonly(self, worker_id, *, parent_task_id=None):
         assert worker_id == "worker-existing"
         return {
             "status": "VERIFIED_COMPLETE",
@@ -334,12 +334,12 @@ class FakeSuccessBrokerRuntime(FakeBrokerRuntime):
             },
         }
 
-    def task_status(self, worker_id):
+    def task_status(self, worker_id, *, parent_task_id=None):
         return self.task_status_readonly(worker_id)
 
 
 class FakeTransientStatusFailureRuntime(FakeBrokerRuntime):
-    def task_status(self, worker_id):
+    def task_status(self, worker_id, *, parent_task_id=None):
         assert worker_id == "worker-existing"
         raise RuntimeError("transient provider read failure")
 
@@ -613,12 +613,12 @@ class WatchIngressPolicyTests(unittest.TestCase):
 
     def test_stale_success_without_exact_gate_receipt_cannot_complete_gate(self):
         class StaleSuccessRuntime(FakeSuccessBrokerRuntime):
-            def task_status_readonly(self, worker_id):
+            def task_status_readonly(self, worker_id, *, parent_task_id=None):
                 value = super().task_status_readonly(worker_id)
                 value["result"]["evidence"] = []
                 return value
 
-            def task_status(self, worker_id):
+            def task_status(self, worker_id, *, parent_task_id=None):
                 return self.task_status_readonly(worker_id)
 
         refs = {"security/root-owner-control-v1": "b" * 40}
