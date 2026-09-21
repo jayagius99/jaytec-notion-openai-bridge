@@ -68,7 +68,7 @@ class ObservedEngineeringModelIdentityTests(unittest.TestCase):
         })
         self.assertEqual(1, len(responses.calls))
         prompt = responses.calls[0]["input"]
-        self.assertIn("JAYTEC_SANITIZED_CORE_V3", prompt)
+        self.assertIn("JAYTEC_SANITIZED_CORE_V4", prompt)
         self.assertIn("SANITIZED_JAYTEC_CONTEXT", prompt)
         lowered = prompt.lower()
         for marker in (
