@@ -30,6 +30,10 @@ services:
         sync: false
       - key: OPENROUTER_PROVIDER_MODE
         value: LOCKED_RESERVE
+      - key: DEEPSEEK_PROVIDER_MODE
+        value: LOCKED_RESERVE
+      - key: NEMO_PROVIDER_MODE
+        value: ACTIVE
       - key: GEMINI_MODEL
         value: google/gemini-3.1-pro-preview
       - key: JAYTEC_READ_BOOTSTRAP_ENABLED
