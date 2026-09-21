@@ -313,7 +313,6 @@ def _watch_specialist_runner(requests):
     return dispatch_manus_model_requests(
         requests,
         dispatchers={
-            "sol": ENGINEERING_DISPATCH,
             "deepseek": DEEPSEEK_REVIEW_DISPATCH,
             "nemo": NEMO_DISPATCH,
         },
@@ -966,7 +965,8 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
         "read_only": True,
     }
     result["specialist_fabric"] = {
-        "default_watch_trio": ["sol", "deepseek", "nemo"],
+        "manus_routine_specialists": ["deepseek", "nemo"],
+            "manus_core_triad_emergency": "request_only_via_jaytec",
         "sol": {
             "model": ENGINEERING_MODEL,
             "provider_mode": ENGINEERING_PROVIDER_MODE,
