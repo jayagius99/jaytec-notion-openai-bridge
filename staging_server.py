@@ -25,8 +25,10 @@ from orchestration import ExecutionRegistry, PacketValidationError, execute_task
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
+    EXPECTED_SOL_MODEL,
     build_codex_dispatch,
     build_gemini_dispatch,
+    build_sol_dispatch,
 )
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -39,6 +41,12 @@ ENGINEERING_MAX_PACKET_RETRIES = int(os.environ.get("ENGINEERING_MAX_PACKET_RETR
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
+SOL_MODEL = os.environ.get("SOL_MODEL", EXPECTED_SOL_MODEL).strip()
+SOL_PRIMARY_ENABLED = os.environ.get("SOL_PRIMARY_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+SOL_PRIMARY_COST_AUTHORIZED = os.environ.get("SOL_PRIMARY_COST_AUTHORIZED", "0").strip().lower() in {"1", "true", "yes", "on"}
+SOL_TIMEOUT_S = float(os.environ.get("SOL_TIMEOUT_S", "90"))
+SOL_REASONING_EFFORT = os.environ.get("SOL_REASONING_EFFORT", "high").strip().lower()
+SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("SOL_OUTPUT_TOKEN_CAP", "4000"))
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
 CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
@@ -76,11 +84,29 @@ GEMINI_CIRCUIT = CircuitBreaker(
     failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
     reset_after_seconds=CIRCUIT_RESET_SECONDS,
 )
+SOL_CIRCUIT = CircuitBreaker(
+    failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+    reset_after_seconds=CIRCUIT_RESET_SECONDS,
+)
 
 OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
 
 # Build dispatchers ONCE to avoid runtime drift and repeated guards.
+SOL_DISPATCH = (
+    build_sol_dispatch(
+        openai_client=OPENAI_CLIENT,
+        sol_model=SOL_MODEL,
+        circuit=SOL_CIRCUIT,
+        enabled=SOL_PRIMARY_ENABLED,
+        cost_authorized=SOL_PRIMARY_COST_AUTHORIZED,
+        sol_timeout_s=SOL_TIMEOUT_S,
+        reasoning_effort=SOL_REASONING_EFFORT,
+        max_output_tokens=SOL_OUTPUT_TOKEN_CAP,
+    )
+    if OPENAI_CLIENT
+    else SOL_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENAI_API_KEY is not configured for Sol primary")))
+)
 CODEX_DISPATCH = (
     build_codex_dispatch(
         openai_client=OPENROUTER_CLIENT,
@@ -116,6 +142,10 @@ def orchestration_status() -> str:
             "codex_adapter_configured": bool(OPENROUTER_API_KEY),
             "codex_circuit": CODEX_CIRCUIT.snapshot(),
             "gemini_model": GEMINI_MODEL,
+            "sol_model": SOL_MODEL,
+            "sol_primary_enabled": SOL_PRIMARY_ENABLED,
+            "sol_primary_cost_authorized": SOL_PRIMARY_COST_AUTHORIZED,
+            "sol_adapter_configured": bool(OPENAI_API_KEY),
             "gemini_adapter_configured": bool(OPENROUTER_API_KEY),
             "gemini_provider_routing": "price",
             "gemini_circuit": GEMINI_CIRCUIT.snapshot(),
@@ -183,7 +213,7 @@ def execute_task_packet(packet_json: str) -> str:
 
     result = execute_task_packet_core(
         packet,
-        {"codex": CODEX_DISPATCH, "gemini": GEMINI_DISPATCH},
+        {"sol": SOL_DISPATCH, "codex": CODEX_DISPATCH, "gemini": GEMINI_DISPATCH},
         registry,
     )
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
