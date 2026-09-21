@@ -18,8 +18,9 @@ from jaytec_read import (
 
 PACKET_VERSION = "1.0"
 RETURN_SCHEMA_VERSION = "1.0"
-ALLOWED_SPECIALISTS = ("codex", "gemini")
+ALLOWED_SPECIALISTS = ("sol", "codex", "gemini")
 EXPECTED_MODELS = {
+    "sol": "gpt-5.6-sol",
     "codex": "nvidia/nemotron-3-ultra-550b-a55b:free",
     "gemini": "deepseek/deepseek-v4-flash-0731:free",
 }
