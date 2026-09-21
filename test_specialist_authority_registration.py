@@ -30,7 +30,7 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
         # has been explicitly reviewed.
         self.assertEqual(
             dispatchers,
-            {"build_codex_dispatch", "build_gemini_dispatch"},
+            {"build_codex_dispatch", "build_gemini_dispatch", "build_sol_dispatch"},
         )
 
     def test_new_meeting_participant_requires_explicit_registration_review(self):
@@ -69,9 +69,14 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
         reviewer = specialists["reviewer"]
         gemini = specialists["gemini"]
         manus = specialists["manus"]
+        self.assertEqual(sol["provider_model"], "gpt-5.6-sol")
+        self.assertEqual(sol["primary_role"], "primary_engineering_reasoning_core_triad")
+        self.assertEqual(sol["knowledge_scope"], "JAYTEC_SANITIZED_CORE_V1")
+        self.assertIn("owner_authorized", sol["cost_profile"])
+        self.assertIn("no_silent", sol["fallback_policy"])
         self.assertEqual(engineer["provider_model"], "nvidia/nemotron-3-ultra-550b-a55b:free")
-        self.assertEqual(engineer["cost_profile"], "free_primary")
-        self.assertEqual(engineer["fallback_policy"], "fail_closed_no_silent_model_substitution")
+        self.assertIn("backup", engineer["primary_role"])
+        self.assertIn("explicit_route_only", engineer["fallback_policy"])
         self.assertIn("coding", engineer["allowed_task_classes"])
         self.assertIn("coding", sol["allowed_task_classes"])
         self.assertEqual(reviewer["provider_model"], "deepseek/deepseek-v4-flash-0731:free")
