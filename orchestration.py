@@ -18,10 +18,11 @@ from jaytec_read import (
 
 PACKET_VERSION = "1.0"
 RETURN_SCHEMA_VERSION = "1.0"
-ALLOWED_SPECIALISTS = ("codex", "gemini")
+ALLOWED_SPECIALISTS = ("codex", "gemini", "sol")
 EXPECTED_MODELS = {
     "codex": "nvidia/nemotron-3-ultra-550b-a55b:free",
     "gemini": "deepseek/deepseek-v4-flash-0731:free",
+    "sol": "openai/gpt-5.6-sol",
 }
 ALLOWED_STATUSES = {
     "SUCCESS",
@@ -264,6 +265,22 @@ def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None
         if len(set(ops)) != len(ops):
             errors.append("duplicate_allowed_operation")
 
+    if "sol" in plan:
+        required_context = packet.get("required_context")
+        if not isinstance(required_context, Mapping):
+            errors.append("sol_required_context_missing")
+        else:
+            if required_context.get("authority_controller") != "CHATGPT_OPENAI_LEAD":
+                errors.append("sol_chatgpt_authority_required")
+            if required_context.get("specialist_authority") != "SUBORDINATE":
+                errors.append("sol_specialist_must_be_subordinate")
+            if required_context.get("owner_explicit_sol_request") is not True:
+                errors.append("sol_owner_explicit_request_required")
+        if not str(packet.get("workflow_id", "")).startswith("JAYTEC_OWNER_SOL_"):
+            errors.append("sol_owner_workflow_required")
+        if packet.get("max_retries") != 0:
+            errors.append("sol_retries_forbidden")
+
     if packet.get("workflow_id") == JAYTEC_READ_WORKFLOW_ID:
         if plan != ["gemini"]:
             errors.append("jaytec_read_requires_gemini_only")
@@ -319,6 +336,7 @@ def _base_envelope(packet: Mapping[str, Any], *, status: str, execution_id: str)
         "confidence": None,
         "codex_result": None,
         "gemini_result": None,
+        "sol_result": None,
         "conflicts": [],
         "unresolved_items": [],
         "files_or_artifacts": [],
