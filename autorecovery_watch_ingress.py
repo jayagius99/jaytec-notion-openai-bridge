@@ -119,10 +119,10 @@ def _master_gate_context(
     if gate.get("schema_version") != MASTER_GATE_SCHEMA:
         raise WatchIngressError("MASTER_GATE_SCHEMA_INVALID")
     gate_id = str(gate.get("gate_id") or "").strip()
-    if not re.fullmatch(r"G[0-9]{2}", gate_id):
+    if not re.fullmatch(r"G[0-9]{2,4}", gate_id):
         raise WatchIngressError("MASTER_GATE_ID_INVALID")
     number = int(gate.get("checkpoint_number") or 0)
-    if number != 100 + int(gate_id[1:]):
+    if number < 1 or number > 1000000:
         raise WatchIngressError("MASTER_GATE_CHECKPOINT_NUMBER_INVALID")
     if number != checkpoint.checkpoint_number:
         raise WatchIngressError("MASTER_GATE_CHECKPOINT_MISMATCH")
@@ -138,7 +138,7 @@ def _master_gate_context(
     deps = gate.get("depends_on")
     evidence = gate.get("evidence")
     if not isinstance(deps, list) or not all(
-        isinstance(x, str) and re.fullmatch(r"G[0-9]{2}", x) for x in deps
+        isinstance(x, str) and re.fullmatch(r"G[0-9]{2,4}", x) for x in deps
     ):
         raise WatchIngressError("MASTER_GATE_DEPENDENCIES_INVALID")
     if (
@@ -253,7 +253,7 @@ def _gate_result_ready_state(state: Any) -> bool:
     return (
         getattr(state, "stop_reason", None) is StopReason.WAITING_FOR_DEPENDENCY
         and marker.startswith("MANUS_TERMINAL:SUCCESS:")
-        and re.match(r"^G[0-9]{2}/", phase) is not None
+        and re.match(r"^G[0-9]{2,4}/", phase) is not None
     )
 
 
@@ -619,19 +619,47 @@ def execute_watch_cycle(
         }
 
     checkpoint_advanced = False
-    if incoming_checkpoint.checkpoint_number < state.checkpoint.checkpoint_number:
+    current_checkpoint_number = state.checkpoint.checkpoint_number
+    incoming_checkpoint_number = incoming_checkpoint.checkpoint_number
+    if incoming_checkpoint_number < current_checkpoint_number:
         return {
             "status": "BLOCKED_FAIL_CLOSED",
             "task_id": task_id,
             "reason": "MASTER_GATE_CHECKPOINT_ROLLBACK_FORBIDDEN",
         }
-    if incoming_checkpoint.checkpoint_number > state.checkpoint.checkpoint_number:
+    if incoming_checkpoint_number > current_checkpoint_number:
+        if incoming_checkpoint_number != current_checkpoint_number + 1:
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "MASTER_GATE_CHECKPOINT_GAP_FORBIDDEN",
+            }
+        if not _gate_result_ready_state(state):
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "MASTER_GATE_ADVANCE_REQUIRES_VERIFIED_PRIOR_SUCCESS",
+            }
         checkpoint_advanced = store.advance_checkpoint_preserving_runtime(
             incoming_checkpoint,
-            expected_current_checkpoint_number=state.checkpoint.checkpoint_number,
+            expected_current_checkpoint_number=current_checkpoint_number,
         )
         state = store.get(task_id)
         assert state is not None
+        if state.worker_id:
+            store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                progress_marker=(
+                    "MASTER_GATE_ADVANCED:"
+                    + str(master_gate.get("gate_id") or "UNKNOWN")
+                    + ":"
+                    + str(incoming_checkpoint_number)
+                ),
+            )
+            state = store.get(task_id)
+            assert state is not None
     if state.worker_kind is not WorkerKind.JAYTEC_CALLABLE:
         return {
             "status": "BLOCKED_FAIL_CLOSED",
