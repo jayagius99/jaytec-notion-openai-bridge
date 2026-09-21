@@ -14,6 +14,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import unicodedata
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from openai import OpenAI, RateLimitError as OpenAIRateLimitError
@@ -38,6 +40,19 @@ from relationship_policy import Actor
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
 EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
+SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V2"
+SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V2.md")
+SOL_PROVENANCE_MARKERS = (
+    "genesis_event_0001", "pre-genesis", "pre genesis", "/jaytec/uren/pre-genesis",
+    "uren_identity_genesis", "uren identity genesis", "god mode", "owner manual source index",
+    "how uren was born", "how uren will be born", "uren birth", "uren origin",
+    "uren construction", "uren activation sequence", "uren genesis",
+)
+SOL_PROVENANCE_COMPACT_MARKERS = (
+    "genesisevent0001", "pregenesis", "jaytecurenpregenesis", "urenidentitygenesis",
+    "godmode", "ownermanualsourceindex", "howurenwasborn", "howurenwillbeborn",
+    "urenbirth", "urenorigin", "urenconstruction", "urenactivationsequence", "urengenesis",
+)
 # TaskPacket v1 keeps the historical "codex" specialist key for wire compatibility.
 # Semantically it now means the JAYTEC engineering specialist role.
 EXPECTED_CODEX_MODEL = EXPECTED_ENGINEERING_MODEL
@@ -94,6 +109,42 @@ GEMINI_FORMAT_RETRY = """Your previous transport attempt did not produce a compl
 Re-answer the ORIGINAL TASK_PACKET_JSON from scratch. Do not quote or repair the prior response.
 Return one compact valid JSON object only, using exactly the required JAYTEC Gemini research fields.
 Never include markdown fences, comments, trailing prose, NaN/Infinity, or unescaped newlines inside JSON strings."""
+
+
+
+def _sol_context_text() -> str:
+    try:
+        text = SOL_CONTEXT_PATH.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise RuntimeError("sol_sanitized_context_unavailable") from exc
+    if not text.strip():
+        raise RuntimeError("sol_sanitized_context_empty")
+    lowered = unicodedata.normalize("NFKC", text).lower()
+    compact = "".join(ch for ch in lowered if ch.isalnum())
+    if any(marker in lowered for marker in SOL_PROVENANCE_MARKERS):
+        raise RuntimeError("sol_sanitized_context_provenance_violation")
+    if any(marker in compact for marker in SOL_PROVENANCE_COMPACT_MARKERS):
+        raise RuntimeError("sol_sanitized_context_provenance_violation")
+    return text
+
+
+def _sol_normalized_probe(value: Any) -> tuple[str, str]:
+    try:
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return "", ""
+    lowered = unicodedata.normalize("NFKC", raw).lower()
+    compact = "".join(ch for ch in lowered if ch.isalnum())
+    return lowered, compact
+
+
+def _engineering_packet_provenance_violation(packet: Mapping[str, Any]) -> bool:
+    lowered, compact = _sol_normalized_probe(packet)
+    if not lowered:
+        return True
+    if any(marker in lowered for marker in SOL_PROVENANCE_MARKERS):
+        return True
+    return any(marker in compact for marker in SOL_PROVENANCE_COMPACT_MARKERS)
 
 
 def _provider_model(response: Any) -> str | None:
@@ -291,12 +342,19 @@ def build_codex_dispatch(
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     # Fail closed BEFORE any upstream call.
     require_exact_model(codex_model, EXPECTED_ENGINEERING_MODEL, context="engineering")
+    sanitized_context = _sol_context_text()
+    context_digest = hashlib.sha256(sanitized_context.encode("utf-8")).hexdigest()
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+        if _engineering_packet_provenance_violation(packet):
+            raise RuntimeError("engineering_owner_provenance_blocked")
         prompt = (
             render_actor_contract(Actor.ENGINEERING)
             + "\nROLE: JAYTEC ENGINEERING SPECIALIST — GPT-5.6 SOL\n"
             + ENGINEERING_CONTRACT
+            + "\nKNOWLEDGE_SCOPE: " + SOL_KNOWLEDGE_SCOPE
+            + "\nSANITIZED_JAYTEC_CONTEXT_SHA256: " + context_digest
+            + "\nSANITIZED_JAYTEC_CONTEXT:\n" + sanitized_context
             + "\nTASK_PACKET_JSON:\n"
             + json.dumps(packet, ensure_ascii=False, sort_keys=True)
         )
@@ -337,6 +395,9 @@ def build_codex_dispatch(
             "provider_model": returned_provider_model,
             "model_identity_observed": True,
             "provider_fallbacks": False,
+            "knowledge_scope": SOL_KNOWLEDGE_SCOPE,
+            "sanitized_context_sha256": context_digest,
+            "owner_provenance_firewall": True,
         }
         return result
 
