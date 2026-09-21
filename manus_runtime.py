@@ -885,12 +885,23 @@ class ManusLiteRuntime:
             out["reason"] = "MANUS_STRUCTURED_RESULT_MISSING"
             return out
 
-        requests = result.get("specialist_requests")
-        if isinstance(requests, list):
-            for request in requests:
-                validate_specialist_request(_decode_specialist_request(request))
+        try:
+            requests = result.get("specialist_requests")
+            if isinstance(requests, list):
+                for request in requests:
+                    validate_specialist_request(_decode_specialist_request(request))
 
-        verify_manus_completion(result)
+            verify_manus_completion(result)
+        except ManusGovernanceError as exc:
+            # Read-only diagnostics need the exact fail-closed governance code
+            # without mutating/stopping the provider task or leaking provider text.
+            out["status"] = "FAILED_CLOSED"
+            out["reason"] = (
+                "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+                + str(exc)[:180]
+            )
+            return out
+
         out["status"] = "VERIFIED_COMPLETE"
         out["result"] = dict(result)
         return out
