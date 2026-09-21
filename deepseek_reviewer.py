@@ -341,7 +341,26 @@ def build_deepseek_security_review_dispatch(
         attempts: list[dict[str, Any]] = []
         last_result: Mapping[str, Any] | None = None
         for engine in JAYTEC_READ_FETCH_ENGINES:
-            result = _single_with_format_retry(engine)
+            try:
+                result = _single_with_format_retry(engine)
+            except Exception as exc:
+                # The fetch engines are an explicit JAYTEC:READ retrieval sequence,
+                # not provider/model fallbacks. A 404/NotFound from one declared
+                # web-fetch engine may advance to the next declared engine while
+                # preserving the exact reviewer model and provider fallback=false.
+                # Any other exception remains fail-closed immediately.
+                if not _provider_route_unavailable(exc):
+                    raise
+                attempts.append(
+                    {
+                        "engine": engine,
+                        "status": "FETCH_ENGINE_UNAVAILABLE",
+                        "verified": False,
+                        "error_class": type(exc).__name__,
+                    }
+                )
+                continue
+
             last_result = result
             conclusion = result.get("conclusion")
             report = conclusion.get("READ_REPORT") if isinstance(conclusion, Mapping) else None
@@ -363,7 +382,32 @@ def build_deepseek_security_review_dispatch(
                 break
 
         if last_result is None:
-            raise RuntimeError("jaytec_read_no_fetch_attempts")
+            return {
+                "status": "FAILED_CLOSED",
+                "model": model,
+                "findings": [],
+                "evidence": [],
+                "confidence": "LOW",
+                "conclusion": None,
+                "unresolved_items": [
+                    "jaytec_read_all_fetch_engines_unavailable"
+                ],
+                "files_or_artifacts": [],
+                "architecture_changes_required": [],
+                "knowledge_writeback_proposal": [],
+                "side_effects_attempted": [],
+                "requested_operations": [],
+                "bridge_diagnostics": {
+                    "reviewer": "deepseek",
+                    "model": model,
+                    "provider_model": None,
+                    "model_identity_observed": False,
+                    "model_fallbacks": False,
+                    "provider_fallbacks": False,
+                    "web_retrieval_attempts": attempts,
+                    "notion_fallback": False,
+                },
+            }
         out = dict(last_result)
         diagnostics = dict(out.get("bridge_diagnostics") or {})
         diagnostics["web_retrieval_attempts"] = attempts
