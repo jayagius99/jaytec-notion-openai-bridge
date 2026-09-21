@@ -215,6 +215,20 @@ OPENROUTER_CLIENT = (
     else None
 )
 
+# WATCH model-specialist transport is deliberately isolated from the legacy
+# Gemini/OpenRouter door. This lets JAYTEC enable an explicitly approved
+# DeepSeek/Nemo route without silently enabling Gemini or any other OpenRouter
+# specialist. Individual specialist modes remain the final allow gates.
+WATCH_SPECIALIST_OPENROUTER_CLIENT = (
+    OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+    if OPENROUTER_API_KEY
+    and (
+        DEEPSEEK_PROVIDER_MODE == "ACTIVE"
+        or NEMO_PROVIDER_MODE == "ACTIVE"
+    )
+    else None
+)
+
 # Build dispatchers ONCE to avoid runtime drift and repeated guards.
 ENGINEERING_DISPATCH = (
     build_engineering_dispatch(openai_client=OPENAI_CLIENT, engineering_model=ENGINEERING_MODEL, circuit=CODEX_CIRCUIT)
@@ -246,12 +260,13 @@ GEMINI_DISPATCH = (
 
 DEEPSEEK_REVIEW_DISPATCH = (
     build_deepseek_security_review_dispatch(
-        openrouter_client=OPENROUTER_CLIENT,
+        openrouter_client=WATCH_SPECIALIST_OPENROUTER_CLIENT,
         model=DEEPSEEK_REVIEWER_MODEL,
         timeout_s=DEEPSEEK_REVIEWER_TIMEOUT_S,
         circuit=DEEPSEEK_REVIEWER_CIRCUIT,
     )
-    if OPENROUTER_CLIENT and DEEPSEEK_PROVIDER_MODE == "ACTIVE"
+    if WATCH_SPECIALIST_OPENROUTER_CLIENT is not None
+    and DEEPSEEK_PROVIDER_MODE == "ACTIVE"
     else DEEPSEEK_REVIEWER_CIRCUIT.guard(
         lambda _packet: (_ for _ in ()).throw(
             RuntimeError("DEEPSEEK_PROVIDER_DOOR_LOCKED_RESERVE")
@@ -261,12 +276,13 @@ DEEPSEEK_REVIEW_DISPATCH = (
 
 NEMO_DISPATCH = (
     build_nemo_dispatch(
-        openrouter_client=OPENROUTER_CLIENT,
+        openrouter_client=WATCH_SPECIALIST_OPENROUTER_CLIENT,
         model=NEMO_MODEL,
         timeout_s=NEMO_TIMEOUT_S,
         circuit=NEMO_CIRCUIT,
     )
-    if OPENROUTER_CLIENT and NEMO_PROVIDER_MODE == "ACTIVE"
+    if WATCH_SPECIALIST_OPENROUTER_CLIENT is not None
+    and NEMO_PROVIDER_MODE == "ACTIVE"
     else NEMO_CIRCUIT.guard(
         lambda _packet: (_ for _ in ()).throw(
             RuntimeError("NEMO_PROVIDER_DOOR_LOCKED_RESERVE")
@@ -326,10 +342,25 @@ def orchestration_status() -> str:
             "gemini_adapter_configured": bool(OPENROUTER_CLIENT),
             "gemini_provider_routing": "price",
             "gemini_circuit": GEMINI_CIRCUIT.snapshot(),
+            "watch_specialist_team": ["sol", "deepseek", "nemo"],
+            "watch_specialist_openrouter_transport_configured": bool(
+                WATCH_SPECIALIST_OPENROUTER_CLIENT
+            ),
             "deepseek_reviewer_model": DEEPSEEK_REVIEWER_MODEL,
-            "deepseek_reviewer_configured": bool(OPENROUTER_CLIENT),
+            "deepseek_provider_mode": DEEPSEEK_PROVIDER_MODE,
+            "deepseek_reviewer_configured": bool(
+                WATCH_SPECIALIST_OPENROUTER_CLIENT
+                and DEEPSEEK_PROVIDER_MODE == "ACTIVE"
+            ),
             "deepseek_reviewer_circuit": DEEPSEEK_REVIEWER_CIRCUIT.snapshot(),
-            "deepseek_reviewer_route_policy": "exact_model_bounded_same_model_provider_retry",
+            "deepseek_reviewer_route_policy": "exact_model_no_provider_fallback",
+            "nemo_model": NEMO_MODEL,
+            "nemo_provider_mode": NEMO_PROVIDER_MODE,
+            "nemo_adapter_configured": bool(
+                WATCH_SPECIALIST_OPENROUTER_CLIENT
+                and NEMO_PROVIDER_MODE == "ACTIVE"
+            ),
+            "nemo_route_policy": "exact_model_free_route_no_provider_fallback",
             "manus_adapter_configured": bool(MANUS_API_KEY),
             "manus_profile_policy": "lite_only_no_exceptions",
             "manus_runtime": "JAYTEC_MANUS_LITE_RUNTIME_V1",
