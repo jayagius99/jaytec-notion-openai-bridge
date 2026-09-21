@@ -35,7 +35,7 @@ WATCH_WORKFLOW_REF = (
     ".github/workflows/jaytec-watch.yml@refs/heads/main"
 )
 ALLOWED_EVENTS = frozenset({"schedule", "issues", "workflow_dispatch"})
-WATCH_OIDC_SCOPES = ("jaytec:watch-cycle", "jaytec:proving-grounds")
+WATCH_OIDC_SCOPES = ("jaytec:watch-cycle", "jaytec:proving-grounds", "jaytec:watch-controller-advice")
 
 
 def validate_watch_claims(claims: Mapping[str, Any]) -> tuple[bool, str]:
