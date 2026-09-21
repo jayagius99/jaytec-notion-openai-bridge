@@ -681,10 +681,12 @@ or create_pr; JAYTEC applies repository/ref/fence/mutation checks and may reject
 the request. Never place credentials, secrets, sealed provenance, or unrelated
 context in specialist intent.
 
-For the WATCH/Forge unattended lane the active JAYTEC assistance trio is:
-- specialist="sol" for primary engineering/reasoning;
-- specialist="deepseek" for independent/adversarial security review;
-- specialist="nemo" for bounded secondary engineering/reasoning review.
+For the WATCH/Forge unattended lane the active JAYTEC assistance set is:
+- specialist="nemo" for primary free engineering/reasoning when available;
+- specialist="deepseek" for independent/adversarial review;
+- specialist="sol" only as optional frontier reserve when the current JAYTEC
+  policy explicitly marks frontier escalation eligible or the owner explicitly
+  requested Sol. Sol is never default cognition, life support, or permission authority.
 Use specialist="github_broker" only for the separately bounded private-GitHub
 evidence/write broker. Do not request Gemini in this lane unless JAYTEC explicitly
 changes the current task policy. Specialist help always returns through JAYTEC to
