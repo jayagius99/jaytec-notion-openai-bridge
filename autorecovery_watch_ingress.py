@@ -1551,7 +1551,12 @@ def execute_watch_cycle(
                         worker_id=state.worker_id,
                         progress_marker=delivered_marker,
                     )
-                    github_broker = "HANDOFF_CONTINUED"
+                    github_broker = "HANDOFF_CONTINUED" if github_requests else "NONE"
+                    continuation_reason = (
+                        "JAYTEC_INTERNAL_HANDOFF_CONTINUED"
+                        if github_requests and not model_requests
+                        else "JAYTEC_INTERNAL_ASSISTANCE_CONTINUED"
+                    )
                     final = store.get(task_id)
                     return {
                         "status": "PASS",
@@ -1563,7 +1568,7 @@ def execute_watch_cycle(
                         "decision": {
                             "action": "NOOP_HEALTHY",
                             "effective_stop_reason": StopReason.RUNNING.value,
-                            "reason": "JAYTEC_INTERNAL_ASSISTANCE_CONTINUED",
+                            "reason": continuation_reason,
                             "recovery_route": None,
                         },
                         "assignment": {
