@@ -40,8 +40,9 @@ from relationship_policy import Actor
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
 EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
-SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V3"
+SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V4"
 SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V3.md")
+SOL_MEMORY_PATH = Path(__file__).with_name("JAYTEC_SANITIZED_SYSTEM_MEMORY_V1.md")
 SOL_PROVENANCE_MARKERS = (
     "genesis_event_0001", "pre-genesis", "pre genesis", "/jaytec/uren/pre-genesis",
     "uren_identity_genesis", "uren identity genesis", "god mode", "owner manual source index",
@@ -114,11 +115,19 @@ Never include markdown fences, comments, trailing prose, NaN/Infinity, or unesca
 
 def _sol_context_text() -> str:
     try:
-        text = SOL_CONTEXT_PATH.read_text(encoding="utf-8")
+        base = SOL_CONTEXT_PATH.read_text(encoding="utf-8")
+        memory = SOL_MEMORY_PATH.read_text(encoding="utf-8")
     except Exception as exc:
         raise RuntimeError("sol_sanitized_context_unavailable") from exc
-    if not text.strip():
+    if not base.strip() or not memory.strip():
         raise RuntimeError("sol_sanitized_context_empty")
+    text = (
+        base.rstrip()
+        + "\n\n---\n\n"
+        + "# DURABLE GITHUB-BACKED JAYTEC MEMORY\n\n"
+        + memory.strip()
+        + "\n"
+    )
     lowered = unicodedata.normalize("NFKC", text).lower()
     compact = "".join(ch for ch in lowered if ch.isalnum())
     if any(marker in lowered for marker in SOL_PROVENANCE_MARKERS):
