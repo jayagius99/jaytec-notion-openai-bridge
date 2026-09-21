@@ -82,7 +82,7 @@ class GitHubWatchOIDCTests(unittest.TestCase):
     def test_watch_identity_receives_only_watch_and_proving_grounds_scopes(self):
         self.assertEqual(
             set(WATCH_OIDC_SCOPES),
-            {"jaytec:watch-cycle", "jaytec:proving-grounds"},
+            {"jaytec:watch-cycle", "jaytec:proving-grounds", "jaytec:watch-controller-advice"},
         )
 
     def test_pull_request_identity_cannot_drive_recovery(self):
