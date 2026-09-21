@@ -13,13 +13,7 @@ from autorecovery_supervisor import (
     WorkerHealth,
     WorkerInvocation,
 )
-from manus_governance import build_minimal_task_packet
-from manus_runtime import (
-    ManusLiteRuntime,
-    _fits_manus_raw_message,
-    _prompt,
-    parse_start_request,
-)
+from manus_runtime import ManusLiteRuntime
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 CALLABLE_ROUTE_ID = "jaytec-manus-lite-v1"
@@ -274,28 +268,12 @@ class ManusLiteRecoveryInvoker:
                 ],
                 "title": f"JAYTEC recovery {checkpoint.task_id} fence {fencing_token}",
             }
+            # ManusLiteRuntime owns the final exact-message preflight because
+            # WATCH recovery compaction happens there. Do not reject the
+            # un-compacted generic packet here; that would bypass the bounded
+            # compaction path and consume recovery budget on a deterministic
+            # false positive.
             request_json = json.dumps(request, sort_keys=True)
-            # Deterministic local preflight before any Manus provider call.
-            # This mirrors the runtime packet construction without weakening or
-            # dropping constraints. A remaining oversize packet fails closed.
-            parsed = parse_start_request(request_json)
-            preflight_packet = build_minimal_task_packet(
-                task_id=parsed.task_id,
-                objective=parsed.objective,
-                scope=parsed.scope,
-                authority_source=parsed.authority_source,
-                allowed_actions=list(parsed.allowed_actions),
-                required_context=parsed.required_context,
-                constraints=list(parsed.constraints),
-                reference_ids=list(parsed.reference_ids),
-            )
-            if not _fits_manus_raw_message(_prompt(preflight_packet)):
-                return WorkerInvocation(
-                    accepted=False,
-                    worker_id=None,
-                    route=route,
-                    detail="MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE",
-                )
             result = self.runtime.start_task_idempotent(
                 request_json,
                 self.registry,
