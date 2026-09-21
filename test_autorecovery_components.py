@@ -1,4 +1,6 @@
+import hashlib
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 
 from autorecovery_components import (
@@ -167,6 +169,64 @@ class RuntimeComponentTests(unittest.TestCase):
         )
         rendered = _prompt(packet)
         self.assertLessEqual(len(rendered), MANUS_MAX_MESSAGE_CHARS)
+
+    def test_large_checkpoint_objective_uses_digest_and_bounded_excerpt(self):
+        runtime = FakeRuntime()
+        huge_objective = "OBJECTIVE-" + ("O" * 9000)
+        cp = replace(checkpoint(), objective=huge_objective).validate()
+        result = ManusLiteRecoveryInvoker(runtime, FakeRegistry()).invoke(
+            checkpoint=cp,
+            continuation_packet={"instruction": "Resume", "state": "S" * 1000},
+            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+            fencing_token=10,
+        )
+        self.assertTrue(result.accepted)
+        raw = runtime.requests[0]
+        self.assertNotIn("O" * 1000, raw)
+        self.assertIn(
+            hashlib.sha256(huge_objective.encode("utf-8")).hexdigest(),
+            raw,
+        )
+        self.assertIn("canonical_objective_excerpt", raw)
+        self.assertIn("Do not activate Forge", raw)
+
+        req = parse_start_request(raw)
+        packet = build_minimal_task_packet(
+            task_id=req.task_id,
+            objective=req.objective,
+            scope=req.scope,
+            authority_source=req.authority_source,
+            allowed_actions=list(req.allowed_actions),
+            required_context=req.required_context,
+            constraints=list(req.constraints),
+            reference_ids=list(req.reference_ids),
+        )
+        rendered = _prompt(packet)
+        self.assertLessEqual(len(rendered), MANUS_MAX_MESSAGE_CHARS)
+        self.assertLessEqual(
+            len(rendered.encode("utf-8")),
+            MANUS_MAX_MESSAGE_CHARS,
+        )
+
+    def test_uncompactable_constraint_fails_preflight_before_runtime_call(self):
+        runtime = FakeRuntime()
+        cp = replace(
+            checkpoint(),
+            active_constraints=("Z" * 7000,),
+        ).validate()
+        result = ManusLiteRecoveryInvoker(runtime, FakeRegistry()).invoke(
+            checkpoint=cp,
+            continuation_packet={"instruction": "Resume"},
+            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+            fencing_token=10,
+        )
+        self.assertFalse(result.accepted)
+        self.assertEqual(
+            result.detail,
+            "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE",
+        )
+        self.assertEqual(runtime.requests, [])
+        self.assertEqual(runtime.handoffs, [])
 
     def test_gate_directive_handoff_keeps_same_worker_and_lite_identity(self):
         runtime = FakeRuntime()
