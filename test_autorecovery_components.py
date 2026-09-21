@@ -229,6 +229,10 @@ class RuntimeComponentTests(unittest.TestCase):
         self.assertEqual(requirement["reference"], receipt)
         self.assertEqual(requirement["kind"], "audit_record")
         self.assertEqual(requirement["source"], "JAYTEC_MASTER_GATE_HANDOFF")
+        manifest_requirement = kwargs["handoff_context"]["gate_evidence_manifest_requirement"]
+        self.assertEqual(manifest_requirement["kind"], "artifact")
+        self.assertEqual(manifest_requirement["source"], "JAYTEC_GATE_EVIDENCE_MANIFEST")
+        self.assertIn("/gate_evidence/G03.json", manifest_requirement["reference_format"])
 
     def test_gate_result_receipt_match_is_exact(self):
         cp = checkpoint()
