@@ -882,6 +882,36 @@ class MemoryAssignmentStore:
     def get(self, task_id: str) -> Optional[AssignmentState]:
         return copy.deepcopy(self.state) if self.state.task_id == task_id else None
 
+    def advance_checkpoint_preserving_runtime(
+        self,
+        checkpoint: AssignmentCheckpoint,
+        *,
+        expected_current_checkpoint_number: int,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        checkpoint.validate()
+        state = self.state
+        if state.task_id != checkpoint.task_id:
+            raise AutoRecoveryError("ASSIGNMENT_NOT_FOUND")
+        if state.checkpoint.checkpoint_number != int(expected_current_checkpoint_number):
+            raise AutoRecoveryError("CHECKPOINT_ADVANCE_EXPECTATION_MISMATCH")
+        if checkpoint.checkpoint_number < state.checkpoint.checkpoint_number:
+            raise AutoRecoveryError("CHECKPOINT_ROLLBACK_FORBIDDEN")
+        if checkpoint.checkpoint_number == state.checkpoint.checkpoint_number:
+            return False
+        current = _aware(now or utcnow())
+        assert current is not None
+        self.state = AssignmentState(
+            **{
+                **asdict(state),
+                "checkpoint": checkpoint,
+                "stop_reason": state.stop_reason,
+                "worker_kind": state.worker_kind,
+                "updated_at": current,
+            }
+        )
+        return True
+
     def acquire_recovery_lease(
         self,
         task_id: str,
