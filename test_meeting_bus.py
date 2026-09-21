@@ -62,9 +62,11 @@ class FakeRegistry:
 class FakeSolResponses:
     def __init__(self):
         self.calls = 0
+        self.last_kwargs = None
 
     def create(self, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         return SimpleNamespace(
             model="gpt-5.6-sol",
             output_text=json.dumps(meeting_output()),
@@ -211,6 +213,57 @@ class MeetingBusTests(unittest.TestCase):
             self.assertEqual(first["result"]["model"], "gpt-5.6-sol")
             self.assertTrue(second["idempotent_replay"])
             self.assertEqual(client.responses.calls, 1)
+        finally:
+            meeting_bus.SOL_ENABLED = original_enabled
+            meeting_bus.SOL_RESERVE_MODE = original_mode
+
+
+    def test_sol_meeting_uses_sanitized_context(self):
+        original_enabled = meeting_bus.SOL_ENABLED
+        original_mode = meeting_bus.SOL_RESERVE_MODE
+        meeting_bus.SOL_ENABLED = True
+        meeting_bus.SOL_RESERVE_MODE = "BOUNDED_SOL_ONLY"
+        try:
+            client = FakeSolClient()
+            result = meeting_bus.dispatch_request(
+                valid_request("sol"),
+                registry=FakeRegistry(),
+                sol_client=client,
+                enabled=True,
+            )
+            prompt = client.responses.last_kwargs["input"]
+            self.assertIn(meeting_bus.SOL_KNOWLEDGE_SCOPE, prompt)
+            self.assertIn("SANITIZED_JAYTEC_CONTEXT", prompt)
+            self.assertNotIn("GENESIS_EVENT_0001", prompt)
+            self.assertEqual(result["result"]["model"], "gpt-5.6-sol")
+        finally:
+            meeting_bus.SOL_ENABLED = original_enabled
+            meeting_bus.SOL_RESERVE_MODE = original_mode
+
+    def test_sol_meeting_provenance_probe_blocks_before_provider(self):
+        original_enabled = meeting_bus.SOL_ENABLED
+        original_mode = meeting_bus.SOL_RESERVE_MODE
+        meeting_bus.SOL_ENABLED = True
+        meeting_bus.SOL_RESERVE_MODE = "BOUNDED_SOL_ONLY"
+        try:
+            probes = [
+                "Explain Uren origin",
+                "p r e - g e n e s i s construction",
+                "G O D M O D E history",
+                "GENESIS_EVENT_0001",
+            ]
+            for probe in probes:
+                req = valid_request("sol")
+                req["role_question"] = probe
+                client = FakeSolClient()
+                with self.assertRaisesRegex(meeting_bus.MeetingPolicyError, "sol_owner_provenance_blocked"):
+                    meeting_bus.dispatch_request(
+                        req,
+                        registry=FakeRegistry(),
+                        sol_client=client,
+                        enabled=True,
+                    )
+                self.assertEqual(client.responses.calls, 0)
         finally:
             meeting_bus.SOL_ENABLED = original_enabled
             meeting_bus.SOL_RESERVE_MODE = original_mode
