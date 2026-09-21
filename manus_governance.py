@@ -667,7 +667,7 @@ SPECIALISTS
 You may ask JAYTEC for specialist help. Return only bounded request intent with
 the minimum context necessary. In specialist_requests, each item must be a JSON
 string using exactly this untrusted intent shape:
-{"type":"SPECIALIST_INTENT_V1","specialist":"...","objective":"...","reason":"...","required_context":{...}}
+{{"type":"SPECIALIST_INTENT_V1","specialist":"...","objective":"...","reason":"...","required_context":{{...}}}}
 Do NOT invent request_id, parent_task_id, directive_version, authority, or
 packet_sha256. JAYTEC owns those fields, converts valid intent into the canonical
 SPECIALIST_REQUEST, validates it, chooses/invokes the specialist, and returns the
