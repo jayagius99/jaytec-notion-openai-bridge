@@ -96,6 +96,46 @@ def _authority(checkpoint: AssignmentCheckpoint) -> tuple[list[str], dict[str, s
     return [item.strip() for item in actions], normalized, mutation
 
 
+def master_gate_handoff_id(
+    checkpoint: AssignmentCheckpoint,
+    fencing_token: int,
+    gate_context: Mapping[str, Any],
+) -> str:
+    gate_id = str(gate_context.get("gate_id") or "").strip()
+    graph_sha = str(gate_context.get("graph_sha256") or "").strip().lower()
+    checkpoint_number = int(gate_context.get("checkpoint_number") or 0)
+    if (
+        not re.fullmatch(r"G[0-9]{2}", gate_id)
+        or not re.fullmatch(r"[0-9a-f]{64}", graph_sha)
+        or checkpoint_number != checkpoint.checkpoint_number
+        or fencing_token < 0
+    ):
+        raise ValueError("MASTER_GATE_CONTEXT_INVALID")
+    return (
+        f"{checkpoint.task_id}:fence:{fencing_token}:"
+        f"master-gate:{gate_id}:{graph_sha[:16]}"
+    )
+
+
+def master_gate_result_has_receipt(
+    result: Mapping[str, Any],
+    receipt: str,
+) -> bool:
+    evidence = result.get("evidence")
+    if not isinstance(evidence, list):
+        return False
+    for raw in evidence:
+        if not isinstance(raw, Mapping):
+            continue
+        if (
+            str(raw.get("kind") or "") == "jaytec_master_gate_result"
+            and str(raw.get("source") or "") == "JAYTEC_MASTER_GATE_HANDOFF"
+            and str(raw.get("reference") or "") == receipt
+        ):
+            return True
+    return False
+
+
 class ManusLiteRecoveryInvoker:
     """Start one idempotent, fenced Manus Lite continuation worker."""
 
@@ -334,22 +374,24 @@ class ManusLiteRecoveryInvoker:
         try:
             _actions, connectors, mutation = _authority(checkpoint)
             gate_id = str(gate_context.get("gate_id") or "").strip()
-            graph_sha = str(gate_context.get("graph_sha256") or "").strip()
-            checkpoint_number = int(gate_context.get("checkpoint_number") or 0)
-            if (
-                not re.fullmatch(r"G[0-9]{2}", gate_id)
-                or not re.fullmatch(r"[0-9a-f]{64}", graph_sha)
-                or checkpoint_number != checkpoint.checkpoint_number
-            ):
-                raise ValueError("MASTER_GATE_CONTEXT_INVALID")
-            digest = hashlib.sha256(
-                json.dumps(
-                    dict(gate_context),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode("utf-8")
-            ).hexdigest()
+            graph_sha = str(gate_context.get("graph_sha256") or "").strip().lower()
+            hid = master_gate_handoff_id(
+                checkpoint,
+                fencing_token,
+                gate_context,
+            )
+            enriched_context = dict(gate_context)
+            enriched_context["result_receipt_requirement"] = {
+                "kind": "jaytec_master_gate_result",
+                "source": "JAYTEC_MASTER_GATE_HANDOFF",
+                "reference": hid,
+                "instruction": (
+                    "Every terminal structured result for this master gate MUST "
+                    "include an evidence item with exactly this kind, source and "
+                    "reference. Without this receipt JAYTEC treats the result as "
+                    "pre-gate/stale and will not accept it."
+                ),
+            }
             result = self.runtime.continue_task_handoff(
                 worker_id,
                 scope="jaytec_delegated_task",
@@ -357,11 +399,8 @@ class ManusLiteRecoveryInvoker:
                 current_task_authorized=True,
                 connector_purposes=connectors,
                 connector_mutation_authorized=mutation,
-                handoff_id=(
-                    f"{checkpoint.task_id}:fence:{fencing_token}:"
-                    f"master-gate:{gate_id}:{digest[:16]}"
-                ),
-                handoff_context=dict(gate_context),
+                handoff_id=hid,
+                handoff_context=enriched_context,
             )
         except Exception as exc:
             return WorkerInvocation(
@@ -410,8 +449,14 @@ class ManusLiteRecoveryInvoker:
 class ManusLiteHealthProbe:
     """Translate Manus task state into JAYTEC fenced-worker health."""
 
-    def __init__(self, runtime: ManusLiteRuntime) -> None:
+    def __init__(
+        self,
+        runtime: ManusLiteRuntime,
+        *,
+        required_result_receipt: str | None = None,
+    ) -> None:
         self.runtime = runtime
+        self.required_result_receipt = str(required_result_receipt or "").strip() or None
 
     def wait_for_healthy(
         self,
@@ -443,6 +488,20 @@ class ManusLiteHealthProbe:
             )
         if state == "VERIFIED_COMPLETE":
             result = status.get("result") if isinstance(status.get("result"), Mapping) else {}
+            if (
+                self.required_result_receipt is not None
+                and not master_gate_result_has_receipt(
+                    result,
+                    self.required_result_receipt,
+                )
+            ):
+                return WorkerHealth(
+                    healthy=True,
+                    worker_id=worker_id,
+                    heartbeat_at=_now(),
+                    progress_marker="MANUS_PENDING_GATE_RECEIPT",
+                    detail="STALE_PRE_GATE_TERMINAL_IGNORED",
+                )
             result_state = str(result.get("status") or "UNKNOWN")
             digest = hashlib.sha256(
                 json.dumps(result, sort_keys=True, default=str).encode("utf-8")
@@ -486,5 +545,7 @@ __all__ = [
     "JsonLogRecoveryNotifier",
     "ManusLiteHealthProbe",
     "ManusLiteRecoveryInvoker",
+    "master_gate_handoff_id",
+    "master_gate_result_has_receipt",
     "ObservedRefsCheckpointVerifier",
 ]
