@@ -24,8 +24,10 @@ from reliability_registry import TransientAwareRegistry
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
+    EXPECTED_SOL_MODEL,
     build_codex_dispatch,
     build_gemini_dispatch,
+    build_sol_dispatch,
 )
 from workload_read_model import WorkloadReadModel
 
@@ -35,6 +37,7 @@ LEGACY_SYNC_PROVIDER_TIMEOUT_S = float(os.environ.get("LEGACY_SYNC_PROVIDER_TIME
 JAYTEC_READ_SYNC_TIMEOUT_S = float(os.environ.get("JAYTEC_READ_SYNC_TIMEOUT_S", "45"))
 DURABLE_CODEX_TIMEOUT_S = float(os.environ.get("DURABLE_CODEX_TIMEOUT_S", "90"))
 DURABLE_GEMINI_TIMEOUT_S = float(os.environ.get("DURABLE_GEMINI_TIMEOUT_S", "120"))
+DURABLE_SOL_TIMEOUT_S = float(os.environ.get("DURABLE_SOL_TIMEOUT_S", "120"))
 DURABLE_WORKER_ENABLED = os.environ.get(
     "DURABLE_WORKER_ENABLED",
     "1" if legacy_server.RUNTIME_MODE == "production" else "0",
@@ -306,6 +309,7 @@ def create_mcp_app():
     guardian: Optional[ReliabilityGuardian] = None
     guardian_loop: Optional[GuardianBackgroundLoop] = None
     workload_read_model: Optional[WorkloadReadModel] = None
+    durable_sol_circuit: Optional[CircuitBreaker] = None
     durable_codex_circuit: Optional[CircuitBreaker] = None
     durable_gemini_circuit: Optional[CircuitBreaker] = None
 
@@ -335,6 +339,10 @@ def create_mcp_app():
             if legacy_server.OPENROUTER_API_KEY
             else None
         )
+        durable_sol_circuit = CircuitBreaker(
+            failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
+            reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
+        )
         durable_codex_circuit = CircuitBreaker(
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
@@ -343,6 +351,27 @@ def create_mcp_app():
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
         )
+        if durable_openai is not None:
+            durable_sol_dispatch = _retryable_single_attempt_dispatch(
+                build_sol_dispatch(
+                    openai_client=durable_openai,
+                    sol_model=legacy_server.SOL_MODEL,
+                    circuit=durable_sol_circuit,
+                    enabled=legacy_server.SOL_PRIMARY_ENABLED,
+                    cost_authorized=legacy_server.SOL_PRIMARY_COST_AUTHORIZED,
+                    sol_timeout_s=DURABLE_SOL_TIMEOUT_S,
+                    reasoning_effort=legacy_server.SOL_REASONING_EFFORT,
+                    max_output_tokens=legacy_server.SOL_OUTPUT_TOKEN_CAP,
+                ),
+                model=EXPECTED_SOL_MODEL,
+            )
+        else:
+            durable_sol_dispatch = durable_sol_circuit.guard(
+                lambda _packet: (_ for _ in ()).throw(
+                    RuntimeError("OPENAI_API_KEY is not configured for durable Sol primary")
+                )
+            )
+
         if durable_openrouter is not None:
             durable_codex_dispatch = _retryable_single_attempt_dispatch(
                 build_codex_dispatch(
@@ -384,6 +413,7 @@ def create_mcp_app():
                 idempotency_store="postgres",
                 codex_dispatch=durable_codex_dispatch,
                 gemini_dispatch=durable_gemini_dispatch,
+                sol_dispatch=durable_sol_dispatch,
             )
             value = json.loads(text)
             if not isinstance(value, dict):
@@ -484,6 +514,7 @@ def create_mcp_app():
             "guardian_loop_enabled": GUARDIAN_LOOP_ENABLED,
             "guardian_loop_alive": bool(guardian_loop and guardian_loop.alive),
             "guardian_runtime": "ReliabilityGuardian",
+            "durable_sol_circuit": durable_sol_circuit.snapshot() if durable_sol_circuit else None,
             "durable_codex_circuit": durable_codex_circuit.snapshot() if durable_codex_circuit else None,
             "durable_gemini_circuit": durable_gemini_circuit.snapshot() if durable_gemini_circuit else None,
             "stats": queue.stats(),
