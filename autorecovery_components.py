@@ -111,9 +111,20 @@ def master_gate_handoff_id(
         or fencing_token < 0
     ):
         raise ValueError("MASTER_GATE_CONTEXT_INVALID")
+    controller_review_id = str(
+        gate_context.get("controller_review_id") or ""
+    ).strip().lower()
+    if controller_review_id and not re.fullmatch(r"[0-9a-f]{64}", controller_review_id):
+        raise ValueError("MASTER_GATE_CONTROLLER_REVIEW_ID_INVALID")
+    suffix = (
+        ":review:" + controller_review_id[:16]
+        if controller_review_id
+        else ""
+    )
     return (
         f"{checkpoint.task_id}:fence:{fencing_token}:"
         f"master-gate:{gate_id}:{graph_sha[:16]}"
+        + suffix
     )
 
 
@@ -392,6 +403,40 @@ class ManusLiteRecoveryInvoker:
                     "pre-gate/stale and will not accept it."
                 ),
             }
+            enriched_context["gate_evidence_manifest_requirement"] = {
+                "kind": "artifact",
+                "source": "JAYTEC_GATE_EVIDENCE_MANIFEST",
+                "reference_format": (
+                    "github://jayagius99/jaytec-work-engine-v2-g1/"
+                    "<40-char-commit-sha>/gate_evidence/"
+                    + gate_id
+                    + ".json"
+                ),
+                "instruction": (
+                    "Every terminal SUCCESS for this gate MUST include exactly "
+                    "one artifact evidence item with this source and a reference "
+                    "matching reference_format. The manifest must use "
+                    "FORGE_GATE_EVIDENCE_V1 and cover every gate evidence requirement."
+                ),
+            }
+            controller_review_id = str(
+                enriched_context.get("controller_review_id") or ""
+            ).strip()
+            if controller_review_id:
+                enriched_context["assignment_controller_redirect"] = {
+                    "action": str(
+                        enriched_context.get("controller_action") or ""
+                    )[:40],
+                    "review_id": controller_review_id,
+                    "direction": str(
+                        enriched_context.get("controller_direction") or ""
+                    )[:1600],
+                    "instruction": (
+                        "This is a ChatGPT assignment-owner directional correction. "
+                        "Continue this SAME fenced task from the current gate and "
+                        "return fresh evidence/manifest bound to this handoff receipt."
+                    ),
+                }
             result = self.runtime.continue_task_handoff(
                 worker_id,
                 scope="jaytec_delegated_task",
