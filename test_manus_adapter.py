@@ -319,6 +319,9 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertIn("JAYTEC_MANUS_GOVERNANCE_V1", message)
         self.assertIn("CURRENT DELEGATED TASK", message)
         self.assertIn("Return a test result.", message)
+        self.assertTrue(message.startswith("lite\n\n"))
+        self.assertEqual(message.splitlines()[0], "lite")
+        self.assertEqual(ma.MANUS_DIRECT_RECIPIENT, "lite")
 
     def test_create_task_explicitly_pins_lite_project_and_connector_ids(self):
         client = ma.ManusClient(api_key="x")
@@ -360,6 +363,8 @@ class ManusAdapterTests(unittest.TestCase):
             ["gh-id", "neon-id", "render-id"],
         )
         self.assertIn("JAYTEC_MANUS_GOVERNANCE_V1", payload["message"]["content"])
+        self.assertTrue(payload["message"]["content"].startswith("lite\n\n"))
+        self.assertEqual(payload["message"]["content"].splitlines()[0], "lite")
 
     def test_create_task_profile_mismatch_stops_and_fails(self):
         client = ma.ManusClient(api_key="x")
@@ -441,6 +446,8 @@ class ManusAdapterTests(unittest.TestCase):
             ["gh-id", "neon-id", "render-id"],
         )
         self.assertIn("JAYTEC_MANUS_GOVERNANCE_V1", payload["message"]["content"])
+        self.assertTrue(payload["message"]["content"].startswith("lite\n\n"))
+        self.assertEqual(payload["message"]["content"].splitlines()[0], "lite")
 
     def test_send_message_with_no_connectors_clears_existing_set(self):
         auth = authorize_manus_dispatch(
@@ -491,6 +498,17 @@ class ManusAdapterTests(unittest.TestCase):
 
         self.assertTrue(captured["payload"]["clear_connectors"])
         self.assertNotIn("connectors", captured["payload"]["message"])
+        self.assertTrue(captured["payload"]["message"]["content"].startswith("lite\n\n"))
+
+    def test_direct_recipient_is_always_exact_lite_even_if_task_text_names_manus(self):
+        message = ma.ManusClient._governed_message(
+            _route(),
+            "Manus, inspect this bounded task. The word Manus may appear as subject text.",
+        )
+        self.assertEqual(message.splitlines()[0], "lite")
+        self.assertTrue(message.startswith("lite\n\n"))
+        self.assertIn("Manus, inspect this bounded task.", message)
+        self.assertEqual(ma.MANUS_DIRECT_RECIPIENT, "lite")
 
     def test_old_non_lite_task_is_never_continued(self):
         client = ma.ManusClient(api_key="x")
