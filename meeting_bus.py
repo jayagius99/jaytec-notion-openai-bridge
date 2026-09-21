@@ -20,6 +20,12 @@ from openai import OpenAI
 
 from idempotency_postgres import PostgresExecutionRegistry
 from orchestration import ExecutionRegistry
+from specialist_adapters import (
+    EXPECTED_SOL_MODEL,
+    SOL_KNOWLEDGE_SCOPE,
+    _sol_context_text,
+    _sol_packet_provenance_violation,
+)
 from worker_json import WorkerJsonError, json_object_with_diagnostics
 
 MEETING_SCOPE = "JAYTEC_MEETING_ONLY"
@@ -39,7 +45,7 @@ EXPECTED_WORKFLOW_PATH = ".github/workflows/meeting-specialist-bus.yml"
 ENGINEER_MODEL = os.environ.get(
     "MEETING_ENGINEER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free"
 ).strip()
-SOL_MODEL = os.environ.get("MEETING_SOL_MODEL", "gpt-5.6-sol").strip()
+SOL_MODEL = os.environ.get("MEETING_SOL_MODEL", EXPECTED_SOL_MODEL).strip()
 REVIEWER_MODEL = os.environ.get(
     "MEETING_REVIEWER_MODEL", "deepseek/deepseek-v4-flash-0731:free"
 ).strip()
@@ -243,6 +249,20 @@ ROLE-SPECIFIC QUESTION:
     )
 
 
+def _sol_participant_prompt(request: Mapping[str, Any]) -> str:
+    if _sol_packet_provenance_violation(request):
+        raise MeetingPolicyError("sol_owner_provenance_blocked")
+    context = _sol_context_text()
+    digest = hashlib.sha256(context.encode("utf-8")).hexdigest()
+    return (
+        _participant_prompt(request)
+        + "\n\nSOL_KNOWLEDGE_SCOPE: " + SOL_KNOWLEDGE_SCOPE
+        + "\nSANITIZED_JAYTEC_CONTEXT_SHA256: " + digest
+        + "\nSANITIZED_JAYTEC_CONTEXT:\n" + context
+        + "\nDo not request, infer, reconstruct, enumerate, or retain sealed owner-only identity provenance, private construction history, or hidden activation-history material."
+    )
+
+
 def _usage(usage: Any) -> dict[str, int]:
     if usage is None:
         return {}
@@ -337,7 +357,7 @@ def _call_sol(request: Mapping[str, Any], client: Optional[OpenAI] = None):
         raise MeetingPolicyError("sol_meeting_lane_cost_locked")
     if SOL_RESERVE_MODE != "BOUNDED_SOL_ONLY":
         raise MeetingPolicyError("sol_reserve_door_not_bounded_open")
-    if SOL_MODEL != "gpt-5.6-sol":
+    if SOL_MODEL != EXPECTED_SOL_MODEL:
         raise MeetingPolicyError("sol_model_lock_mismatch")
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if client is None and not api_key:
@@ -346,7 +366,7 @@ def _call_sol(request: Mapping[str, Any], client: Optional[OpenAI] = None):
     try:
         response = client.responses.create(
             model=SOL_MODEL,
-            input=_participant_prompt(request),
+            input=_sol_participant_prompt(request),
             reasoning={"effort": os.environ.get("MEETING_SOL_REASONING_EFFORT", "medium")},
             max_output_tokens=min(
                 int(request.get("max_output_tokens", 1800)),
