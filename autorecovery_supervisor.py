@@ -1073,11 +1073,27 @@ class AutoRecoverySupervisor:
 
         parts = marker.split(":", 3)
         result_state = parts[1] if len(parts) > 1 else "UNKNOWN"
+        state = self.store.get(task_id)
+        if state is None:
+            return RecoveryDecision(
+                SupervisorAction.NOTIFY_JAY,
+                StopReason.WAITING_FOR_REQUIRED_INPUT,
+                "CANONICAL_ASSIGNMENT_STATE_NOT_FOUND",
+            )
 
         if result_state == "SUCCESS":
-            stop_reason = StopReason.COMPLETED
-            action = SupervisorAction.STOP_WATCH
-            reason = "CALLABLE_WORKER_SUCCESS_VERIFIED"
+            is_master_gate = bool(
+                re.match(r"^G[0-9]{2}/", state.checkpoint.current_phase)
+                and 100 <= state.checkpoint.checkpoint_number < 200
+            )
+            if is_master_gate:
+                stop_reason = StopReason.WAITING_FOR_DEPENDENCY
+                action = SupervisorAction.HOLD
+                reason = "MASTER_GATE_RESULT_READY"
+            else:
+                stop_reason = StopReason.COMPLETED
+                action = SupervisorAction.STOP_WATCH
+                reason = "CALLABLE_WORKER_SUCCESS_VERIFIED"
         elif result_state in {"NEEDS_JAYTEC", "PARTIAL_SUCCESS"}:
             stop_reason = StopReason.WAITING_FOR_DEPENDENCY
             action = SupervisorAction.HOLD
