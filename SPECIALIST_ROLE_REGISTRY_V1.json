@@ -5,15 +5,16 @@
   "registration_policy": "FAIL_CLOSED",
   "specialists": {
     "sol": {
-      "display_name": "JAYTEC Premium Engineering Reserve",
+      "display_name": "JAYTEC Sol Primary / Core Triad Engineering Specialist",
       "provider_model": "gpt-5.6-sol",
-      "primary_role": "premium_engineering_reserve",
+      "primary_role": "primary_engineering_reasoning_core_triad",
       "allowed_task_classes": [
         "coding",
         "engineering",
         "implementation_analysis",
         "code_review",
         "technical_validation",
+        "architecture_reasoning",
         "meeting_participation",
         "owner_explicit_sol_task"
       ],
@@ -22,13 +23,16 @@
         "self_initiated_change",
         "self_approval",
         "authority_change",
-        "unscoped_research"
+        "unscoped_research",
+        "owner_provenance_reconstruction"
       ],
       "meeting_participant": true,
       "can_authorize_jaytec_change": false,
       "can_self_initiate": false,
-      "cost_profile": "paid_reserve",
-      "activation_policy": "explicitly_funded_or_owner_requested"
+      "cost_profile": "owner_authorized_paid_primary",
+      "activation_policy": "registered_primary_but_live_calls_fail_closed_until_owner_cost_gate_open",
+      "fallback_policy": "fail_closed_no_silent_model_or_provider_substitution",
+      "knowledge_scope": "JAYTEC_SANITIZED_CORE_V1"
     },
     "gemini": {
       "display_name": "JAYTEC Premium Gemini Review Reserve",
@@ -77,10 +81,10 @@
       "can_self_initiate": false
     },
     "engineer": {
-      "display_name": "JAYTEC Primary Engineering Specialist",
+      "display_name": "JAYTEC Zero-Cost Engineering Backup",
       "provider_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
       "provider": "openrouter",
-      "primary_role": "coding_engineering",
+      "primary_role": "explicit_zero_cost_engineering_backup",
       "allowed_task_classes": [
         "coding",
         "engineering",
@@ -101,7 +105,7 @@
       "can_authorize_jaytec_change": false,
       "can_self_initiate": false,
       "cost_profile": "free_primary",
-      "fallback_policy": "fail_closed_no_silent_model_substitution"
+      "fallback_policy": "explicit_route_only_no_silent_substitution_for_sol"
     },
     "reviewer": {
       "display_name": "JAYTEC Independent Reviewer",
