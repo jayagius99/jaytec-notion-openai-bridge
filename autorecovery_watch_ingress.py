@@ -1101,6 +1101,108 @@ def execute_watch_cycle(
         broker_context=broker_context,
     )
     github_broker = "AVAILABLE" if broker_context else "NONE"
+
+    # A malformed specialist request is rejected before dispatch. Do not let the
+    # generic recovery supervisor turn that untrusted terminal packet into a new
+    # worker/fence. Give the SAME Lite task one deterministic correction handoff.
+    governance_repair_reason = (
+        "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+        "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID"
+    )
+    governance_repair_marker = "MANUS_GOVERNANCE_REPAIR_SENT"
+    if state.worker_id:
+        try:
+            governance_probe = manus_runtime.task_status_readonly(state.worker_id)
+        except Exception:
+            governance_probe = {}
+        if (
+            isinstance(governance_probe, Mapping)
+            and str(governance_probe.get("status") or "") == "FAILED_CLOSED"
+            and str(governance_probe.get("reason") or "") == governance_repair_reason
+        ):
+            if state.stop_reason is not StopReason.RUNNING:
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": "MANUS_GOVERNANCE_REPAIR_REQUIRES_RUNNING_ASSIGNMENT",
+                }
+            if str(state.progress_marker or "").startswith(governance_repair_marker):
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": "MANUS_GOVERNANCE_REPAIR_NO_FRESH_RESULT",
+                }
+            repair = invoker.continue_governance_repair(
+                checkpoint=state.checkpoint,
+                worker_id=state.worker_id,
+                fencing_token=state.fencing_token,
+                rejected_reason=governance_repair_reason,
+            )
+            if not repair.accepted:
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": str(
+                        repair.detail or "MANUS_GOVERNANCE_REPAIR_FAILED"
+                    )[:500],
+                }
+            store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                progress_marker=(
+                    governance_repair_marker
+                    + ":"
+                    + (
+                        "REPLAY"
+                        if repair.detail == "MANUS_GOVERNANCE_REPAIR_REPLAY"
+                        else "CONTINUED"
+                    )
+                ),
+            )
+            final = store.get(task_id)
+            return {
+                "status": "PASS",
+                "task_id": task_id,
+                "bootstrapped": bootstrapped,
+                "checkpoint_advanced": checkpoint_advanced,
+                "master_gate": master_gate,
+                "gate_handoff": "NOT_NEEDED",
+                "governance_repair": repair.detail,
+                "health_refreshed": False,
+                "github_broker": github_broker,
+                "local_preflight_refunded": local_preflight_refunded,
+                "decision": {
+                    "action": "NOOP_HEALTHY",
+                    "effective_stop_reason": StopReason.RUNNING.value,
+                    "reason": "SAME_WORKER_GOVERNANCE_REPAIR_SENT",
+                    "recovery_route": None,
+                },
+                "assignment": {
+                    "stop_reason": final.stop_reason.value if final else None,
+                    "worker_kind": final.worker_kind.value if final else None,
+                    "worker_id": final.worker_id if final else None,
+                    "worker_route": final.worker_route if final else None,
+                    "checkpoint_number": (
+                        final.checkpoint.checkpoint_number if final else None
+                    ),
+                    "repo": final.checkpoint.repo if final else None,
+                    "branch": final.checkpoint.branch if final else None,
+                    "verified_head": (
+                        final.checkpoint.commit_head if final else None
+                    ),
+                    "recovery_attempts": (
+                        final.recovery_attempts if final else None
+                    ),
+                    "fencing_token": final.fencing_token if final else None,
+                    "progress_marker": (
+                        final.progress_marker if final else None
+                    ),
+                    "completed": final.completed if final else None,
+                    "last_error": final.last_error if final else None,
+                },
+            }
+
     required_gate_receipt = (
         master_gate_handoff_id(
             state.checkpoint,
