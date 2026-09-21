@@ -392,6 +392,23 @@ class ManusLiteRecoveryInvoker:
                     "pre-gate/stale and will not accept it."
                 ),
             }
+            enriched_context["gate_evidence_manifest_requirement"] = {
+                "kind": "artifact",
+                "source": "JAYTEC_GATE_EVIDENCE_MANIFEST",
+                "reference_format": (
+                    "github://jayagius99/jaytec-work-engine-v2-g1/"
+                    "<40-char-commit-sha>/gate_evidence/"
+                    + gate_id
+                    + ".json"
+                ),
+                "instruction": (
+                    "Every terminal SUCCESS for this gate MUST include exactly one "
+                    "artifact evidence item whose source is JAYTEC_GATE_EVIDENCE_MANIFEST "
+                    "and whose reference matches the reference_format after the bounded "
+                    "GitHub broker has committed the manifest. The manifest must use "
+                    "FORGE_GATE_EVIDENCE_V1 and cover every evidence requirement."
+                ),
+            }
             result = self.runtime.continue_task_handoff(
                 worker_id,
                 scope="jaytec_delegated_task",
