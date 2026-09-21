@@ -17,8 +17,11 @@ from typing import Any, Protocol
 from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
+from starlette.middleware import Middleware
+import uvicorn
 
 import server as legacy_server
+from meeting_bus import MeetingBusMiddleware
 from circuit_breaker import CircuitBreaker
 from orchestration import ExecutionRegistry
 from notion_courier_policy import (
@@ -265,15 +268,28 @@ def assert_courier_startup_invariants(mcp: FastMCP) -> None:
     asyncio.run(_assert_one_tool_catalog(mcp))
 
 
+def create_http_app(mcp: FastMCP | None = None):
+    """Expose the locked Notion courier plus the separate authenticated meeting bus.
+
+    MeetingBusMiddleware is a raw HTTP surface only; it does not add MCP tools
+    to Notion and therefore cannot widen the one-tool courier catalog.
+    """
+    server = mcp or create_mcp_app()
+    return server.http_app(
+        middleware=[Middleware(MeetingBusMiddleware)],
+        stateless_http=True,
+        host_origin_protection=False,
+    )
+
+
 def main() -> None:
     mcp = create_mcp_app()
     assert_courier_startup_invariants(mcp)
-    mcp.run(
-        transport="http",
+    uvicorn.run(
+        create_http_app(mcp),
         host="0.0.0.0",
         port=legacy_server.PORT,
-        stateless_http=True,
-        host_origin_protection=False,
+        log_level="info",
     )
 
 

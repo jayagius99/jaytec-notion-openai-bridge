@@ -209,6 +209,63 @@ class TestNotionCourierServer(unittest.TestCase):
         self.assertIn("never reason", description)
         self.assertIn("never", description)
 
+    def test_http_app_restores_meeting_bus_without_widening_mcp_catalog(self):
+        app, _ = self._make_app()
+        http_app = s.create_http_app(app)
+        tools = asyncio.run(app.list_tools())
+        self.assertEqual([tool.name for tool in tools], ["collaborate"])
+        middleware_classes = [
+            getattr(item, "cls", None)
+            for item in getattr(http_app, "user_middleware", [])
+        ]
+        self.assertIn(s.MeetingBusMiddleware, middleware_classes)
+
+    def test_meeting_bus_path_is_intercepted_before_notion_mcp_auth(self):
+        app, _ = self._make_app()
+        http_app = s.create_http_app(app)
+
+        async def exercise():
+            sent = []
+            received = False
+
+            async def receive():
+                nonlocal received
+                if not received:
+                    received = True
+                    return {
+                        "type": "http.request",
+                        "body": b"",
+                        "more_body": False,
+                    }
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                sent.append(message)
+
+            await http_app(
+                {
+                    "type": "http",
+                    "asgi": {"version": "3.0", "spec_version": "2.3"},
+                    "http_version": "1.1",
+                    "method": "POST",
+                    "scheme": "https",
+                    "path": "/meeting-bus/v1/status",
+                    "raw_path": b"/meeting-bus/v1/status",
+                    "query_string": b"",
+                    "headers": [],
+                    "client": ("127.0.0.1", 12345),
+                    "server": ("testserver", 443),
+                    "root_path": "",
+                },
+                receive,
+                send,
+            )
+            return sent
+
+        sent = asyncio.run(exercise())
+        start = next(message for message in sent if message["type"] == "http.response.start")
+        self.assertEqual(start["status"], 401)
+
 
     def test_startup_invariants_accept_exact_one_tool_catalog(self):
         app, _ = self._make_app()
