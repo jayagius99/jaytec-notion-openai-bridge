@@ -82,6 +82,49 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet(); p["specialist_plan"] = ["codex", "codex"]
         self.assertIn("duplicate_specialist", validate_packet(p).errors)
 
+    def test_sol_requires_explicit_owner_authority(self):
+        p = base_packet()
+        p["specialist_plan"] = ["sol"]
+        p["max_fanout"] = 1
+        p["max_retries"] = 0
+        p["side_effect_policy"] = "none"
+        p["workflow_id"] = "JAYTEC_OWNER_SOL_EXPLICIT_REVIEW"
+        p["required_context"] = {
+            "authority_controller": "CHATGPT_OPENAI_LEAD",
+            "specialist_authority": "SUBORDINATE",
+        }
+        self.assertIn("sol_owner_explicit_request_required", validate_packet(p).errors)
+
+    def test_sol_valid_only_with_owner_gate_zero_retries_and_no_side_effects(self):
+        p = base_packet()
+        p["specialist_plan"] = ["sol"]
+        p["max_fanout"] = 1
+        p["max_retries"] = 0
+        p["side_effect_policy"] = "none"
+        p["workflow_id"] = "JAYTEC_OWNER_SOL_EXPLICIT_REVIEW"
+        p["required_context"] = {
+            "authority_controller": "CHATGPT_OPENAI_LEAD",
+            "specialist_authority": "SUBORDINATE",
+            "owner_explicit_sol_request": True,
+        }
+        self.assertTrue(validate_packet(p).ok)
+
+    def test_sol_rejects_retry_and_side_effect_policy(self):
+        p = base_packet()
+        p["specialist_plan"] = ["sol"]
+        p["max_fanout"] = 1
+        p["max_retries"] = 1
+        p["side_effect_policy"] = "staging_only"
+        p["workflow_id"] = "JAYTEC_OWNER_SOL_EXPLICIT_REVIEW"
+        p["required_context"] = {
+            "authority_controller": "CHATGPT_OPENAI_LEAD",
+            "specialist_authority": "SUBORDINATE",
+            "owner_explicit_sol_request": True,
+        }
+        errors = validate_packet(p).errors
+        self.assertIn("sol_retries_forbidden", errors)
+        self.assertIn("sol_side_effects_forbidden", errors)
+
     def test_oversized_context(self):
         p = base_packet(); p["required_context"] = {"x": "a" * 300000}
         self.assertIn("oversized_context", validate_packet(p).errors)

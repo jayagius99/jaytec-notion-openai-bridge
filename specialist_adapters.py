@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import urllib.request
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping
 
 from openai import OpenAI
@@ -35,6 +37,8 @@ from worker_json import WorkerJsonError, json_object, json_object_with_diagnosti
 EXPECTED_CODEX_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 EXPECTED_REVIEWER_MODEL = "deepseek/deepseek-v4-flash-0731:free"
 EXPECTED_GEMINI_MODEL = EXPECTED_REVIEWER_MODEL  # legacy TaskPacket wire role compatibility
+EXPECTED_SOL_MODEL = "openai/gpt-5.6-sol"
+SOL_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 SPECIALIST_AUTHORITY_CONTRACT = """JAYTEC SPECIALIST AUTHORITY CONTRACT
 - Jay is owner/root authority.
@@ -65,6 +69,30 @@ REQUIRED SHAPE (types are strict):
 - requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
 
 Never include markdown fences or surrounding prose. Never include credentials or secrets."""
+
+SOL_RESERVE_CONTRACT = SPECIALIST_AUTHORITY_CONTRACT + """\nJAYTEC_SOL_RESERVE_MODE v1.0.0
+ROLE: PREMIUM HARD-DECISION / ENGINEERING RESERVE.
+Activation is allowed only for an explicit owner request routed by ChatGPT.
+This is a zero-out-of-pocket reserve. Never request purchases, top-ups, paid fallback,
+alternate paid models/providers, or any side effect. If the free-credit route is
+unavailable, return/propagate failure closed.
+
+Return ONLY one valid JSON object (no markdown fences and no surrounding prose).
+Preserve TASK_ID and SUBTASK_ID.
+REQUIRED SHAPE:
+- status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
+- model: string exactly openai/gpt-5.6-sol
+- findings: JSON array of strings
+- evidence: JSON array of strings
+- confidence: string|null
+- conclusion: any JSON or null
+- unresolved_items: JSON array of strings
+- files_or_artifacts: JSON array
+- architecture_changes_required: JSON array
+- knowledge_writeback_proposal: JSON array
+- side_effects_attempted: JSON array (MUST be [])
+- requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
+"""
 
 GEMINI_RESEARCH_MODE_V1_1 = SPECIALIST_AUTHORITY_CONTRACT + """\nJAYTEC_INDEPENDENT_REVIEW_MODE v1.0.0
 ROLE: INDEPENDENT RESEARCH / ARCHITECTURE / ADVERSARIAL REVIEW SPECIALIST. Treat each request as stateless.
@@ -350,6 +378,177 @@ def build_codex_dispatch(
             return _single_call(packet, retry_format=True)
 
     return circuit.guard(_dispatch)
+
+
+def fetch_vercel_gateway_credit_balance(
+    *,
+    api_key: str,
+    base_url: str = SOL_GATEWAY_BASE_URL,
+    timeout_s: float = 10.0,
+) -> Decimal:
+    """Read the current AI Gateway credit balance without making an inference call."""
+    if not api_key:
+        raise RuntimeError("sol_gateway_api_key_missing")
+    url = base_url.rstrip("/") + "/credits"
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        _normalize_provider_exception(exc, context="sol_credit_preflight")
+        raise RuntimeError("sol_credit_preflight_failed") from exc
+    try:
+        balance = Decimal(str(payload["balance"]))
+    except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+        raise RuntimeError("sol_credit_balance_invalid") from exc
+    if balance < 0:
+        raise RuntimeError("sol_credit_balance_negative")
+    return balance
+
+
+def _sol_provider_model_matches(value: str | None) -> bool:
+    # Vercel may preserve provider/model or return the upstream model id.
+    return value in {EXPECTED_SOL_MODEL, "gpt-5.6-sol"}
+
+
+def build_sol_reserve_dispatch(
+    *,
+    gateway_client: OpenAI,
+    gateway_api_key: str,
+    circuit: CircuitBreaker,
+    credit_balance_fn: Callable[[], Decimal],
+    reserve_enabled: bool,
+    zero_spend_attested: bool,
+    sol_timeout_s: float = 60.0,
+    max_output_tokens: int = 1800,
+    max_input_bytes: int = 64_000,
+    min_credit_usd: Decimal = Decimal("0.25"),
+    reasoning_effort: str = "medium",
+) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+    """Build the owner-explicit GPT-5.6 Sol reserve through Vercel AI Gateway.
+
+    This adapter is deliberately separate from the free Nemotron engineering lane.
+    It fails closed unless the owner has explicitly enabled the reserve and attested
+    that the connected Gateway account is free-credit-only / zero-out-of-pocket.
+    """
+    if not gateway_api_key:
+        raise RuntimeError("sol_gateway_api_key_missing")
+    if not reserve_enabled:
+        raise RuntimeError("sol_reserve_disabled")
+    if not zero_spend_attested:
+        raise RuntimeError("sol_zero_spend_attestation_required")
+    if sol_timeout_s <= 0:
+        raise ValueError("sol_timeout_s must be positive")
+    if type(max_output_tokens) is not int or not 256 <= max_output_tokens <= 2400:
+        raise ValueError("invalid_sol_max_output_tokens")
+    if type(max_input_bytes) is not int or not 4096 <= max_input_bytes <= 96_000:
+        raise ValueError("invalid_sol_max_input_bytes")
+    if reasoning_effort not in {"low", "medium", "high"}:
+        raise ValueError("invalid_sol_reasoning_effort")
+    if min_credit_usd <= 0:
+        raise ValueError("invalid_sol_min_credit_usd")
+
+    def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+        workflow_id = str(packet.get("workflow_id", ""))
+        if not workflow_id.startswith("JAYTEC_OWNER_SOL_"):
+            raise RuntimeError("sol_owner_workflow_required")
+        authority = packet.get("required_context") or {}
+        if not isinstance(authority, Mapping):
+            raise RuntimeError("sol_authority_context_required")
+        if authority.get("authority_controller") != "CHATGPT_OPENAI_LEAD":
+            raise RuntimeError("sol_chatgpt_authority_required")
+        if authority.get("specialist_authority") != "SUBORDINATE":
+            raise RuntimeError("sol_specialist_must_be_subordinate")
+        if authority.get("owner_explicit_sol_request") is not True:
+            raise RuntimeError("sol_owner_explicit_request_required")
+        if packet.get("max_retries", 0) != 0:
+            raise RuntimeError("sol_retries_forbidden")
+        if packet.get("side_effect_policy") != "none":
+            raise RuntimeError("sol_side_effects_forbidden")
+
+        packet_json = json.dumps(packet, ensure_ascii=False, sort_keys=True)
+        if len(packet_json.encode("utf-8")) > max_input_bytes:
+            raise RuntimeError("sol_input_cap_exceeded")
+
+        balance_before = credit_balance_fn()
+        if balance_before < min_credit_usd:
+            raise RuntimeError("sol_free_credit_reserve_too_low")
+
+        prompt = (
+            "ROLE: JAYTEC GPT-5.6 SOL RESERVE SPECIALIST\n"
+            + SOL_RESERVE_CONTRACT
+            + "\nTASK_PACKET_JSON:\n"
+            + packet_json
+        )
+        request_kwargs: dict[str, Any] = {
+            "model": EXPECTED_SOL_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "temperature": 0,
+            "max_completion_tokens": max_output_tokens,
+            "reasoning_effort": reasoning_effort,
+            "timeout": sol_timeout_s,
+            "response_format": {"type": "json_object"},
+            "extra_body": {
+                "providerOptions": {
+                    "gateway": {
+                        "only": ["openai"],
+                        "disallowPromptTraining": True,
+                    }
+                }
+            },
+        }
+        try:
+            response = gateway_client.chat.completions.create(**request_kwargs)
+        except Exception as exc:
+            _normalize_provider_exception(exc, context="sol_gateway")
+        if not response.choices:
+            raise RuntimeError("sol_no_choices")
+
+        returned_provider_model = _provider_model(response)
+        if returned_provider_model is not None and not _sol_provider_model_matches(returned_provider_model):
+            raise RuntimeError(
+                f"sol_provider_response_model_mismatch:returned={returned_provider_model}"
+            )
+
+        choice = response.choices[0]
+        finish_reason = _finish_reason(choice)
+        content = choice.message.content or ""
+        if finish_reason in {"length", "content_filter"}:
+            raise WorkerJsonError("SOL_TRUNCATED_OR_BLOCKED_RESPONSE", str(finish_reason))
+        result, diagnostics = json_object_with_diagnostics(content)
+        result["model"] = EXPECTED_SOL_MODEL
+
+        balance_after = credit_balance_fn()
+        if balance_after < 0:
+            raise RuntimeError("sol_credit_balance_negative_after_call")
+        result["bridge_diagnostics"] = {
+            **_safe_transport_diagnostics(
+                content=content,
+                finish_reason=finish_reason,
+                provider_model=returned_provider_model,
+                extracted_object=diagnostics.extracted_object,
+            ),
+            "gateway": "vercel_ai_gateway",
+            "provider_only": ["openai"],
+            "model_lock": EXPECTED_SOL_MODEL,
+            "fallback_models": [],
+            "zero_spend_attested": True,
+            "credit_balance_before_usd": str(balance_before),
+            "credit_balance_after_usd": str(balance_after),
+            "credit_used_usd": str(max(Decimal("0"), balance_before - balance_after)),
+            "max_output_tokens": max_output_tokens,
+            "max_input_bytes": max_input_bytes,
+            "reasoning_effort": reasoning_effort,
+        }
+        return result
+
+    return circuit.guard(_dispatch)
+
 
 def build_gemini_dispatch(
     *,

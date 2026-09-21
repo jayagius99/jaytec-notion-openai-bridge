@@ -27,8 +27,12 @@
       "meeting_participant": true,
       "can_authorize_jaytec_change": false,
       "can_self_initiate": false,
-      "cost_profile": "paid_reserve",
-      "activation_policy": "explicitly_funded_or_owner_requested"
+      "cost_profile": "free_credit_reserve_zero_out_of_pocket",
+      "activation_policy": "owner_explicit_and_zero_spend_attested",
+      "provider": "vercel_ai_gateway",
+      "fallback_policy": "fail_closed_no_paid_or_model_fallback",
+      "max_retries": 0,
+      "side_effect_policy": "none"
     },
     "gemini": {
       "display_name": "JAYTEC Premium Gemini Review Reserve",

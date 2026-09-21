@@ -3,6 +3,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
@@ -22,8 +23,12 @@ from orchestration import (
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
+    EXPECTED_SOL_MODEL,
+    SOL_GATEWAY_BASE_URL,
     build_codex_dispatch,
     build_gemini_dispatch,
+    build_sol_reserve_dispatch,
+    fetch_vercel_gateway_credit_balance,
 )
 
 # --- Runtime configuration (NO secrets in code) ---
@@ -41,6 +46,18 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
+
+# Optional GPT-5.6 Sol reserve. Disabled by default and fail-closed unless the
+# owner has explicitly attested that this Gateway account is free-credit-only.
+AI_GATEWAY_API_KEY = os.environ.get("AI_GATEWAY_API_KEY", "").strip()
+SOL_GATEWAY_URL = os.environ.get("SOL_GATEWAY_BASE_URL", SOL_GATEWAY_BASE_URL).strip()
+SOL_RESERVE_ENABLED = os.environ.get("SOL_RESERVE_ENABLED", "0").strip() == "1"
+SOL_FREE_CREDIT_ONLY_ATTESTED = os.environ.get("SOL_FREE_CREDIT_ONLY_ATTESTED", "0").strip() == "1"
+SOL_TIMEOUT_S = float(os.environ.get("SOL_TIMEOUT_S", "60"))
+SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("SOL_OUTPUT_TOKEN_CAP", "1800"))
+SOL_INPUT_BYTE_CAP = int(os.environ.get("SOL_INPUT_BYTE_CAP", "64000"))
+SOL_MIN_CREDIT_USD = Decimal(os.environ.get("SOL_MIN_CREDIT_USD", "0.25"))
+SOL_REASONING_EFFORT = os.environ.get("SOL_REASONING_EFFORT", "medium").strip().lower()
 
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 PORT = int(os.environ.get("PORT", "8000"))
@@ -241,6 +258,7 @@ def _execute_task_packet_json(
     idempotency_store: str,
     codex_dispatch: Any,
     gemini_dispatch: Any,
+    sol_dispatch: Any = None,
 ) -> str:
     packet, parse_errors = parse_packet_json(packet_json)
     if packet is None:
@@ -286,7 +304,7 @@ def _execute_task_packet_json(
 
     result = execute_task_packet_core(
         packet,
-        {"codex": codex_dispatch, "gemini": gemini_dispatch},
+        {"codex": codex_dispatch, "gemini": gemini_dispatch, "sol": sol_dispatch},
         registry_adapter,
     )
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -383,6 +401,11 @@ def create_mcp_app() -> FastMCP:
         if OPENROUTER_API_KEY
         else None
     )
+    sol_gateway_client = (
+        OpenAI(api_key=AI_GATEWAY_API_KEY, base_url=SOL_GATEWAY_URL)
+        if AI_GATEWAY_API_KEY
+        else None
+    )
 
     # Idempotency registry selection
     if DATABASE_URL:
@@ -416,6 +439,10 @@ def create_mcp_app() -> FastMCP:
         failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
         reset_after_seconds=CIRCUIT_RESET_SECONDS,
     )
+    sol_circuit = CircuitBreaker(
+        failure_threshold=1,
+        reset_after_seconds=max(CIRCUIT_RESET_SECONDS, 300),
+    )
 
     if openrouter_client is not None:
         codex_dispatch = build_codex_dispatch(
@@ -441,6 +468,30 @@ def create_mcp_app() -> FastMCP:
             lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
         )
 
+    if sol_gateway_client is not None and SOL_RESERVE_ENABLED and SOL_FREE_CREDIT_ONLY_ATTESTED:
+        sol_dispatch = build_sol_reserve_dispatch(
+            gateway_client=sol_gateway_client,
+            gateway_api_key=AI_GATEWAY_API_KEY,
+            circuit=sol_circuit,
+            credit_balance_fn=lambda: fetch_vercel_gateway_credit_balance(
+                api_key=AI_GATEWAY_API_KEY,
+                base_url=SOL_GATEWAY_URL,
+            ),
+            reserve_enabled=SOL_RESERVE_ENABLED,
+            zero_spend_attested=SOL_FREE_CREDIT_ONLY_ATTESTED,
+            sol_timeout_s=SOL_TIMEOUT_S,
+            max_output_tokens=SOL_OUTPUT_TOKEN_CAP,
+            max_input_bytes=SOL_INPUT_BYTE_CAP,
+            min_credit_usd=SOL_MIN_CREDIT_USD,
+            reasoning_effort=SOL_REASONING_EFFORT,
+        )
+    else:
+        sol_dispatch = sol_circuit.guard(
+            lambda _packet: (_ for _ in ()).throw(
+                RuntimeError("Sol reserve unavailable: zero-spend gates are not fully satisfied")
+            )
+        )
+
     def _status_json() -> str:
         return _orchestration_status_json(
             runtime_mode=RUNTIME_MODE,
@@ -459,6 +510,7 @@ def create_mcp_app() -> FastMCP:
             idempotency_store=idempotency_store,
             codex_dispatch=codex_dispatch,
             gemini_dispatch=gemini_dispatch,
+            sol_dispatch=sol_dispatch,
         )
 
     # ---------------- Legacy Notion-agent tools: HARD DISABLED ----------------
@@ -479,7 +531,8 @@ def create_mcp_app() -> FastMCP:
             f"Notion policy: {NOTION_USAGE_POLICY}. "
             f"Primary engineering model: {CODEX_MODEL} via OpenRouter. "
             f"Independent reviewer: {GEMINI_MODEL}. "
-            f"OpenAI premium reserve configured: {bool(OPENAI_API_KEY)}"
+            f"Sol reserve model: {EXPECTED_SOL_MODEL}; "
+            f"Sol zero-spend reserve enabled: {bool(AI_GATEWAY_API_KEY and SOL_RESERVE_ENABLED and SOL_FREE_CREDIT_ONLY_ATTESTED)}"
         )
 
     # ---------------- Unified orchestration surface ----------------

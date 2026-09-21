@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal
 from typing import Any, Mapping
 
 from fastmcp import FastMCP
@@ -25,8 +26,12 @@ from orchestration import ExecutionRegistry, PacketValidationError, execute_task
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
+    EXPECTED_SOL_MODEL,
+    SOL_GATEWAY_BASE_URL,
     build_codex_dispatch,
     build_gemini_dispatch,
+    build_sol_reserve_dispatch,
+    fetch_vercel_gateway_credit_balance,
 )
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -40,6 +45,15 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
+AI_GATEWAY_API_KEY = os.environ.get("AI_GATEWAY_API_KEY", "").strip()
+SOL_GATEWAY_URL = os.environ.get("SOL_GATEWAY_BASE_URL", SOL_GATEWAY_BASE_URL).strip()
+SOL_RESERVE_ENABLED = os.environ.get("SOL_RESERVE_ENABLED", "0").strip() == "1"
+SOL_FREE_CREDIT_ONLY_ATTESTED = os.environ.get("SOL_FREE_CREDIT_ONLY_ATTESTED", "0").strip() == "1"
+SOL_TIMEOUT_S = float(os.environ.get("SOL_TIMEOUT_S", "60"))
+SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("SOL_OUTPUT_TOKEN_CAP", "1800"))
+SOL_INPUT_BYTE_CAP = int(os.environ.get("SOL_INPUT_BYTE_CAP", "64000"))
+SOL_MIN_CREDIT_USD = Decimal(os.environ.get("SOL_MIN_CREDIT_USD", "0.25"))
+SOL_REASONING_EFFORT = os.environ.get("SOL_REASONING_EFFORT", "medium").strip().lower()
 CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
 CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
@@ -76,9 +90,14 @@ GEMINI_CIRCUIT = CircuitBreaker(
     failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
     reset_after_seconds=CIRCUIT_RESET_SECONDS,
 )
+SOL_CIRCUIT = CircuitBreaker(
+    failure_threshold=1,
+    reset_after_seconds=max(CIRCUIT_RESET_SECONDS, 300),
+)
 
 OPENAI_CLIENT = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 OPENROUTER_CLIENT = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL) if OPENROUTER_API_KEY else None
+SOL_GATEWAY_CLIENT = OpenAI(api_key=AI_GATEWAY_API_KEY, base_url=SOL_GATEWAY_URL) if AI_GATEWAY_API_KEY else None
 
 # Build dispatchers ONCE to avoid runtime drift and repeated guards.
 CODEX_DISPATCH = (
@@ -105,6 +124,27 @@ GEMINI_DISPATCH = (
     else GEMINI_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on the staging bridge")))
 )
 
+SOL_DISPATCH = (
+    build_sol_reserve_dispatch(
+        gateway_client=SOL_GATEWAY_CLIENT,
+        gateway_api_key=AI_GATEWAY_API_KEY,
+        circuit=SOL_CIRCUIT,
+        credit_balance_fn=lambda: fetch_vercel_gateway_credit_balance(
+            api_key=AI_GATEWAY_API_KEY,
+            base_url=SOL_GATEWAY_URL,
+        ),
+        reserve_enabled=SOL_RESERVE_ENABLED,
+        zero_spend_attested=SOL_FREE_CREDIT_ONLY_ATTESTED,
+        sol_timeout_s=SOL_TIMEOUT_S,
+        max_output_tokens=SOL_OUTPUT_TOKEN_CAP,
+        max_input_bytes=SOL_INPUT_BYTE_CAP,
+        min_credit_usd=SOL_MIN_CREDIT_USD,
+        reasoning_effort=SOL_REASONING_EFFORT,
+    )
+    if SOL_GATEWAY_CLIENT and SOL_RESERVE_ENABLED and SOL_FREE_CREDIT_ONLY_ATTESTED
+    else SOL_CIRCUIT.guard(lambda _packet: (_ for _ in ()).throw(RuntimeError("Sol reserve zero-spend gates not satisfied")))
+)
+
 
 @mcp.tool
 def orchestration_status() -> str:
@@ -119,6 +159,9 @@ def orchestration_status() -> str:
             "gemini_adapter_configured": bool(OPENROUTER_API_KEY),
             "gemini_provider_routing": "price",
             "gemini_circuit": GEMINI_CIRCUIT.snapshot(),
+            "sol_model": EXPECTED_SOL_MODEL,
+            "sol_reserve_enabled": bool(SOL_GATEWAY_CLIENT and SOL_RESERVE_ENABLED and SOL_FREE_CREDIT_ONLY_ATTESTED),
+            "sol_circuit": SOL_CIRCUIT.snapshot(),
             "idempotency_store": IDEMPOTENCY_STORE,
             "production_ready": False,
         },
@@ -183,7 +226,7 @@ def execute_task_packet(packet_json: str) -> str:
 
     result = execute_task_packet_core(
         packet,
-        {"codex": CODEX_DISPATCH, "gemini": GEMINI_DISPATCH},
+        {"codex": CODEX_DISPATCH, "gemini": GEMINI_DISPATCH, "sol": SOL_DISPATCH},
         registry,
     )
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
