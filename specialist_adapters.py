@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -42,8 +43,10 @@ SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V1.md
 SOL_PROVENANCE_MARKERS = (
     "genesis_event_0001",
     "pre-genesis",
+    "pre genesis",
     "/jaytec/uren/pre-genesis",
     "uren_identity_genesis",
+    "uren identity genesis",
     "god mode",
     "owner manual source index",
     "how uren was born",
@@ -52,6 +55,22 @@ SOL_PROVENANCE_MARKERS = (
     "uren origin",
     "uren construction",
     "uren activation sequence",
+    "uren genesis",
+)
+SOL_PROVENANCE_COMPACT_MARKERS = (
+    "genesisevent0001",
+    "pregenesis",
+    "jaytecurenpregenesis",
+    "urenidentitygenesis",
+    "godmode",
+    "ownermanualsourceindex",
+    "howurenwasborn",
+    "howurenwillbeborn",
+    "urenbirth",
+    "urenorigin",
+    "urenconstruction",
+    "urenactivationsequence",
+    "urengenesis",
 )
 
 SPECIALIST_AUTHORITY_CONTRACT = """JAYTEC SPECIALIST AUTHORITY CONTRACT
@@ -580,12 +599,23 @@ def _sol_context_text() -> str:
     return text
 
 
-def _sol_packet_provenance_violation(packet: Mapping[str, Any]) -> bool:
+def _sol_normalized_probe(value: Any) -> tuple[str, str]:
     try:
-        lowered = json.dumps(packet, ensure_ascii=False, sort_keys=True).lower()
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True)
     except Exception:
+        return "", ""
+    lowered = unicodedata.normalize("NFKC", raw).lower()
+    compact = "".join(ch for ch in lowered if ch.isalnum())
+    return lowered, compact
+
+
+def _sol_packet_provenance_violation(packet: Mapping[str, Any]) -> bool:
+    lowered, compact = _sol_normalized_probe(packet)
+    if not lowered:
         return True
-    return any(marker in lowered for marker in SOL_PROVENANCE_MARKERS)
+    if any(marker in lowered for marker in SOL_PROVENANCE_MARKERS):
+        return True
+    return any(marker in compact for marker in SOL_PROVENANCE_COMPACT_MARKERS)
 
 
 def build_sol_dispatch(
