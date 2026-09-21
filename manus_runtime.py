@@ -319,7 +319,7 @@ def _canonicalize_legacy_specialist_intent(
 
     specialist = str(value.get("specialist") or "").strip().casefold()
     if specialist not in _LEGACY_INTENT_MODEL_SPECIALISTS:
-        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_NOT_MODEL_ONLY")
+        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_SPECIALIST_INVALID")
 
     purpose = value.get("purpose")
     scope = value.get("scope")
