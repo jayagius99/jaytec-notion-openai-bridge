@@ -144,6 +144,34 @@ class FakeNotifier:
 
 
 class AutoRecoveryPolicyTests(unittest.TestCase):
+    def test_master_gate_success_does_not_complete_whole_assignment(self):
+        cp = AssignmentCheckpoint(
+            **{
+                **checkpoint().__dict__,
+                "current_phase": "G03/SECURITY: Security Audit #47",
+                "objective": "Advance G03.",
+                "checkpoint_number": 103,
+            }
+        ).validate()
+        st = state()
+        st = AssignmentState(**{**st.__dict__, "checkpoint": cp})
+        store = MemoryAssignmentStore(st)
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=FakeInvoker(),
+            health_probe=FakeHealth(
+                healthy=True,
+                progress_marker="MANUS_TERMINAL:SUCCESS:deadbeef",
+            ),
+            heartbeat_timeout_seconds=600,
+        )
+        self.assertTrue(supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW))
+        final = store.get("GOD-PREP-0017")
+        self.assertEqual(final.stop_reason, StopReason.WAITING_FOR_DEPENDENCY)
+        self.assertFalse(final.completed)
+        self.assertTrue(final.last_error.startswith("MANUS_TERMINAL:SUCCESS:"))
+
     def test_complete_stops_watching(self):
         decision = classify_assignment(
             state(stop_reason=StopReason.COMPLETED, completed=True),
