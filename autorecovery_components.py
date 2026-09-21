@@ -128,7 +128,7 @@ def master_gate_result_has_receipt(
         if not isinstance(raw, Mapping):
             continue
         if (
-            str(raw.get("kind") or "") == "jaytec_master_gate_result"
+            str(raw.get("kind") or "") == "audit_record"
             and str(raw.get("source") or "") == "JAYTEC_MASTER_GATE_HANDOFF"
             and str(raw.get("reference") or "") == receipt
         ):
@@ -382,7 +382,7 @@ class ManusLiteRecoveryInvoker:
             )
             enriched_context = dict(gate_context)
             enriched_context["result_receipt_requirement"] = {
-                "kind": "jaytec_master_gate_result",
+                "kind": "audit_record",
                 "source": "JAYTEC_MASTER_GATE_HANDOFF",
                 "reference": hid,
                 "instruction": (
