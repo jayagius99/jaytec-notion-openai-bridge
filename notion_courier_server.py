@@ -61,6 +61,16 @@ class JaytecCourierRuntime:
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
         )
+        self.sol_circuit = CircuitBreaker(
+            failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
+            reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
+        )
+
+        self.openai_client = (
+            OpenAI(api_key=legacy_server.OPENAI_API_KEY)
+            if legacy_server.OPENAI_API_KEY
+            else None
+        )
 
         self.openrouter_client = (
             OpenAI(
@@ -70,6 +80,25 @@ class JaytecCourierRuntime:
             if legacy_server.OPENROUTER_API_KEY
             else None
         )
+
+
+        if self.openai_client is not None:
+            self.sol_dispatch = legacy_server.build_sol_dispatch(
+                openai_client=self.openai_client,
+                sol_model=legacy_server.SOL_MODEL,
+                circuit=self.sol_circuit,
+                enabled=legacy_server.SOL_PRIMARY_ENABLED,
+                cost_authorized=legacy_server.SOL_PRIMARY_COST_AUTHORIZED,
+                sol_timeout_s=legacy_server.SOL_TIMEOUT_S,
+                reasoning_effort=legacy_server.SOL_REASONING_EFFORT,
+                max_output_tokens=legacy_server.SOL_OUTPUT_TOKEN_CAP,
+            )
+        else:
+            self.sol_dispatch = self.sol_circuit.guard(
+                lambda _packet: (_ for _ in ()).throw(
+                    RuntimeError("OPENAI_API_KEY is not configured for Sol primary")
+                )
+            )
 
         if self.openrouter_client is not None:
             self.codex_dispatch = legacy_server.build_codex_dispatch(
@@ -124,6 +153,7 @@ class JaytecCourierRuntime:
             idempotency_store=self.idempotency_store,
             codex_dispatch=self.codex_dispatch,
             gemini_dispatch=self.gemini_dispatch,
+            sol_dispatch=self.sol_dispatch,
         )
 
 
