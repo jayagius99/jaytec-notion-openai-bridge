@@ -19,7 +19,9 @@ SCHEMA_VERSION = "JAYTEC_MANUS_SPECIALIST_BROKER_V1"
 RESULT_SCHEMA_VERSION = "JAYTEC_MANUS_SPECIALIST_RESULTS_V1"
 ALLOWED_MANUS_MODEL_SPECIALISTS = frozenset({"sol", "deepseek", "nemo"})
 MAX_MODEL_REQUESTS = 3
-MAX_RESULT_BYTES = 64_000
+MAX_RAW_RESULT_BYTES = 64_000
+MAX_COMPACT_RESULT_BYTES = 1400
+MAX_PACKAGE_BYTES = 5000
 
 _SECRET_KEY = re.compile(
     r"(api[_-]?key|authorization|bearer|password|secret|credential|private[_-]?key|access[_-]?token)",
@@ -30,8 +32,7 @@ _SECRET_VALUE = re.compile(
     r"(?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*\S+)"
 )
 
-# Sealed identity/origin provenance is not specialist context. These are
-# detection markers only; they contain no sealed provenance themselves.
+# Detection markers only. No sealed provenance content is embedded here.
 _SEALED_MARKERS = (
     "uren origin",
     "uren birth",
@@ -141,6 +142,65 @@ def build_dispatch_packet(request: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _clip(value: Any, limit: int) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        text = json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 20)] + "...[truncated]"
+
+
+def _compact_list(value: Any, *, items: int, chars: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [_clip(item, chars) for item in value[:items]]
+
+
+def _compact_result(result: Mapping[str, Any], raw_digest: str) -> dict[str, Any]:
+    compact = {
+        "status": str(result.get("status") or "FAILED_CLOSED"),
+        "model": result.get("model"),
+        "findings": _compact_list(result.get("findings"), items=3, chars=260),
+        "evidence": _compact_list(result.get("evidence"), items=3, chars=220),
+        "unresolved_items": _compact_list(
+            result.get("unresolved_items"), items=3, chars=180
+        ),
+        "confidence": (
+            _clip(result.get("confidence"), 80)
+            if result.get("confidence") is not None
+            else None
+        ),
+        "conclusion": (
+            _clip(result.get("conclusion"), 850)
+            if result.get("conclusion") is not None
+            else None
+        ),
+        "raw_result_sha256": raw_digest,
+    }
+    while len(_canonical(compact)) > MAX_COMPACT_RESULT_BYTES:
+        conclusion = compact.get("conclusion")
+        if isinstance(conclusion, str) and len(conclusion) > 180:
+            compact["conclusion"] = _clip(conclusion, max(180, len(conclusion) - 180))
+            continue
+        findings = compact.get("findings")
+        if isinstance(findings, list) and findings:
+            findings.pop()
+            continue
+        evidence = compact.get("evidence")
+        if isinstance(evidence, list) and evidence:
+            evidence.pop()
+            continue
+        unresolved = compact.get("unresolved_items")
+        if isinstance(unresolved, list) and unresolved:
+            unresolved.pop()
+            continue
+        raise SpecialistBrokerError("SPECIALIST_COMPACT_RESULT_TOO_LARGE")
+    return compact
+
+
 def dispatch_manus_model_requests(
     requests: Sequence[Mapping[str, Any]],
     *,
@@ -190,17 +250,19 @@ def dispatch_manus_model_requests(
         if _contains_sealed_provenance(result):
             raise SpecialistBrokerError("SPECIALIST_RESULT_SEALED_PROVENANCE_BLOCKED")
 
-        encoded = _canonical(result)
-        if len(encoded) > MAX_RESULT_BYTES:
+        raw_encoded = _canonical(result)
+        if len(raw_encoded) > MAX_RAW_RESULT_BYTES:
             raise SpecialistBrokerError("SPECIALIST_RESULT_TOO_LARGE:" + specialist)
+        raw_digest = hashlib.sha256(raw_encoded).hexdigest()
+        compact = _compact_result(result, raw_digest)
         results.append(
             {
                 "request_id": str(request["request_id"]),
                 "specialist": specialist,
-                "status": str(result.get("status") or "FAILED_CLOSED"),
-                "model": result.get("model"),
-                "result": result,
-                "result_sha256": hashlib.sha256(encoded).hexdigest(),
+                "status": str(compact.get("status") or "FAILED_CLOSED"),
+                "model": compact.get("model"),
+                "result": compact,
+                "result_sha256": raw_digest,
             }
         )
 
@@ -209,6 +271,8 @@ def dispatch_manus_model_requests(
         "authority": "RESULTS_ONLY_NO_DISPATCH_AUTHORITY",
         "request_results": results,
     }
+    if len(_canonical(unsigned)) > MAX_PACKAGE_BYTES:
+        raise SpecialistBrokerError("SPECIALIST_RESULT_PACKAGE_TOO_LARGE")
     digest = hashlib.sha256(_canonical(unsigned)).hexdigest()
     return {**unsigned, "sha256": digest}
 
