@@ -282,6 +282,18 @@ def _validate_sol_result(raw: Mapping[str, Any], req: Mapping[str, Any]) -> dict
         if isinstance(raw.get("unresolved_items"), list)
         else []
     )
+    diagnostics = raw.get("bridge_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        raise WatchControllerAdvisorError("SOL_PROVIDER_DIAGNOSTICS_REQUIRED")
+    if diagnostics.get("provider_model") != EXPECTED_SOL_MODEL:
+        raise WatchControllerAdvisorError("SOL_PROVIDER_MODEL_MISMATCH")
+    if diagnostics.get("model_identity_observed") is not True:
+        raise WatchControllerAdvisorError("SOL_PROVIDER_IDENTITY_UNOBSERVED")
+    if diagnostics.get("provider_fallbacks") is not False:
+        raise WatchControllerAdvisorError("SOL_PROVIDER_FALLBACK_FORBIDDEN")
+    if decision == "APPROVE_CONTINUE" and raw.get("status") != "SUCCESS":
+        raise WatchControllerAdvisorError("SOL_APPROVAL_REQUIRES_SUCCESS")
+
     result = {
         "schema_version": RESULT_SCHEMA,
         "task_id": TASK_ID,
@@ -299,7 +311,7 @@ def _validate_sol_result(raw: Mapping[str, Any], req: Mapping[str, Any]) -> dict
         "evidence": [str(x)[:900] for x in evidence[:MAX_LIST]],
         "unresolved_items": [str(x)[:900] for x in unresolved[:MAX_LIST]],
         "confidence": raw.get("confidence"),
-        "provider_diagnostics": dict(raw.get("bridge_diagnostics") or {}),
+        "provider_diagnostics": dict(diagnostics),
     }
     unsigned = dict(result)
     result["result_sha256"] = _digest(unsigned)
