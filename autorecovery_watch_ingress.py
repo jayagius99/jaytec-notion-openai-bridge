@@ -243,6 +243,18 @@ def _broker_context(value: Any, refs: Mapping[str, str]) -> dict[str, Any]:
     return context
 
 
+def _gate_result_ready_state(state: Any) -> bool:
+    if state is None or not getattr(state, "worker_id", None):
+        return False
+    marker = str(getattr(state, "last_error", "") or "")
+    phase = str(getattr(getattr(state, "checkpoint", None), "current_phase", "") or "")
+    return (
+        getattr(state, "stop_reason", None) is StopReason.WAITING_FOR_DEPENDENCY
+        and marker.startswith("MANUS_TERMINAL:SUCCESS:")
+        and re.match(r"^G[0-9]{2}/", phase) is not None
+    )
+
+
 def _needs_jaytec_state(state: Any) -> bool:
     if state is None or not getattr(state, "worker_id", None):
         return False
@@ -517,14 +529,6 @@ def execute_watch_cycle(
     incoming_checkpoint = AssignmentCheckpoint.from_mapping(raw_checkpoint)
     if incoming_checkpoint.task_id != task_id:
         raise WatchIngressError("BOOTSTRAP_TASK_ID_MISMATCH")
-    verified_incoming, incoming_detail = verifier.verify(incoming_checkpoint)
-    if not verified_incoming:
-        return {
-            "status": "BLOCKED_FAIL_CLOSED",
-            "task_id": task_id,
-            "reason": "BOOTSTRAP_CHECKPOINT_NOT_ATTESTED",
-            "detail": incoming_detail,
-        }
     master_gate = _master_gate_context(
         payload.get("master_gate"),
         incoming_checkpoint,
@@ -568,6 +572,25 @@ def execute_watch_cycle(
     store = PostgresAssignmentStore(database_url)
     state = store.get(task_id)
     bootstrapped = False
+    if state is not None:
+        verified_current, current_detail = verifier.verify(state.checkpoint)
+        if not verified_current:
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "CURRENT_CHECKPOINT_NOT_ATTESTED",
+                "detail": current_detail,
+            }
+
+    verified_incoming, incoming_detail = verifier.verify(incoming_checkpoint)
+    if not verified_incoming:
+        return {
+            "status": "BLOCKED_FAIL_CLOSED",
+            "task_id": task_id,
+            "reason": "BOOTSTRAP_CHECKPOINT_NOT_ATTESTED",
+            "detail": incoming_detail,
+        }
+
     if state is None:
         store.upsert_checkpoint(
             incoming_checkpoint,
@@ -628,6 +651,57 @@ def execute_watch_cycle(
         broker_context=broker_context,
     )
     github_broker = "AVAILABLE" if broker_context else "NONE"
+
+    if _gate_result_ready_state(state):
+        readonly = manus_runtime.task_status_readonly(state.worker_id)
+        terminal = (
+            readonly.get("result")
+            if isinstance(readonly, Mapping)
+            and isinstance(readonly.get("result"), Mapping)
+            else {}
+        )
+        if (
+            str(readonly.get("status") or "") != "VERIFIED_COMPLETE"
+            or str(terminal.get("status") or "") != "SUCCESS"
+        ):
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "MASTER_GATE_RESULT_NOT_VERIFIED",
+            }
+        final = store.get(task_id)
+        return {
+            "status": "PASS",
+            "task_id": task_id,
+            "bootstrapped": bootstrapped,
+            "checkpoint_advanced": checkpoint_advanced,
+            "master_gate": master_gate,
+            "gate_handoff": "RESULT_READY",
+            "health_refreshed": False,
+            "github_broker": github_broker,
+            "gate_result": terminal,
+            "decision": {
+                "action": "HOLD",
+                "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
+                "reason": "MASTER_GATE_RESULT_READY",
+                "recovery_route": None,
+            },
+            "assignment": {
+                "stop_reason": final.stop_reason.value if final else None,
+                "worker_kind": final.worker_kind.value if final else None,
+                "worker_id": final.worker_id if final else None,
+                "worker_route": final.worker_route if final else None,
+                "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
+                "repo": final.checkpoint.repo if final else None,
+                "branch": final.checkpoint.branch if final else None,
+                "verified_head": final.checkpoint.commit_head if final else None,
+                "recovery_attempts": final.recovery_attempts if final else None,
+                "fencing_token": final.fencing_token if final else None,
+                "progress_marker": final.progress_marker if final else None,
+                "completed": final.completed if final else None,
+                "last_error": final.last_error if final else None,
+            },
+        }
 
     # NEEDS_JAYTEC is an internal orchestration handoff, not an owner boundary.
     # Continue the SAME fenced worker with evidence supplied by GitHub Actions.
