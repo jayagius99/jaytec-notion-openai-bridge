@@ -518,20 +518,30 @@ def _compact_watch_recovery_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
         if key in context
     }
     for key, limit in (
-        ("current_phase", 220),
-        ("last_safe_checkpoint", 320),
-        ("next_intended_action", 320),
+        ("current_phase", 180),
+        ("last_safe_checkpoint", 220),
+        ("next_intended_action", 240),
     ):
         if key in compact_context:
             compact_context[key] = str(compact_context[key])[:limit]
 
-    compact_context.setdefault("canonical_objective_excerpt", objective[:420])
+    compact_context.setdefault("canonical_objective_excerpt", objective[:220])
+    broker = compact_context.get("jaytec_private_github_broker")
+    if isinstance(broker, Mapping):
+        compact_context["jaytec_private_github_broker"] = {
+            "available": bool(broker.get("available")),
+            "kind": str(broker.get("kind") or "")[:40],
+            "repo": str(broker.get("repo") or "")[:120],
+            "sha256": str(broker.get("sha256") or "")[:64],
+            "handoff_policy": "RETURN_NEEDS_JAYTEC_FOR_BOUNDED_PRIVATE_GITHUB",
+        }
+
     compact_context["jaytec_compaction"] = {
-        "schema_version": "JAYTEC_WATCH_RECOVERY_COMPACTION_V1",
+        "schema_version": "JAYTEC_WATCH_RECOVERY_COMPACTION_V2",
         "source_packet_sha256": hashlib.sha256(canonical).hexdigest(),
         "source_context_sha256": hashlib.sha256(context_canonical).hexdigest(),
-        "policy": "DESCRIPTIVE_TEXT_ONLY_AUTHORITY_AND_CONSTRAINTS_PRESERVED",
-        "omitted_detail_action": "RETURN_NEEDS_JAYTEC",
+        "policy": "DESCRIPTIVE_ONLY;AUTHORITY_CONSTRAINTS_PRESERVED",
+        "omitted_detail_action": "NEEDS_JAYTEC",
     }
 
     compact = dict(packet)
@@ -552,10 +562,6 @@ def _compact_watch_recovery_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
     # enforced by the structured_output_schema argument at the provider boundary.
     compact["return_schema"] = {
         "provider_enforced": "MANUS_RESULT_JSON_SCHEMA",
-        "status": (
-            "SUCCESS|PARTIAL_SUCCESS|NEEDS_JAYTEC|NEEDS_OWNER|FAILED_CLOSED"
-        ),
-        "instruction": "Return only the provider-enforced structured result.",
     }
     return compact
 
