@@ -337,7 +337,7 @@ class ManusLiteRuntimeTests(unittest.TestCase):
             MANUS_MAX_MESSAGE_CHARS,
         )
         self.assertIn("JAYTEC_WATCH_RECOVERY_COMPACTION_V1", client.created_prompt)
-        self.assertIn("Do not activate Forge.", client.created_prompt)
+        self.assertIn("NO FORGE ACTIVATION", client.created_prompt)
         self.assertIn("Do not spend money.", client.created_prompt)
         self.assertNotIn("O" * 1000, client.created_prompt)
 
