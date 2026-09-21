@@ -46,6 +46,24 @@ class FakeClient:
         self.chat = SimpleNamespace(completions=FakeCompletions(provider_model))
 
 
+class PaymentRequiredError(RuntimeError):
+    status_code = 402
+
+
+class FailingCompletions:
+    def __init__(self):
+        self.calls = 0
+
+    def create(self, **kwargs):
+        self.calls += 1
+        raise PaymentRequiredError("payment required")
+
+
+class FailingClient:
+    def __init__(self):
+        self.chat = SimpleNamespace(completions=FailingCompletions())
+
+
 def packet():
     return {
         "task_id": "T",
@@ -180,6 +198,38 @@ class SolReserveZeroSpendTests(unittest.TestCase):
     def test_wrong_provider_model_fails_closed(self):
         client, dispatch = self.build(provider_model="openai/gpt-5.4")
         with self.assertRaisesRegex(RuntimeError, "sol_provider_response_model_mismatch"):
+            dispatch(packet())
+        self.assertEqual(client.chat.completions.calls, 1)
+
+
+    def test_credit_preflight_failure_never_calls_model(self):
+        client = FakeClient()
+        dispatch = build_sol_reserve_dispatch(
+            gateway_client=client,
+            gateway_api_key="test-key",
+            circuit=CircuitBreaker(failure_threshold=1, reset_after_seconds=300),
+            credit_balance_fn=lambda: (_ for _ in ()).throw(RuntimeError("credit check unavailable")),
+            reserve_enabled=True,
+            zero_spend_attested=True,
+        )
+        with self.assertRaises(RuntimeError):
+            dispatch(packet())
+        self.assertEqual(client.chat.completions.calls, 0)
+
+    def test_payment_required_is_single_attempt_and_opens_circuit(self):
+        client = FailingClient()
+        dispatch = build_sol_reserve_dispatch(
+            gateway_client=client,
+            gateway_api_key="test-key",
+            circuit=CircuitBreaker(failure_threshold=1, reset_after_seconds=300),
+            credit_balance_fn=lambda: Decimal("5"),
+            reserve_enabled=True,
+            zero_spend_attested=True,
+        )
+        with self.assertRaises(PaymentRequiredError):
+            dispatch(packet())
+        self.assertEqual(client.chat.completions.calls, 1)
+        with self.assertRaises(RuntimeError):
             dispatch(packet())
         self.assertEqual(client.chat.completions.calls, 1)
 
