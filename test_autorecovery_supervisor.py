@@ -231,6 +231,30 @@ class AutoRecoveryPolicyTests(unittest.TestCase):
         self.assertEqual(decision.action, SupervisorAction.NOTIFY_JAY)
         self.assertEqual(decision.effective_stop_reason, StopReason.RECOVERY_EXHAUSTED)
 
+    def test_checkpoint_advance_preserves_worker_fence_and_attempts(self):
+        store = MemoryAssignmentStore(state())
+        before = store.get("GOD-PREP-0017")
+        newer = AssignmentCheckpoint(
+            **{
+                **checkpoint().__dict__,
+                "current_phase": "G43/SECURITY: next gate",
+                "objective": "Advance G43.",
+                "checkpoint_number": 43,
+            }
+        ).validate()
+        changed = store.advance_checkpoint_preserving_runtime(
+            newer,
+            expected_current_checkpoint_number=42,
+            now=NOW + dt.timedelta(seconds=1),
+        )
+        self.assertTrue(changed)
+        after = store.get("GOD-PREP-0017")
+        self.assertEqual(after.checkpoint.checkpoint_number, 43)
+        self.assertEqual(after.worker_id, before.worker_id)
+        self.assertEqual(after.fencing_token, before.fencing_token)
+        self.assertEqual(after.recovery_attempts, before.recovery_attempts)
+        self.assertEqual(after.stop_reason, before.stop_reason)
+
     def test_continuation_packet_contains_resurrection_state(self):
         packet = build_continuation_packet(
             checkpoint(),
