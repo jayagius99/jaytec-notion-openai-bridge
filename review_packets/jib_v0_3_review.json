@@ -1,0 +1,48 @@
+{
+  "review_packet_version": "JAYTEC_STEP6_REVIEW_V1",
+  "candidate": "JIB_PROVING_GROUNDS_TEST_PACKAGE_V0.3",
+  "candidate_zip_sha256": "3d2a8892714df13e5dc23a2b43cbb17a4c47f949b8a2b0b01609a3528ec29c05",
+  "candidate_status": "HARDENED_OFFLINE_VALIDATED_NOT_PROVING_GROUNDS_CERTIFIED_NOT_DEPLOYED",
+  "offline_evidence": {
+    "checksums": "all package checks passed",
+    "reference_tests": "52/52 PASS",
+    "network_used": false,
+    "production_state_used": false
+  },
+  "security_objective": "Provide owner-only read visibility into durable Forge/Uren/JAYTEC evidence while remaining structurally downstream of execution, cognition, WATCH and authority, with no reverse data or control path.",
+  "binding_controls": [
+    "JIB uses a separate observation identity and credentials structurally incapable of mutating the execution plane or independent integrity anchor.",
+    "JIB makes no model/provider/worker calls and never invokes WATCH cycle/status/control interfaces.",
+    "JIB never acquires leases, changes fencing, emits heartbeats, schedules work or changes gates/checkpoints.",
+    "Mirror-local hash chains are insufficient; certification requires an independently protected chain-head/checkpoint anchor.",
+    "Divergent duplicate event IDs, invalid classification, gaps, tamper or anchor mismatch fail closed.",
+    "Canonical cursor advances only after anchored, integrity-valid, gap-free evidence using compare-and-swap/transaction semantics.",
+    "Owner-attention requires trusted source plus FACT classification plus evidence reference plus explicit owner-boundary type.",
+    "Prompt/control strings in observed data remain inert.",
+    "All outputs are OWNER_CONTROL_ONLY and runtime export is false.",
+    "There is no JIB-to-Uren prompt, retrieval, memory, self-model, capability, denial-message or knowledge sink.",
+    "A synthetic owner canary may be visible in owner inspection evidence but must be absent from every Uren-facing source and output."
+  ],
+  "mandatory_live_or_pg_evidence_not_yet_claimed": [
+    "deployed IAM/credential proof that compromised JIB cannot write execution or anchor state",
+    "independent integrity-anchor trust-domain proof",
+    "instrumented zero reverse-channel counters during repeated/parallel/slow/killed/malformed reads",
+    "cursor concurrency/crash/replay proof against real candidate persistence",
+    "observer-failure non-interference",
+    "shadow live-read no-side-effect comparison",
+    "runtime route/sink inventory proving JIB absent from Uren-facing context and indexes",
+    "live Proving Grounds certification"
+  ],
+  "review_focus": [
+    "Find implicit writes, acknowledgements, callbacks, health polling, retries or metadata reads that can alter execution.",
+    "Challenge independent-anchor co-control, full-history rewrite, stale-anchor acceptance and mirror/anchor identity confusion.",
+    "Challenge cursor CAS races, crash windows, replay, gap handling and divergent duplicates.",
+    "Challenge untrusted events manufacturing owner-attention or authority.",
+    "Challenge secret redaction, control-text injection and data-to-control interpretation.",
+    "Find any indirect JIB-to-Uren sink through logs, retrieval, memory admission, caches, summaries, denial/status artifacts or shared stores.",
+    "Challenge whether killing or compromising JIB can change Uren knowledge state, scheduling, provider selection, liveness or gates.",
+    "Identify any requirement whose current 52-test reference evidence could pass while live isolation is unsafe.",
+    "Do not infer unexecuted live evidence as passed."
+  ],
+  "decision_rule": "Reviewer is advisory only. PASS means no critical design defect is evident in this sanitized packet; it does not certify live Proving Grounds, authorize deployment, or attach JIB to production."
+}
