@@ -40,8 +40,11 @@ from relationship_policy import Actor
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
 EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
-SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V3"
+SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V4"
 SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V3.md")
+SOL_MEMORY_MANIFEST_PATH = Path(__file__).with_name("JAYTEC_MEMORY") / "MANIFEST.json"
+SOL_MEMORY_MAX_TOTAL_BYTES = 80_000
+SOL_MEMORY_MAX_FILE_BYTES = 24_000
 # The owner asked for broad JAYTEC/Forge knowledge transfer to SOL with one
 # narrow exclusion: the sealed provenance/creation history of Uren. Ordinary
 # Forge, Genesis, pre-Genesis and historical system terminology is NOT secret
@@ -136,11 +139,7 @@ Never include markdown fences, comments, trailing prose, NaN/Infinity, or unesca
 
 
 
-def _sol_context_text() -> str:
-    try:
-        text = SOL_CONTEXT_PATH.read_text(encoding="utf-8")
-    except Exception as exc:
-        raise RuntimeError("sol_sanitized_context_unavailable") from exc
+def _validate_sol_memory_text(text: str) -> None:
     if not text.strip():
         raise RuntimeError("sol_sanitized_context_empty")
     lowered = unicodedata.normalize("NFKC", text).lower()
@@ -149,7 +148,74 @@ def _sol_context_text() -> str:
         raise RuntimeError("sol_sanitized_context_provenance_violation")
     if any(marker in compact for marker in SOL_PROVENANCE_COMPACT_MARKERS):
         raise RuntimeError("sol_sanitized_context_provenance_violation")
-    return text
+
+
+def _sol_memory_files() -> tuple[Path, ...]:
+    """Resolve the ordered GitHub-backed memory pack without path traversal."""
+    try:
+        raw = SOL_MEMORY_MANIFEST_PATH.read_text(encoding="utf-8")
+        manifest = json.loads(raw)
+    except Exception as exc:
+        raise RuntimeError("sol_memory_manifest_unavailable") from exc
+    if not isinstance(manifest, Mapping):
+        raise RuntimeError("sol_memory_manifest_invalid")
+    if manifest.get("schema_version") != "JAYTEC_GITHUB_MEMORY_V1":
+        raise RuntimeError("sol_memory_manifest_schema_invalid")
+    if manifest.get("knowledge_scope") != SOL_KNOWLEDGE_SCOPE:
+        raise RuntimeError("sol_memory_manifest_scope_mismatch")
+    ordered = manifest.get("ordered_files")
+    if (
+        not isinstance(ordered, list)
+        or not ordered
+        or len(ordered) > 24
+        or not all(isinstance(item, str) and item.strip() for item in ordered)
+    ):
+        raise RuntimeError("sol_memory_manifest_files_invalid")
+
+    root = Path(__file__).resolve().parent
+    memory_root = (root / "JAYTEC_MEMORY").resolve()
+    files: list[Path] = []
+    seen: set[Path] = set()
+    for item in ordered:
+        candidate = (root / item).resolve()
+        if candidate == memory_root or memory_root not in candidate.parents:
+            raise RuntimeError("sol_memory_manifest_path_forbidden")
+        if candidate in seen:
+            raise RuntimeError("sol_memory_manifest_duplicate_file")
+        if candidate.suffix.lower() not in {".md", ".txt", ".json"}:
+            raise RuntimeError("sol_memory_manifest_extension_forbidden")
+        seen.add(candidate)
+        files.append(candidate)
+    return tuple(files)
+
+
+def _sol_context_text() -> str:
+    """Load sanitized SOL baseline + ordered GitHub durable memory."""
+    try:
+        baseline = SOL_CONTEXT_PATH.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise RuntimeError("sol_sanitized_context_unavailable") from exc
+    _validate_sol_memory_text(baseline)
+
+    sections = [baseline.rstrip()]
+    total_bytes = len(baseline.encode("utf-8"))
+    for path in _sol_memory_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            raise RuntimeError("sol_memory_file_unavailable:" + path.name) from exc
+        encoded = text.encode("utf-8")
+        if len(encoded) > SOL_MEMORY_MAX_FILE_BYTES:
+            raise RuntimeError("sol_memory_file_too_large:" + path.name)
+        total_bytes += len(encoded)
+        if total_bytes > SOL_MEMORY_MAX_TOTAL_BYTES:
+            raise RuntimeError("sol_memory_total_too_large")
+        _validate_sol_memory_text(text)
+        sections.append("\n# SOURCE: " + path.as_posix() + "\n" + text.rstrip())
+
+    combined = "\n\n".join(sections).strip() + "\n"
+    _validate_sol_memory_text(combined)
+    return combined
 
 
 def _sol_normalized_probe(value: Any) -> tuple[str, str]:
