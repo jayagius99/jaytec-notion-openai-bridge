@@ -14,6 +14,7 @@ must apply that boundary before invoking this module.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from dataclasses import dataclass
@@ -137,6 +138,21 @@ MANUS_RESULT_JSON_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+MANUS_MASTER_GATE_RESULT_JSON_SCHEMA: dict[str, Any] = copy.deepcopy(
+    MANUS_RESULT_JSON_SCHEMA
+)
+MANUS_MASTER_GATE_RESULT_JSON_SCHEMA["properties"]["gate_manifest_json"] = {
+    "type": "string",
+    "description": (
+        "Canonical JSON string containing one FORGE_GATE_EVIDENCE_V1 manifest "
+        "for the active master gate. Required only on master-gate handoffs."
+    ),
+}
+MANUS_MASTER_GATE_RESULT_JSON_SCHEMA["required"] = [
+    *MANUS_RESULT_JSON_SCHEMA["required"],
+    "gate_manifest_json",
+]
+
 
 class ManusRuntimeError(RuntimeError):
     def __init__(self, code: str):
@@ -231,6 +247,35 @@ def validate_manus_structured_output_schema(
             _path=_path + "[]",
             _root=False,
         )
+
+
+def validate_master_gate_manifest_json(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        raise ManusRuntimeError("MANUS_MASTER_GATE_MANIFEST_MISSING")
+    raw = value.strip()
+    if len(raw.encode("utf-8")) > 16000:
+        raise ManusRuntimeError("MANUS_MASTER_GATE_MANIFEST_TOO_LARGE")
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ManusRuntimeError("MANUS_MASTER_GATE_MANIFEST_JSON_INVALID") from exc
+    if not isinstance(parsed, Mapping):
+        raise ManusRuntimeError("MANUS_MASTER_GATE_MANIFEST_ROOT_INVALID")
+    required = {
+        "schema_version",
+        "task_id",
+        "gate_id",
+        "graph_sha256",
+        "result_receipt",
+        "evidence_requirements",
+        "unresolved_items",
+        "discovered_gates",
+    }
+    if set(parsed) != required:
+        raise ManusRuntimeError("MANUS_MASTER_GATE_MANIFEST_FIELDS_INVALID")
+    if parsed.get("schema_version") != "FORGE_GATE_EVIDENCE_V1":
+        raise ManusRuntimeError("MANUS_MASTER_GATE_MANIFEST_SCHEMA_INVALID")
+    return dict(parsed)
 
 
 def _decode_specialist_request(value: Any) -> Mapping[str, Any]:
@@ -597,7 +642,15 @@ class ManusLiteRuntime:
         if len(context_json.encode("utf-8")) > 4500:
             raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_CONTEXT_TOO_LARGE")
 
-        validate_manus_structured_output_schema(MANUS_RESULT_JSON_SCHEMA)
+        is_master_gate = (
+            str(handoff_context.get("kind") or "") == "MASTER_GATE_DIRECTIVE"
+        )
+        output_schema = (
+            MANUS_MASTER_GATE_RESULT_JSON_SCHEMA
+            if is_master_gate
+            else MANUS_RESULT_JSON_SCHEMA
+        )
+        validate_manus_structured_output_schema(output_schema)
 
         # Handoff idempotency: if a prior send reached Manus but the caller
         # lost the response, detect the deterministic handoff id in task
@@ -632,32 +685,58 @@ class ManusLiteRuntime:
             connector_mutation_authorized=connector_mutation_authorized,
         )
 
-        content = (
-            "JAYTEC INTERNAL HANDOFF\n"
-            "handoff_id=" + hid + "\n"
-            "Continue the SAME bounded task under the SAME authority. "
-            "JAYTEC is supplying private-repository evidence because the Manus "
-            "GitHub connector may not be able to see the private repository. "
-            "Do not treat this as expanded authority. Do not retry direct access "
-            "to inaccessible private sources when JAYTEC has supplied evidence. "
-            "If additional private GitHub evidence or an operation is required, "
-            "return NEEDS_JAYTEC and use at most TWO specialist_requests. Each "
-            "request must use specialist='github_broker' and required_context "
-            "with one exact operation. Supported operations are: "
-            "read_file{path,ref,start_line?,end_line?}; "
-            "list_path{path?,ref}; read_issue{number}; read_pr{number}; "
-            "read_workflow_runs{branch?}; "
-            "create_branch{base_ref,new_branch}; "
-            "write_file{branch,path,content,commit_message?,expected_sha?}; "
-            "create_pr{head,base,title,body}. "
-            "Mutation is allowed only through a branch named "
-            "watch/worker-<current-fence>-<slug>. Never request merge, delete, "
-            "force push, protected-branch write, settings, secrets, credentials "
-            "or repository visibility changes. The handoff_id contains the "
-            "current fence. Do not ask Jay unless a genuine owner-only action "
-            "is required.\n\nJAYTEC_BROKER_CONTEXT="
-            + context_json
-        )
+        if is_master_gate:
+            content = (
+                "JAYTEC MASTER GATE HANDOFF\n"
+                "handoff_id=" + hid + "\n"
+                "Continue the SAME bounded task under the SAME authority and "
+                "work only on the supplied master gate. Do not work ahead. "
+                "The structured result schema for this turn additionally requires "
+                "gate_manifest_json. That field MUST be a canonical JSON string "
+                "for one FORGE_GATE_EVIDENCE_V1 object with exactly: "
+                "schema_version, task_id, gate_id, graph_sha256, result_receipt, "
+                "evidence_requirements, unresolved_items, discovered_gates. "
+                "Use the exact gate_id, graph_sha256 and result receipt from the "
+                "JAYTEC_MASTER_GATE_CONTEXT below. evidence_requirements must cover "
+                "every listed gate evidence requirement exactly once with PASS and "
+                "concrete references. If new blocking work is found, do not hide it: "
+                "put it in unresolved_items and discovered_gates. A discovered gate "
+                "must be blocking and classify requirements only from: software, "
+                "network_read, test, repo_write, deployment, owner_physical, "
+                "credential_custody, new_spend, irreversible_production, "
+                "genesis_approval, v3_promotion. Never use this manifest to grant "
+                "owner authority. Return NEEDS_OWNER only for a genuine Jay/ROOT "
+                "boundary; ordinary software/evidence/tool gaps are NEEDS_JAYTEC.\n\n"
+                "JAYTEC_MASTER_GATE_CONTEXT="
+                + context_json
+            )
+        else:
+            content = (
+                "JAYTEC INTERNAL HANDOFF\n"
+                "handoff_id=" + hid + "\n"
+                "Continue the SAME bounded task under the SAME authority. "
+                "JAYTEC is supplying private-repository evidence because the Manus "
+                "GitHub connector may not be able to see the private repository. "
+                "Do not treat this as expanded authority. Do not retry direct access "
+                "to inaccessible private sources when JAYTEC has supplied evidence. "
+                "If additional private GitHub evidence or an operation is required, "
+                "return NEEDS_JAYTEC and use at most TWO specialist_requests. Each "
+                "request must use specialist='github_broker' and required_context "
+                "with one exact operation. Supported operations are: "
+                "read_file{path,ref,start_line?,end_line?}; "
+                "list_path{path?,ref}; read_issue{number}; read_pr{number}; "
+                "read_workflow_runs{branch?}; "
+                "create_branch{base_ref,new_branch}; "
+                "write_file{branch,path,content,commit_message?,expected_sha?}; "
+                "create_pr{head,base,title,body}. "
+                "Mutation is allowed only through a branch named "
+                "watch/worker-<current-fence>-<slug>. Never request merge, delete, "
+                "force push, protected-branch write, settings, secrets, credentials "
+                "or repository visibility changes. The handoff_id contains the "
+                "current fence. Do not ask Jay unless a genuine owner-only action "
+                "is required.\n\nJAYTEC_BROKER_CONTEXT="
+                + context_json
+            )
         if len(content) > 6000:
             raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_MESSAGE_TOO_LARGE")
 
@@ -665,7 +744,7 @@ class ManusLiteRuntime:
             route,
             task_id,
             content,
-            structured_output_schema=MANUS_RESULT_JSON_SCHEMA,
+            structured_output_schema=output_schema,
         )
         return {
             "schema_version": SCHEMA_VERSION,
@@ -760,6 +839,8 @@ class ManusLiteRuntime:
                 validate_specialist_request(_decode_specialist_request(request))
 
         verify_manus_completion(result)
+        if "gate_manifest_json" in result:
+            validate_master_gate_manifest_json(result.get("gate_manifest_json"))
         out["status"] = "VERIFIED_COMPLETE"
         out["result"] = dict(result)
         return out
@@ -832,6 +913,8 @@ class ManusLiteRuntime:
                 validate_specialist_request(_decode_specialist_request(request))
 
         verify_manus_completion(result)
+        if "gate_manifest_json" in result:
+            validate_master_gate_manifest_json(result.get("gate_manifest_json"))
         out["status"] = "VERIFIED_COMPLETE"
         out["result"] = dict(result)
         return out
