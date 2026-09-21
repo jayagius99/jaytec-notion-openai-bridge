@@ -35,6 +35,22 @@ ALLOWED_GATEWAY_CALLERS = frozenset({
 # connector mutation authority. Only the supervising control-plane identities
 # may carry an already-authorized mutation grant into the existing runtime.
 MUTATION_AUTHORITY_CALLERS = frozenset({"chatgpt", "jaytec"})
+NON_CONTROL_ALLOWED_ACTIONS = frozenset({
+    "read",
+    "inspect",
+    "diagnose",
+    "test",
+    "analyze",
+    "research",
+    "review",
+    "report",
+})
+NON_CONTROL_CONNECTOR_PURPOSES = frozenset({
+    "read",
+    "inspect",
+    "diagnose",
+    "test",
+})
 
 
 class ManusSystemGatewayError(RuntimeError):
@@ -72,6 +88,40 @@ def _mutation_guard(caller: str, mutation_authorized: Any) -> bool:
     return mutation_authorized
 
 
+def _non_control_scope_guard(caller: str, payload: Mapping[str, Any]) -> None:
+    """Let every participant request Manus without letting it mint authority."""
+
+    if caller in MUTATION_AUTHORITY_CALLERS:
+        return
+
+    actions = payload.get("allowed_actions")
+    if not isinstance(actions, list) or not actions:
+        raise ManusSystemGatewayError("MANUS_GATEWAY_ALLOWED_ACTIONS_INVALID")
+    normalized_actions = {
+        str(action or "").strip().casefold()
+        for action in actions
+    }
+    if (
+        "" in normalized_actions
+        or not normalized_actions.issubset(NON_CONTROL_ALLOWED_ACTIONS)
+    ):
+        raise ManusSystemGatewayError(
+            "MANUS_GATEWAY_NON_CONTROL_ACTION_BLOCKED"
+        )
+
+    purposes = payload.get("connector_purposes", {})
+    if not isinstance(purposes, Mapping):
+        raise ManusSystemGatewayError(
+            "MANUS_GATEWAY_CONNECTOR_PURPOSES_INVALID"
+        )
+    for purpose in purposes.values():
+        normalized = str(purpose or "").strip().casefold()
+        if normalized not in NON_CONTROL_CONNECTOR_PURPOSES:
+            raise ManusSystemGatewayError(
+                "MANUS_GATEWAY_NON_CONTROL_CONNECTOR_PURPOSE_BLOCKED"
+            )
+
+
 def _normalized_start(raw: str) -> tuple[str, str]:
     outer = _object(raw)
     if set(outer) != {"caller", "task"}:
@@ -96,6 +146,7 @@ def _normalized_start(raw: str) -> tuple[str, str]:
         caller, payload.get("connector_mutation_authorized", False)
     )
     payload["connector_mutation_authorized"] = mutation_authorized
+    _non_control_scope_guard(caller, payload)
 
     context = payload.get("required_context", {})
     if not isinstance(context, Mapping):
@@ -144,6 +195,13 @@ def _normalized_continue(raw: str) -> dict[str, Any]:
     purposes = outer.get("connector_purposes", {})
     if not isinstance(purposes, Mapping):
         raise ManusSystemGatewayError("MANUS_GATEWAY_CONNECTOR_PURPOSES_INVALID")
+    if caller not in MUTATION_AUTHORITY_CALLERS:
+        for purpose in purposes.values():
+            normalized = str(purpose or "").strip().casefold()
+            if normalized not in NON_CONTROL_CONNECTOR_PURPOSES:
+                raise ManusSystemGatewayError(
+                    "MANUS_GATEWAY_NON_CONTROL_CONNECTOR_PURPOSE_BLOCKED"
+                )
 
     return {
         "caller": caller,
