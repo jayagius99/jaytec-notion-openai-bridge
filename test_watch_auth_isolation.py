@@ -43,6 +43,17 @@ def test_watch_status_route_is_oidc_only_and_read_only():
     assert '"manus_direct_provider_access": False' in route
     assert "chat.completions.create" not in route
     assert "responses.create" not in route
+    assert '"runtime_deployment"' in route
+    assert 'os.environ.get("RENDER_GIT_COMMIT"' in route
+    assert 'os.environ.get("RENDER_GIT_BRANCH"' in route
+    assert 'os.environ.get("RENDER_GIT_REPO_SLUG"' in route
+    for forbidden in (
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "MANUS_API_KEY",
+        "DATABASE_URL",
+    ):
+        assert forbidden not in route
 
 
 def test_watch_status_only_peeks_existing_invocation_record():
