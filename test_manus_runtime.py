@@ -304,9 +304,28 @@ class ManusLiteRuntimeTests(unittest.TestCase):
                     "recovery_route": "FRESH_WORKER_SAME_CHECKPOINT",
                 },
                 constraints=[
-                    "Do not activate Forge.",
-                    "Do not spend money.",
-                    "Do not weaken fencing or owner authority.",
+                    "NO FORGE ACTIVATION",
+                    "NO GENESIS_EVENT_0001",
+                    "NO ROOT_OWNER IDENTITY/RECOVERY/SECRET/HARDWARE-KEY CHANGE",
+                    "NO MERGE OF ROOT PR #17 OR GENESIS PR #58",
+                    "NO NOTION AGENT",
+                    "NO NEW SPEND OR PAID FALLBACK",
+                    "NO DIRECT MUTATION OF ROOT OR GENESIS HEAD BRANCHES",
+                    "USE ISOLATED FEATURE BRANCHES/PULL REQUESTS FOR CODE CHANGES",
+                    "NEVER CLAIM VERIFIED WITHOUT INSPECTED EVIDENCE",
+                    "Resume — do not recreate completed work.",
+                    "Use GitHub only for this recovery task; do not use Notion Agent.",
+                    "Do not spend money, buy credits, top up, subscribe, or enable paid fallback.",
+                    "Manus profile must remain Lite and must be provider-observed as Lite.",
+                    "Do not merge any pull request.",
+                    "Do not modify or force-update security/root-owner-control-v1.",
+                    "Do not modify the head branch of Genesis PR #58.",
+                    "Do not activate Forge and do not create GENESIS_EVENT_0001.",
+                    "Do not change ROOT_OWNER identity, recovery credentials, hardware-key state, secrets, or credential stores.",
+                    "Do not weaken security gates, audit gates, fencing, leases, or owner authority.",
+                    "Prefer isolated feature branches and pull requests for every code mutation.",
+                    "Append meaningful execution evidence to issue #66 and canonical progress/checkpoints to issue #59 when GitHub access permits.",
+                    "Continue all safely possible software-only preparation until a genuine owner, physical, credential, spend, or inaccessible-source boundary is reached.",
                 ],
             )
         )
@@ -321,6 +340,36 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         self.assertIn("Do not activate Forge.", client.created_prompt)
         self.assertIn("Do not spend money.", client.created_prompt)
         self.assertNotIn("O" * 1000, client.created_prompt)
+
+    def test_uncompactable_watch_recovery_fails_before_provider_route(self):
+        client = FakeClient()
+        runtime = ManusLiteRuntime(client)
+        task_id = (
+            "FORGE-GENESIS-ACTIVATION-001:recovery:11:"
+            "alternate_approved_route"
+        )
+        with self.assertRaisesRegex(
+            ManusRuntimeError,
+            "MANUS_RUNTIME_START_MESSAGE_TOO_LARGE",
+        ):
+            runtime.start_task(
+                start_payload(
+                    task_id=task_id,
+                    objective="Continue bounded recovery.",
+                    required_context={
+                        "parent_task_id": "FORGE-GENESIS-ACTIVATION-001",
+                        "checkpoint_number": 103,
+                        "repo": "jayagius99/jaytec-work-engine-v2-g1",
+                        "branch": "security/root-owner-control-v1",
+                        "verified_head": "a" * 40,
+                        "fencing_token": 11,
+                        "recovery_route": "ALTERNATE_APPROVED_ROUTE",
+                    },
+                    constraints=["Z" * 7000],
+                )
+            )
+        self.assertEqual(client.prepare_calls, [])
+        self.assertEqual(client.create_count, 0)
 
     def test_oversized_non_recovery_fails_before_provider_route(self):
         client = FakeClient()
