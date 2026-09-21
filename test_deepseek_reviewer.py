@@ -112,11 +112,11 @@ class TestDeepSeekSecurityReviewer(unittest.TestCase):
             client.completions.calls[1]["messages"][0]["content"],
         )
         self.assertEqual(2, result["bridge_diagnostics"]["attempt"])
-        self.assertTrue(result["bridge_diagnostics"]["provider_fallbacks"])
+        self.assertFalse(result["bridge_diagnostics"]["provider_fallbacks"])
         self.assertFalse(
             client.completions.calls[0]["extra_body"]["provider"]["allow_fallbacks"]
         )
-        self.assertTrue(
+        self.assertFalse(
             client.completions.calls[1]["extra_body"]["provider"]["allow_fallbacks"]
         )
 
@@ -135,30 +135,20 @@ class TestDeepSeekSecurityReviewer(unittest.TestCase):
         self.assertEqual(1, len(client.completions.calls))
 
 
-    def test_provider_route_404_gets_one_same_model_fallback_attempt(self):
+    def test_provider_route_404_fails_closed_without_provider_substitution(self):
         client, dispatch = _dispatch([
             _NotFound("provider route unavailable"),
-            {"content": json.dumps(_valid_result())},
         ])
-        result = dispatch({"max_retries": 1, "objective": "review"})
-
-        self.assertEqual("SUCCESS", result["status"])
-        self.assertEqual(2, len(client.completions.calls))
+        with self.assertRaises(_NotFound):
+            dispatch({"max_retries": 1, "objective": "review"})
+        self.assertEqual(1, len(client.completions.calls))
         self.assertEqual(
             EXPECTED_DEEPSEEK_REVIEWER_MODEL,
             client.completions.calls[0]["model"],
         )
-        self.assertEqual(
-            EXPECTED_DEEPSEEK_REVIEWER_MODEL,
-            client.completions.calls[1]["model"],
-        )
         self.assertFalse(
             client.completions.calls[0]["extra_body"]["provider"]["allow_fallbacks"]
         )
-        self.assertTrue(
-            client.completions.calls[1]["extra_body"]["provider"]["allow_fallbacks"]
-        )
-        self.assertTrue(result["bridge_diagnostics"]["provider_fallbacks"])
 
     def test_non_404_provider_error_does_not_retry(self):
         client, dispatch = _dispatch([RuntimeError("boom")])

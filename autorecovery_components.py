@@ -511,7 +511,7 @@ class ManusLiteRecoveryInvoker:
                 connector_mutation_authorized=mutation,
                 handoff_id=(
                     f"{checkpoint.task_id}:fence:{fencing_token}:"
-                    f"github-broker:{digest[:16]}"
+                    f"jaytec-assistance:{digest[:16]}"
                 ),
                 handoff_context=dict(broker_context),
             )

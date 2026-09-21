@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import asdict
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from autorecovery_components import (
     CALLABLE_ROUTE_ID,
@@ -20,6 +20,12 @@ from autorecovery_components import (
 )
 from autorecovery_runtime import runtime_status, schema_probe
 from manus_governance import validate_specialist_request
+from watch_specialist_broker import (
+    ALLOWED_MANUS_MODEL_SPECIALISTS,
+    SpecialistBrokerError,
+    normalize_manus_model_request,
+    safe_result_summary,
+)
 from autorecovery_supervisor import (
     AssignmentCheckpoint,
     AutoRecoverySupervisor,
@@ -32,6 +38,7 @@ FORGE_TASK_ID = "FORGE-GENESIS-ACTIVATION-001"
 MAX_REQUEST_REFS = 128
 MAX_BROKER_CONTEXT_BYTES = 4500
 MAX_BROKER_REQUESTS = 2
+MAX_HELP_REQUESTS = 5
 MASTER_GATE_SCHEMA = "FORGE_MASTER_GATE_DIRECTIVE_V1"
 MASTER_GATE_FIELDS = frozenset({
     "schema_version",
@@ -701,6 +708,154 @@ def _broker_requests(
     return out
 
 
+def _split_help_requests(
+    terminal: Mapping[str, Any],
+    *,
+    refs: Mapping[str, str],
+    fencing_token: int,
+    mutation_authorized: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Split one Manus help request batch into GitHub and model assistance.
+
+    Every request remains request-only. Unknown specialists fail closed rather
+    than being silently routed to another model/provider.
+    """
+    raw_requests = terminal.get("specialist_requests")
+    if raw_requests in (None, []):
+        return [], [], []
+    if not isinstance(raw_requests, list) or len(raw_requests) > MAX_HELP_REQUESTS:
+        raise WatchIngressError("JAYTEC_HELP_REQUEST_COUNT_INVALID")
+
+    github_requests: list[dict[str, Any]] = []
+    model_requests: list[dict[str, Any]] = []
+    order: list[str] = []
+    seen: set[str] = set()
+
+    for raw in raw_requests:
+        if not isinstance(raw, str) or not raw.strip():
+            raise WatchIngressError("JAYTEC_HELP_REQUEST_INVALID")
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise WatchIngressError("JAYTEC_HELP_REQUEST_JSON_INVALID") from exc
+        if not isinstance(decoded, Mapping):
+            raise WatchIngressError("JAYTEC_HELP_REQUEST_INVALID")
+
+        validate_specialist_request(decoded)
+        specialist = str(decoded.get("specialist") or "").strip().casefold()
+        if specialist == "github_broker":
+            if len(github_requests) >= MAX_BROKER_REQUESTS:
+                raise WatchIngressError("GITHUB_BROKER_REQUEST_COUNT_INVALID")
+            normalized = _normalize_broker_operation(
+                decoded,
+                refs=refs,
+                fencing_token=fencing_token,
+                mutation_authorized=mutation_authorized,
+            )
+            github_requests.append(normalized)
+            rid = str(normalized["request_id"])
+        elif specialist in ALLOWED_MANUS_MODEL_SPECIALISTS:
+            try:
+                normalized_model = normalize_manus_model_request(
+                    decoded,
+                    parent_task_prefix=FORGE_TASK_ID,
+                )
+            except SpecialistBrokerError as exc:
+                raise WatchIngressError(str(exc)) from exc
+            model_requests.append(normalized_model)
+            rid = str(normalized_model["request_id"])
+        else:
+            raise WatchIngressError("JAYTEC_HELP_SPECIALIST_NOT_ALLOWLISTED:" + specialist)
+
+        if rid in seen:
+            raise WatchIngressError("JAYTEC_HELP_DUPLICATE_REQUEST_ID")
+        seen.add(rid)
+        order.append(rid)
+
+    return github_requests, model_requests, order
+
+
+def _model_results_match_requests(
+    package: Mapping[str, Any],
+    requests: list[Mapping[str, Any]],
+) -> bool:
+    rows = package.get("request_results")
+    if not isinstance(rows, list) or len(rows) != len(requests):
+        return False
+    expected = [
+        (str(req.get("request_id") or ""), str(req.get("specialist") or ""))
+        for req in requests
+    ]
+    observed = [
+        (str(row.get("request_id") or ""), str(row.get("specialist") or ""))
+        for row in rows
+        if isinstance(row, Mapping)
+    ]
+    return observed == expected
+
+
+def _compose_assistance_context(
+    *,
+    github_context: Mapping[str, Any],
+    github_requests: list[Mapping[str, Any]],
+    model_package: Mapping[str, Any],
+    model_requests: list[Mapping[str, Any]],
+    request_order: list[str],
+) -> dict[str, Any]:
+    """Create one bounded result packet returned to the same Manus task."""
+    rows_by_id: dict[str, dict[str, Any]] = {}
+
+    if github_requests:
+        if not _broker_results_match_requests(github_context, github_requests):
+            raise WatchIngressError("GITHUB_BROKER_RESULTS_REQUEST_MISMATCH")
+        raw_rows = github_context.get("request_results")
+        assert isinstance(raw_rows, list)
+        for request, row in zip(github_requests, raw_rows):
+            if not isinstance(row, Mapping):
+                raise WatchIngressError("GITHUB_BROKER_RESULT_INVALID")
+            rid = str(request.get("request_id") or "")
+            rows_by_id[rid] = {
+                "request_id": rid,
+                "specialist": "github_broker",
+                "status": str(row.get("status") or "FAILED_CLOSED"),
+                "operation": str(request.get("operation") or ""),
+                "evidence": row.get("evidence"),
+            }
+
+    if model_requests:
+        if not _model_results_match_requests(model_package, model_requests):
+            raise WatchIngressError("MODEL_SPECIALIST_RESULTS_REQUEST_MISMATCH")
+        raw_rows = model_package.get("request_results")
+        assert isinstance(raw_rows, list)
+        for row in raw_rows:
+            assert isinstance(row, Mapping)
+            rid = str(row.get("request_id") or "")
+            rows_by_id[rid] = dict(row)
+
+    ordered_rows = [rows_by_id[rid] for rid in request_order if rid in rows_by_id]
+    if len(ordered_rows) != len(request_order):
+        raise WatchIngressError("JAYTEC_ASSISTANCE_RESULT_SET_INCOMPLETE")
+
+    unsigned = {
+        "schema_version": "JAYTEC_ASSISTANCE_RESULTS_V1",
+        "kind": "SPECIALIST_REQUEST_RESULTS",
+        "authority": "RESULTS_ONLY_NO_AUTHORITY_EXPANSION",
+        "request_results": ordered_rows,
+    }
+    encoded = json.dumps(
+        unsigned,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(encoded) > 4500:
+        raise WatchIngressError("JAYTEC_ASSISTANCE_CONTEXT_TOO_LARGE")
+    return {
+        **unsigned,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
 def _broker_results_match_requests(
     context: Mapping[str, Any],
     requests: list[Mapping[str, Any]],
@@ -748,6 +903,7 @@ def execute_watch_cycle(
     manus_runtime: Any | None,
     registry: Any,
     runtime_components_registered: bool,
+    specialist_runner: Callable[[list[Mapping[str, Any]]], Mapping[str, Any]] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     source = dict(os.environ if env is None else env)
@@ -1107,94 +1263,312 @@ def execute_watch_cycle(
         }
 
     # NEEDS_JAYTEC is an internal orchestration handoff, not an owner boundary.
-    # Continue the SAME fenced worker with evidence supplied by GitHub Actions.
-    # A cycle that is already resolving this transition must not also inject a
-    # new master-gate directive; the terminal/broker transition owns the cycle.
+    # Keep one canonical Manus worker/fence while JAYTEC services bounded help.
+    # GitHub broker work and model-specialist work are correlated into one result
+    # package before being returned to that SAME Manus task.
     had_internal_dependency = _needs_jaytec_state(state)
     if had_internal_dependency:
-        if not broker_context:
-            github_broker = "CONTEXT_REQUIRED"
-        else:
-            readonly = manus_runtime.task_status_readonly(state.worker_id)
-            terminal = (
-                readonly.get("result")
-                if isinstance(readonly, Mapping)
-                and isinstance(readonly.get("result"), Mapping)
-                else {}
+        readonly = manus_runtime.task_status_readonly(state.worker_id)
+        terminal = (
+            readonly.get("result")
+            if isinstance(readonly, Mapping)
+            and isinstance(readonly.get("result"), Mapping)
+            else {}
+        )
+        readonly_status = str(readonly.get("status") or "")
+        terminal_status = str(terminal.get("status") or "")
+        dependency_superseded = False
+
+        # A successful handoff may make the same provider task PENDING before the
+        # next WATCH cycle. The durable state can still carry the previous
+        # NEEDS_JAYTEC marker. Preserve the SAME worker/fence.
+        if readonly_status == "PENDING":
+            store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                progress_marker="MANUS_PENDING",
             )
-            readonly_status = str(readonly.get("status") or "")
-            terminal_status = str(terminal.get("status") or "")
-            dependency_superseded = False
+            state = store.get(task_id)
+            github_broker = "WORKER_RESUMED_PENDING"
+            dependency_superseded = True
+        elif (
+            readonly_status == "VERIFIED_COMPLETE"
+            and terminal_status not in {"NEEDS_JAYTEC", "PARTIAL_SUCCESS"}
+        ):
+            store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                progress_marker=None,
+            )
+            state = store.get(task_id)
+            github_broker = "WORKER_TERMINAL_ADVANCED"
+            dependency_superseded = True
+        elif (
+            readonly_status != "VERIFIED_COMPLETE"
+            or terminal_status not in {"NEEDS_JAYTEC", "PARTIAL_SUCCESS"}
+        ):
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "NEEDS_JAYTEC_TERMINAL_RESULT_NOT_VERIFIED",
+            }
 
-            # A successful handoff may make the same provider task PENDING
-            # before the next WATCH cycle. The durable state can still carry
-            # the previous NEEDS_JAYTEC marker from an earlier poll. Treat
-            # PENDING on the SAME fenced worker as resumed work, not as an
-            # invalid terminal result.
-            if readonly_status == "PENDING":
-                store.heartbeat(
-                    task_id,
-                    fencing_token=state.fencing_token,
-                    worker_id=state.worker_id,
-                    progress_marker="MANUS_PENDING",
-                )
-                state = store.get(task_id)
-                github_broker = "WORKER_RESUMED_PENDING"
-                dependency_superseded = True
-            elif (
-                readonly_status == "VERIFIED_COMPLETE"
-                and terminal_status not in {"NEEDS_JAYTEC", "PARTIAL_SUCCESS"}
-            ):
-                # The provider has already advanced to a new terminal result.
-                # Re-open the durable state on the same fence so the canonical
-                # supervisor below can classify SUCCESS / NEEDS_OWNER /
-                # FAILED_CLOSED using one implementation of terminal policy.
-                store.heartbeat(
-                    task_id,
-                    fencing_token=state.fencing_token,
-                    worker_id=state.worker_id,
-                    progress_marker=None,
-                )
-                state = store.get(task_id)
-                github_broker = "WORKER_TERMINAL_ADVANCED"
-                dependency_superseded = True
-            elif (
-                readonly_status != "VERIFIED_COMPLETE"
-                or terminal_status not in {"NEEDS_JAYTEC", "PARTIAL_SUCCESS"}
-            ):
-                return {
-                    "status": "BLOCKED_FAIL_CLOSED",
-                    "task_id": task_id,
-                    "reason": "NEEDS_JAYTEC_TERMINAL_RESULT_NOT_VERIFIED",
-                }
-
-            if not dependency_superseded:
-                envelope = dict(state.checkpoint.authority_envelope or {})
-                connector_purposes = envelope.get("connector_purposes")
-                mutation_authorized = bool(
-                    envelope.get("connector_mutation_authorized") is True
-                    and isinstance(connector_purposes, Mapping)
-                    and str(connector_purposes.get("github") or "").casefold() == "write"
-                )
-                requests = _broker_requests(
+        if not dependency_superseded:
+            envelope = dict(state.checkpoint.authority_envelope or {})
+            connector_purposes = envelope.get("connector_purposes")
+            mutation_authorized = bool(
+                envelope.get("connector_mutation_authorized") is True
+                and isinstance(connector_purposes, Mapping)
+                and str(connector_purposes.get("github") or "").casefold() == "write"
+            )
+            try:
+                github_requests, model_requests, request_order = _split_help_requests(
                     terminal,
                     refs=refs,
                     fencing_token=state.fencing_token,
                     mutation_authorized=mutation_authorized,
                 )
-                if requests and broker_context.get("kind") != "SPECIALIST_REQUEST_RESULTS":
+            except (WatchIngressError, SpecialistBrokerError) as exc:
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": str(exc),
+                }
+
+            if not request_order:
+                # Compatibility for a pre-specialist-fabric Manus task that reached
+                # NEEDS_JAYTEC before returning explicit SPECIALIST_REQUEST packets.
+                # A prevalidated private-GitHub bootstrap context may still be
+                # returned to the SAME worker/fence exactly once. New model help
+                # never uses this compatibility path.
+                if broker_context:
+                    handoff = invoker.continue_existing(
+                        checkpoint=state.checkpoint,
+                        worker_id=state.worker_id,
+                        fencing_token=state.fencing_token,
+                        broker_context=broker_context,
+                    )
+                    if handoff.accepted:
+                        digest = str(broker_context.get("sha256") or "")[:16]
+                        store.heartbeat(
+                            task_id,
+                            fencing_token=state.fencing_token,
+                            worker_id=state.worker_id,
+                            progress_marker="JAYTEC_BROKER_HANDOFF:" + digest,
+                        )
+                        final = store.get(task_id)
+                        return {
+                            "status": "PASS",
+                            "task_id": task_id,
+                            "bootstrapped": bootstrapped,
+                            "health_refreshed": False,
+                            "github_broker": "HANDOFF_CONTINUED",
+                            "decision": {
+                                "action": "NOOP_HEALTHY",
+                                "effective_stop_reason": StopReason.RUNNING.value,
+                                "reason": "JAYTEC_INTERNAL_HANDOFF_CONTINUED",
+                                "recovery_route": None,
+                            },
+                            "assignment": {
+                                "stop_reason": final.stop_reason.value if final else None,
+                                "worker_kind": final.worker_kind.value if final else None,
+                                "worker_id": final.worker_id if final else None,
+                                "worker_route": final.worker_route if final else None,
+                                "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
+                                "repo": final.checkpoint.repo if final else None,
+                                "branch": final.checkpoint.branch if final else None,
+                                "verified_head": final.checkpoint.commit_head if final else None,
+                                "recovery_attempts": final.recovery_attempts if final else None,
+                                "fencing_token": final.fencing_token if final else None,
+                                "progress_marker": final.progress_marker if final else None,
+                                "completed": final.completed if final else None,
+                                "last_error": final.last_error if final else None,
+                            },
+                        }
+                    return {
+                        "status": "BLOCKED_FAIL_CLOSED",
+                        "task_id": task_id,
+                        "reason": str(handoff.detail or "LEGACY_BROKER_HANDOFF_FAILED"),
+                    }
+
+                final = store.get(task_id)
+                return {
+                    "status": "PASS",
+                    "task_id": task_id,
+                    "bootstrapped": bootstrapped,
+                    "health_refreshed": False,
+                    "github_broker": "NONE",
+                    "decision": {
+                        "action": "HOLD",
+                        "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
+                        "reason": "JAYTEC_INTERNAL_HELP_REQUEST_REQUIRED",
+                        "recovery_route": None,
+                    },
+                    "assignment": {
+                        "stop_reason": final.stop_reason.value if final else None,
+                        "worker_kind": final.worker_kind.value if final else None,
+                        "worker_id": final.worker_id if final else None,
+                        "worker_route": final.worker_route if final else None,
+                        "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
+                        "repo": final.checkpoint.repo if final else None,
+                        "branch": final.checkpoint.branch if final else None,
+                        "verified_head": final.checkpoint.commit_head if final else None,
+                        "recovery_attempts": final.recovery_attempts if final else None,
+                        "fencing_token": final.fencing_token if final else None,
+                        "progress_marker": final.progress_marker if final else None,
+                        "completed": final.completed if final else None,
+                    },
+                }
+
+            # GitHub operations must still be executed by the separately bounded
+            # GitHub Actions broker. Model specialists never receive GitHub tokens.
+            if github_requests and broker_context.get("kind") != "SPECIALIST_REQUEST_RESULTS":
+                final = store.get(task_id)
+                return {
+                    "status": "PASS",
+                    "task_id": task_id,
+                    "bootstrapped": bootstrapped,
+                    "health_refreshed": False,
+                    "github_broker": "REQUESTS_REQUIRED",
+                    "github_broker_requests": github_requests,
+                    "model_specialist_requests_pending": [
+                        {
+                            "request_id": str(req.get("request_id") or ""),
+                            "specialist": str(req.get("specialist") or ""),
+                        }
+                        for req in model_requests
+                    ],
+                    "decision": {
+                        "action": "HOLD",
+                        "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
+                        "reason": "JAYTEC_GITHUB_BROKER_REQUESTS_REQUIRED",
+                        "recovery_route": None,
+                    },
+                    "assignment": {
+                        "stop_reason": final.stop_reason.value if final else None,
+                        "worker_kind": final.worker_kind.value if final else None,
+                        "worker_id": final.worker_id if final else None,
+                        "worker_route": final.worker_route if final else None,
+                        "checkpoint_number": (
+                            final.checkpoint.checkpoint_number if final else None
+                        ),
+                        "repo": final.checkpoint.repo if final else None,
+                        "branch": final.checkpoint.branch if final else None,
+                        "verified_head": (
+                            final.checkpoint.commit_head if final else None
+                        ),
+                        "recovery_attempts": final.recovery_attempts if final else None,
+                        "fencing_token": final.fencing_token if final else None,
+                        "progress_marker": final.progress_marker if final else None,
+                        "completed": final.completed if final else None,
+                    },
+                }
+
+            if github_requests and not _broker_results_match_requests(
+                broker_context, github_requests
+            ):
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": "GITHUB_BROKER_RESULTS_REQUEST_MISMATCH",
+                }
+            if not github_requests and broker_context.get("kind") == "SPECIALIST_REQUEST_RESULTS":
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": "UNEXPECTED_GITHUB_BROKER_RESULTS",
+                }
+
+            model_package: Mapping[str, Any] = {
+                "schema_version": "JAYTEC_MANUS_SPECIALIST_RESULTS_V1",
+                "authority": "RESULTS_ONLY_NO_DISPATCH_AUTHORITY",
+                "request_results": [],
+                "sha256": hashlib.sha256(b"{}").hexdigest(),
+            }
+            if model_requests:
+                if specialist_runner is None:
+                    return {
+                        "status": "BLOCKED_FAIL_CLOSED",
+                        "task_id": task_id,
+                        "reason": "MODEL_SPECIALIST_RUNNER_UNAVAILABLE",
+                    }
+                try:
+                    model_package = dict(specialist_runner(model_requests))
+                except Exception as exc:
+                    return {
+                        "status": "BLOCKED_FAIL_CLOSED",
+                        "task_id": task_id,
+                        "reason": "MODEL_SPECIALIST_RUNNER_FAILED:" + type(exc).__name__,
+                    }
+                if not _model_results_match_requests(model_package, model_requests):
+                    return {
+                        "status": "BLOCKED_FAIL_CLOSED",
+                        "task_id": task_id,
+                        "reason": "MODEL_SPECIALIST_RESULTS_REQUEST_MISMATCH",
+                    }
+
+            try:
+                assistance_context = _compose_assistance_context(
+                    github_context=broker_context,
+                    github_requests=github_requests,
+                    model_package=model_package,
+                    model_requests=model_requests,
+                    request_order=request_order,
+                )
+            except WatchIngressError as exc:
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": str(exc),
+                }
+
+            handoff_digest = str(assistance_context.get("sha256") or "")[:16]
+            delivered_marker = "JAYTEC_ASSISTANCE_HANDOFF:" + handoff_digest
+            if state.progress_marker == delivered_marker:
+                github_broker = "WAITING_FOR_NEW_CONTEXT"
+            else:
+                handoff = invoker.continue_existing(
+                    checkpoint=state.checkpoint,
+                    worker_id=state.worker_id,
+                    fencing_token=state.fencing_token,
+                    broker_context=assistance_context,
+                )
+                if handoff.accepted and handoff.detail == "MANUS_JAYTEC_HANDOFF_REPLAY":
+                    store.mark_stop(
+                        task_id,
+                        fencing_token=state.fencing_token,
+                        stop_reason=StopReason.STALLED_RECOVERABLE,
+                        error="JAYTEC_INTERNAL_HANDOFF_REPLAY_NO_PROGRESS",
+                    )
+                    github_broker = "HANDOFF_REPLAY_NO_PROGRESS"
+                    state = store.get(task_id)
+                elif handoff.accepted:
+                    store.heartbeat(
+                        task_id,
+                        fencing_token=state.fencing_token,
+                        worker_id=state.worker_id,
+                        progress_marker=delivered_marker,
+                    )
+                    github_broker = "HANDOFF_CONTINUED" if github_requests else "NONE"
+                    continuation_reason = (
+                        "JAYTEC_INTERNAL_HANDOFF_CONTINUED"
+                        if github_requests and not model_requests
+                        else "JAYTEC_INTERNAL_ASSISTANCE_CONTINUED"
+                    )
                     final = store.get(task_id)
                     return {
                         "status": "PASS",
                         "task_id": task_id,
                         "bootstrapped": bootstrapped,
                         "health_refreshed": False,
-                        "github_broker": "REQUESTS_REQUIRED",
-                        "github_broker_requests": requests,
+                        "github_broker": github_broker,
+                        "specialist_results": safe_result_summary(model_package),
                         "decision": {
-                            "action": "HOLD",
-                            "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
-                            "reason": "JAYTEC_GITHUB_BROKER_REQUESTS_REQUIRED",
+                            "action": "NOOP_HEALTHY",
+                            "effective_stop_reason": StopReason.RUNNING.value,
+                            "reason": continuation_reason,
                             "recovery_route": None,
                         },
                         "assignment": {
@@ -1218,99 +1592,26 @@ def execute_watch_cycle(
                                 final.progress_marker if final else None
                             ),
                             "completed": final.completed if final else None,
+                            "last_error": final.last_error if final else None,
                         },
                     }
-                if requests and not _broker_results_match_requests(
-                    broker_context, requests
-                ):
-                    return {
-                        "status": "BLOCKED_FAIL_CLOSED",
-                        "task_id": task_id,
-                        "reason": "GITHUB_BROKER_RESULTS_REQUEST_MISMATCH",
-                    }
-
-                handoff_digest = str(broker_context.get("sha256") or "")[:16]
-                delivered_marker = "JAYTEC_BROKER_HANDOFF:" + handoff_digest
-                if state.progress_marker == delivered_marker:
-                    github_broker = "WAITING_FOR_NEW_CONTEXT"
                 else:
-                    handoff = invoker.continue_existing(
-                        checkpoint=state.checkpoint,
-                        worker_id=state.worker_id,
-                        fencing_token=state.fencing_token,
-                        broker_context=broker_context,
+                    original_marker = str(
+                        state.last_error
+                        or "MANUS_TERMINAL:NEEDS_JAYTEC:unknown"
                     )
-                    if handoff.accepted and handoff.detail == "MANUS_JAYTEC_HANDOFF_REPLAY":
-                        store.mark_stop(
-                            task_id,
-                            fencing_token=state.fencing_token,
-                            stop_reason=StopReason.STALLED_RECOVERABLE,
-                            error="JAYTEC_INTERNAL_HANDOFF_REPLAY_NO_PROGRESS",
-                        )
-                        github_broker = "HANDOFF_REPLAY_NO_PROGRESS"
-                        state = store.get(task_id)
-                    elif handoff.accepted:
-                        store.heartbeat(
-                            task_id,
-                            fencing_token=state.fencing_token,
-                            worker_id=state.worker_id,
-                            progress_marker=delivered_marker,
-                        )
-                        github_broker = "HANDOFF_CONTINUED"
-                        final = store.get(task_id)
-                        return {
-                            "status": "PASS",
-                            "task_id": task_id,
-                            "bootstrapped": bootstrapped,
-                            "health_refreshed": False,
-                            "github_broker": github_broker,
-                            "decision": {
-                                "action": "NOOP_HEALTHY",
-                                "effective_stop_reason": StopReason.RUNNING.value,
-                                "reason": "JAYTEC_INTERNAL_HANDOFF_CONTINUED",
-                                "recovery_route": None,
-                            },
-                            "assignment": {
-                                "stop_reason": final.stop_reason.value if final else None,
-                                "worker_kind": final.worker_kind.value if final else None,
-                                "worker_id": final.worker_id if final else None,
-                                "worker_route": final.worker_route if final else None,
-                                "checkpoint_number": (
-                                    final.checkpoint.checkpoint_number if final else None
-                                ),
-                                "repo": final.checkpoint.repo if final else None,
-                                "branch": final.checkpoint.branch if final else None,
-                                "verified_head": (
-                                    final.checkpoint.commit_head if final else None
-                                ),
-                                "recovery_attempts": (
-                                    final.recovery_attempts if final else None
-                                ),
-                                "fencing_token": final.fencing_token if final else None,
-                                "progress_marker": (
-                                    final.progress_marker if final else None
-                                ),
-                                "completed": final.completed if final else None,
-                                "last_error": final.last_error if final else None,
-                            },
-                        }
-                    else:
-                        original_marker = str(
-                            state.last_error
-                            or "MANUS_TERMINAL:NEEDS_JAYTEC:unknown"
-                        )
-                        store.mark_stop(
-                            task_id,
-                            fencing_token=state.fencing_token,
-                            stop_reason=StopReason.WAITING_FOR_DEPENDENCY,
-                            error=(
-                                original_marker
-                                + "|JAYTEC_HANDOFF_FAILED:"
-                                + str(handoff.detail or "unknown")[:500]
-                            ),
-                        )
-                        github_broker = "HANDOFF_FAILED_CLOSED"
-                    state = store.get(task_id)
+                    store.mark_stop(
+                        task_id,
+                        fencing_token=state.fencing_token,
+                        stop_reason=StopReason.WAITING_FOR_DEPENDENCY,
+                        error=(
+                            original_marker
+                            + "|JAYTEC_HANDOFF_FAILED:"
+                            + str(handoff.detail or "unknown")[:500]
+                        ),
+                    )
+                    github_broker = "HANDOFF_FAILED_CLOSED"
+                state = store.get(task_id)
 
     gate_handoff = "NOT_NEEDED"
     if (

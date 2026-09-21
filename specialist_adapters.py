@@ -40,8 +40,8 @@ from relationship_policy import Actor
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
 EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
-SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V2"
-SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V2.md")
+SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V3"
+SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V3.md")
 SOL_PROVENANCE_MARKERS = (
     "genesis_event_0001", "pre-genesis", "pre genesis", "/jaytec/uren/pre-genesis",
     "uren_identity_genesis", "uren identity genesis", "god mode", "owner manual source index",
