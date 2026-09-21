@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from manus_adapter import MANUS_MAX_MESSAGE_CHARS
 from manus_policy import ManusProfile, ManusProfilePolicyError
 from orchestration import ExecutionRegistry
 from manus_governance import specialist_request
@@ -278,6 +279,82 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         )
         self.assertNotIn("standard", client.created_prompt.casefold())
         self.assertIn("JAYTEC MANUS TASK PACKET", client.created_prompt)
+
+    def test_oversized_watch_recovery_is_compacted_before_provider_route(self):
+        client = FakeClient()
+        runtime = ManusLiteRuntime(client)
+        task_id = (
+            "FORGE-GENESIS-ACTIVATION-001:recovery:10:"
+            "fresh_worker_same_checkpoint"
+        )
+        result = runtime.start_task(
+            start_payload(
+                task_id=task_id,
+                objective="O" * 8000,
+                required_context={
+                    "parent_task_id": "FORGE-GENESIS-ACTIVATION-001",
+                    "checkpoint_number": 103,
+                    "repo": "jayagius99/jaytec-work-engine-v2-g1",
+                    "branch": "security/root-owner-control-v1",
+                    "verified_head": "a" * 40,
+                    "current_phase": "G03 / Security Audit #47",
+                    "last_safe_checkpoint": "safe-" + ("S" * 900),
+                    "next_intended_action": "continue-" + ("N" * 900),
+                    "fencing_token": 10,
+                    "recovery_route": "FRESH_WORKER_SAME_CHECKPOINT",
+                },
+                constraints=[
+                    "Do not activate Forge.",
+                    "Do not spend money.",
+                    "Do not weaken fencing or owner authority.",
+                ],
+            )
+        )
+        self.assertEqual(result["status"], "STARTED")
+        self.assertEqual(len(client.prepare_calls), 1)
+        self.assertLessEqual(len(client.created_prompt), MANUS_MAX_MESSAGE_CHARS)
+        self.assertLessEqual(
+            len(client.created_prompt.encode("utf-8")),
+            MANUS_MAX_MESSAGE_CHARS,
+        )
+        self.assertIn("JAYTEC_WATCH_RECOVERY_COMPACTION_V1", client.created_prompt)
+        self.assertIn("Do not activate Forge.", client.created_prompt)
+        self.assertIn("Do not spend money.", client.created_prompt)
+        self.assertNotIn("O" * 1000, client.created_prompt)
+
+    def test_oversized_non_recovery_fails_before_provider_route(self):
+        client = FakeClient()
+        runtime = ManusLiteRuntime(client)
+        with self.assertRaisesRegex(
+            ManusRuntimeError,
+            "MANUS_RUNTIME_START_MESSAGE_TOO_LARGE",
+        ):
+            runtime.start_task(start_payload(objective="O" * 8000))
+        self.assertEqual(client.prepare_calls, [])
+        self.assertEqual(client.create_count, 0)
+
+    def test_large_handoff_context_fits_without_dropping_evidence(self):
+        client = FakeClient(observed_profile="lite")
+        runtime = ManusLiteRuntime(client)
+        evidence = "E" * 3900
+        result = runtime.continue_task_handoff(
+            "provider-123",
+            scope="jaytec_delegated_task",
+            authority_source="chatgpt",
+            current_task_authorized=True,
+            connector_purposes={"github": "write"},
+            connector_mutation_authorized=True,
+            handoff_id="handoff-budget-test",
+            handoff_context={
+                "kind": "SPECIALIST_REQUEST_RESULTS",
+                "evidence": evidence,
+            },
+        )
+        self.assertEqual(result["status"], "CONTINUED")
+        sent = client.sent_messages[0]["content"]
+        self.assertIn(evidence, sent)
+        self.assertLessEqual(len(sent), MANUS_MAX_MESSAGE_CHARS)
+        self.assertLessEqual(len(sent.encode("utf-8")), MANUS_MAX_MESSAGE_CHARS)
 
     def test_idempotent_start_replays_without_duplicate_provider_task(self):
         client = FakeClient()

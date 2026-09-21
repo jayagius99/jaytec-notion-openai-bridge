@@ -13,7 +13,13 @@ from autorecovery_supervisor import (
     WorkerHealth,
     WorkerInvocation,
 )
-from manus_runtime import ManusLiteRuntime
+from manus_governance import build_minimal_task_packet
+from manus_runtime import (
+    ManusLiteRuntime,
+    _fits_manus_raw_message,
+    _prompt,
+    parse_start_request,
+)
 
 SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
 CALLABLE_ROUTE_ID = "jaytec-manus-lite-v1"
@@ -209,6 +215,18 @@ class ManusLiteRecoveryInvoker:
                 "known_failures_count": len(checkpoint.known_failures),
                 "dependencies_count": len(checkpoint.dependencies),
                 "continuation_packet_sha256": checkpoint_digest,
+                "canonical_objective_sha256": hashlib.sha256(
+                    checkpoint.objective.encode("utf-8")
+                ).hexdigest(),
+                "canonical_objective_excerpt": checkpoint.objective[:700],
+                "active_constraints_sha256": hashlib.sha256(
+                    json.dumps(
+                        list(checkpoint.active_constraints),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                ).hexdigest(),
                 "fencing_token": fencing_token,
                 "recovery_route": route.value,
             }
@@ -234,9 +252,12 @@ class ManusLiteRecoveryInvoker:
             request = {
                 "task_id": worker_task_id,
                 "objective": (
-                    checkpoint.objective
-                    + "\n\nContinue from the exact checkpoint. Complete as much "
-                    "safe software-only preparation as possible before stopping."
+                    "Continue the canonical Forge assignment from the exact durable "
+                    "JAYTEC checkpoint identified in required_context. Preserve all "
+                    "completed work; follow current_phase and next_intended_action; "
+                    "obey every supplied constraint and authority boundary. If exact "
+                    "omitted checkpoint prose is required, return NEEDS_JAYTEC rather "
+                    "than guessing or expanding scope."
                 ),
                 "scope": "jaytec_delegated_task",
                 "authority_source": "chatgpt",
@@ -253,8 +274,30 @@ class ManusLiteRecoveryInvoker:
                 ],
                 "title": f"JAYTEC recovery {checkpoint.task_id} fence {fencing_token}",
             }
+            request_json = json.dumps(request, sort_keys=True)
+            # Deterministic local preflight before any Manus provider call.
+            # This mirrors the runtime packet construction without weakening or
+            # dropping constraints. A remaining oversize packet fails closed.
+            parsed = parse_start_request(request_json)
+            preflight_packet = build_minimal_task_packet(
+                task_id=parsed.task_id,
+                objective=parsed.objective,
+                scope=parsed.scope,
+                authority_source=parsed.authority_source,
+                allowed_actions=list(parsed.allowed_actions),
+                required_context=parsed.required_context,
+                constraints=list(parsed.constraints),
+                reference_ids=list(parsed.reference_ids),
+            )
+            if not _fits_manus_raw_message(_prompt(preflight_packet)):
+                return WorkerInvocation(
+                    accepted=False,
+                    worker_id=None,
+                    route=route,
+                    detail="MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE",
+                )
             result = self.runtime.start_task_idempotent(
-                json.dumps(request, sort_keys=True),
+                request_json,
                 self.registry,
             )
         except Exception as exc:
