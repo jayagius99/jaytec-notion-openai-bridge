@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from openai import OpenAI
@@ -35,6 +36,23 @@ from worker_json import WorkerJsonError, json_object, json_object_with_diagnosti
 EXPECTED_CODEX_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 EXPECTED_REVIEWER_MODEL = "deepseek/deepseek-v4-flash-0731:free"
 EXPECTED_GEMINI_MODEL = EXPECTED_REVIEWER_MODEL  # legacy TaskPacket wire role compatibility
+EXPECTED_SOL_MODEL = "gpt-5.6-sol"
+SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V1"
+SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V1.md")
+SOL_PROVENANCE_MARKERS = (
+    "genesis_event_0001",
+    "pre-genesis",
+    "/jaytec/uren/pre-genesis",
+    "uren_identity_genesis",
+    "god mode",
+    "owner manual source index",
+    "how uren was born",
+    "how uren will be born",
+    "uren birth",
+    "uren origin",
+    "uren construction",
+    "uren activation sequence",
+)
 
 SPECIALIST_AUTHORITY_CONTRACT = """JAYTEC SPECIALIST AUTHORITY CONTRACT
 - Jay is owner/root authority.
@@ -540,5 +558,142 @@ def build_gemini_dispatch(
         diagnostics["notion_fallback"] = False
         out["bridge_diagnostics"] = diagnostics
         return out
+
+    return circuit.guard(_dispatch)
+
+def _sol_context_text() -> str:
+    try:
+        text = SOL_CONTEXT_PATH.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise RuntimeError("sol_sanitized_context_unavailable") from exc
+    if not text.strip():
+        raise RuntimeError("sol_sanitized_context_empty")
+    lowered = text.lower()
+    forbidden_context_markers = (
+        "genesis_event_0001",
+        "/jaytec/uren/pre-genesis",
+        "uren_identity_genesis",
+        "god mode",
+    )
+    if any(marker in lowered for marker in forbidden_context_markers):
+        raise RuntimeError("sol_sanitized_context_provenance_violation")
+    return text
+
+
+def _sol_packet_provenance_violation(packet: Mapping[str, Any]) -> bool:
+    try:
+        lowered = json.dumps(packet, ensure_ascii=False, sort_keys=True).lower()
+    except Exception:
+        return True
+    return any(marker in lowered for marker in SOL_PROVENANCE_MARKERS)
+
+
+def build_sol_dispatch(
+    *,
+    openai_client: OpenAI,
+    sol_model: str,
+    circuit: CircuitBreaker,
+    enabled: bool = False,
+    cost_authorized: bool = False,
+    sol_timeout_s: float = 90.0,
+    reasoning_effort: str = "high",
+    max_output_tokens: int = 4000,
+    allowed_workflow_prefixes: tuple[str, ...] = (
+        "JAYTEC_V2_",
+        "JAYTEC_ENGINEERING_",
+        "JAYTEC_SOL_",
+        "JAYTEC_CORE_TRIAD_",
+    ),
+) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+    """Build the exact-model Sol primary lane.
+
+    The route is deliberately cost-locked. Registration and offline tests may
+    exist while live provider calls remain impossible until both `enabled` and
+    `cost_authorized` are true. There is no silent fallback.
+    """
+    require_exact_model(sol_model, EXPECTED_SOL_MODEL, context="sol")
+    if sol_timeout_s <= 0:
+        raise ValueError("sol_timeout_s must be positive")
+    if type(max_output_tokens) is not int or max_output_tokens < 256 or max_output_tokens > 16000:
+        raise ValueError("invalid sol max_output_tokens")
+    if reasoning_effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
+        raise ValueError("invalid sol reasoning_effort")
+
+    sanitized_context = _sol_context_text()
+    context_digest = hashlib.sha256(sanitized_context.encode("utf-8")).hexdigest()
+
+    def _prompt(packet: Mapping[str, Any]) -> str:
+        return (
+            "ROLE: JAYTEC SOL PRIMARY / CORE TRIAD ENGINEERING SPECIALIST\n"
+            + SPECIALIST_AUTHORITY_CONTRACT
+            + "\nKNOWLEDGE_SCOPE: "
+            + SOL_KNOWLEDGE_SCOPE
+            + "\nSANITIZED_JAYTEC_CONTEXT_SHA256: "
+            + context_digest
+            + "\nSANITIZED_JAYTEC_CONTEXT:\n"
+            + sanitized_context
+            + "\nReturn ONLY one valid JSON object using the standard JAYTEC specialist result fields. "
+              "Do not perform side effects. Do not request broader authority, provider fallback, or spending. "
+              "Do not infer or search for owner-only identity provenance or private activation-history material."
+            + "\nTASK_PACKET_JSON:\n"
+            + json.dumps(packet, ensure_ascii=False, sort_keys=True)
+        )
+
+    def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+        workflow_id = str(packet.get("workflow_id", ""))
+        if not any(workflow_id.startswith(prefix) for prefix in allowed_workflow_prefixes):
+            raise RuntimeError("sol_workflow_not_authorized")
+        authority = packet.get("required_context") or {}
+        if not isinstance(authority, Mapping):
+            raise RuntimeError("sol_authority_context_required")
+        if authority.get("authority_controller") != "CHATGPT_OPENAI_LEAD":
+            raise RuntimeError("sol_chatgpt_authority_required")
+        if authority.get("specialist_authority") != "SUBORDINATE":
+            raise RuntimeError("sol_specialist_must_be_subordinate")
+        if authority.get("knowledge_scope") != SOL_KNOWLEDGE_SCOPE:
+            raise RuntimeError("sol_sanitized_knowledge_scope_required")
+        if _sol_packet_provenance_violation(packet):
+            raise RuntimeError("sol_owner_provenance_blocked")
+        if not enabled:
+            raise RuntimeError("sol_primary_lane_disabled")
+        if not cost_authorized:
+            raise RuntimeError("sol_primary_cost_not_authorized")
+
+        try:
+            response = openai_client.responses.create(
+                model=sol_model,
+                input=_prompt(packet),
+                reasoning={"effort": reasoning_effort},
+                max_output_tokens=max_output_tokens,
+                timeout=sol_timeout_s,
+            )
+        except Exception as exc:
+            _normalize_provider_exception(exc, context="sol_provider")
+
+        returned_provider_model = getattr(response, "model", None)
+        if returned_provider_model is not None:
+            require_exact_model(
+                returned_provider_model,
+                sol_model,
+                context="sol_provider_response",
+            )
+        content = getattr(response, "output_text", "") or ""
+        result, diagnostics = json_object_with_diagnostics(content)
+        if not isinstance(result, dict):
+            raise RuntimeError("sol_result_not_object")
+        result.setdefault("model", sol_model)
+        result["bridge_diagnostics"] = {
+            "provider_model": returned_provider_model,
+            "content_sha256": hashlib.sha256(
+                content.encode("utf-8", errors="replace")
+            ).hexdigest(),
+            "content_bytes": len(content.encode("utf-8", errors="replace")),
+            "extracted_balanced_object": bool(diagnostics.extracted_object),
+            "knowledge_scope": SOL_KNOWLEDGE_SCOPE,
+            "sanitized_context_sha256": context_digest,
+            "silent_fallback": False,
+            "cost_gate": "OWNER_AUTHORIZED_ONLY",
+        }
+        return result
 
     return circuit.guard(_dispatch)
