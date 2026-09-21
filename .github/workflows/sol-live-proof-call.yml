@@ -1,0 +1,54 @@
+name: One-shot Sol live proof
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/sol-live-proof-call.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call token-protected Sol reserve proof once
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl --silent --show-error --max-time 90             "https://jaytec-notion-openai-bridge.onrender.com/__jaytec/sol-proof/GjrOFSoCDCnDutb-67UP1a8RG53iCNBcp7s3tbj6aFU")"
+          python - "$response" <<'PY'
+          import json, sys
+          payload = json.loads(sys.argv[1])
+          safe = {
+              "ok": payload.get("ok"),
+              "status": payload.get("status"),
+              "model": payload.get("model"),
+              "gateway": payload.get("gateway"),
+              "provider_only": payload.get("provider_only"),
+              "model_lock": payload.get("model_lock"),
+              "fallback_models": payload.get("fallback_models"),
+              "zero_spend_attested": payload.get("zero_spend_attested"),
+              "credit_balance_before_usd": payload.get("credit_balance_before_usd"),
+              "credit_balance_after_usd": payload.get("credit_balance_after_usd"),
+              "credit_used_usd": payload.get("credit_used_usd"),
+              "error": payload.get("error"),
+              "detail": payload.get("detail"),
+          }
+          print("SOL_PROOF_SAFE_RESULT=" + json.dumps(safe, sort_keys=True))
+          if payload.get("ok") is not True:
+              raise SystemExit(1)
+          if payload.get("model") != "openai/gpt-5.6-sol":
+              raise SystemExit(2)
+          if payload.get("gateway") != "vercel_ai_gateway":
+              raise SystemExit(3)
+          if payload.get("provider_only") != ["openai"]:
+              raise SystemExit(4)
+          if payload.get("fallback_models") != []:
+              raise SystemExit(5)
+          if payload.get("zero_spend_attested") is not True:
+              raise SystemExit(6)
+          PY
