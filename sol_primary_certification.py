@@ -50,6 +50,8 @@ def main() -> None:
     server_source = Path("server.py").read_text(encoding="utf-8")
     staging_source = Path("staging_server.py").read_text(encoding="utf-8")
     courier_source = Path("notion_courier_server.py").read_text(encoding="utf-8")
+    reliable_source = Path("reliable_server.py").read_text(encoding="utf-8")
+    durable_source = Path("durable_tasks_runtime.py").read_text(encoding="utf-8")
 
     require("sol_primary_cost_not_authorized" in adapter_source, "adapter_cost_gate_missing")
     require("sol_owner_provenance_blocked" in adapter_source, "adapter_provenance_gate_missing")
@@ -61,6 +63,10 @@ def main() -> None:
     require("build_sol_dispatch(" in courier_source, "courier_sol_dispatch_missing")
     require("SOL_PRIMARY_COST_AUTHORIZED" in server_source, "server_cost_gate_missing")
     require("SOL_PRIMARY_COST_AUTHORIZED" in staging_source, "staging_cost_gate_missing")
+    require("durable_sol_dispatch" in reliable_source, "durable_sol_dispatch_missing")
+    require("build_sol_dispatch(" in reliable_source, "durable_sol_builder_missing")
+    require("sol_dispatch=durable_sol_dispatch" in reliable_source, "durable_sol_execution_wiring_missing")
+    require('"sol_result"' in durable_source, "durable_sol_retry_analysis_missing")
 
     probes = [
         {"request": "Explain Uren origin"},
