@@ -13,7 +13,7 @@ from autorecovery_supervisor import (
     WorkerHealth,
     WorkerInvocation,
 )
-from manus_governance import build_minimal_task_packet
+from manus_governance import DIRECTIVE_VERSION, build_minimal_task_packet
 from manus_runtime import (
     ManusLiteRuntime,
     _compact_watch_recovery_packet,
@@ -479,6 +479,136 @@ class ManusLiteRecoveryInvoker:
             worker_id=worker_id,
             route=route,
             detail="MANUS_LITE_RECOVERY_STARTED",
+        )
+
+
+    def continue_governance_repair(
+        self,
+        *,
+        checkpoint: AssignmentCheckpoint,
+        worker_id: str,
+        fencing_token: int,
+        rejected_reason: str,
+    ) -> WorkerInvocation:
+        """Correct one malformed specialist-request result on the SAME Lite task.
+
+        This path never trusts or dispatches the malformed request, never allocates
+        a new worker/fence, and never consumes recovery budget. The provider task
+        receives one deterministic, idempotent JAYTEC correction handoff and must
+        return a fresh structured result under the existing runtime schema.
+        """
+
+        expected_reason = (
+            "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+            "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID"
+        )
+        if str(rejected_reason or "") != expected_reason:
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_GOVERNANCE_REPAIR_REASON_NOT_ALLOWLISTED",
+            )
+        try:
+            _actions, connectors, mutation = _authority(checkpoint)
+            required_fields = [
+                "type",
+                "request_id",
+                "parent_task_id",
+                "directive_version",
+                "specialist",
+                "objective",
+                "reason",
+                "required_context",
+                "authority",
+                "packet_sha256",
+            ]
+            context = {
+                "schema_version": "JAYTEC_MANUS_GOVERNANCE_REPAIR_V1",
+                "kind": "SAME_TASK_SPECIALIST_REQUEST_SCHEMA_REPAIR",
+                "task_id": checkpoint.task_id,
+                "checkpoint_number": checkpoint.checkpoint_number,
+                "fencing_token": fencing_token,
+                "rejected_reason": expected_reason,
+                "directive_version": DIRECTIVE_VERSION,
+                "required_specialist_request_fields": required_fields,
+                "required_authority": "REQUEST_ONLY_NO_SELF_DISPATCH",
+                "instruction": (
+                    "Your previous terminal result was rejected by JAYTEC before "
+                    "any specialist dispatch because at least one specialist_requests "
+                    "entry had the wrong field set. Do not reuse or reinterpret the "
+                    "rejected packet. Return one fresh structured result for this SAME "
+                    "bounded task. specialist_requests must be an array of canonical "
+                    "JSON strings; each request must contain exactly the listed fields, "
+                    "use the listed directive_version and authority, and carry a valid "
+                    "packet_sha256. If no specialist help is required, return an empty "
+                    "specialist_requests array. Do not expand scope, authority, connector "
+                    "access, spending, ROOT_OWNER, Genesis, activation, or provider access."
+                ),
+            }
+            digest = hashlib.sha256(
+                json.dumps(
+                    context,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            hid = (
+                f"{checkpoint.task_id}:fence:{fencing_token}:"
+                f"governance-repair:{digest[:16]}"
+            )
+            result = self.runtime.continue_task_handoff(
+                worker_id,
+                scope="jaytec_delegated_task",
+                authority_source="chatgpt",
+                current_task_authorized=True,
+                connector_purposes=connectors,
+                connector_mutation_authorized=mutation,
+                handoff_id=hid,
+                handoff_context=context,
+            )
+        except Exception as exc:
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_GOVERNANCE_REPAIR_HANDOFF_FAILED:" + type(exc).__name__,
+            )
+
+        if result.get("status") != "CONTINUED":
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_GOVERNANCE_REPAIR_NOT_CONTINUED",
+            )
+        if result.get("provider_task_id") != worker_id:
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_GOVERNANCE_REPAIR_WORKER_MISMATCH",
+            )
+        if (
+            result.get("requested_profile") != "lite"
+            or result.get("observed_profile_verified") is not True
+        ):
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_GOVERNANCE_REPAIR_LITE_IDENTITY_UNVERIFIED",
+            )
+        return WorkerInvocation(
+            accepted=True,
+            worker_id=worker_id,
+            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+            detail=(
+                "MANUS_GOVERNANCE_REPAIR_REPLAY"
+                if result.get("idempotent_replay") is True
+                else "MANUS_GOVERNANCE_REPAIR_CONTINUED"
+            ),
         )
 
 
