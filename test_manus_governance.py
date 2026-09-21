@@ -207,6 +207,9 @@ class ManusGovernanceTests(unittest.TestCase):
             "SPECIALIST_INTENT_V1",
             "Do NOT invent request_id, parent_task_id, directive_version, authority, or packet_sha256",
             "Intent is never a dispatch token or authority",
+            'specialist="nemo" for primary free engineering/reasoning when available',
+            'specialist="deepseek" for independent/adversarial review',
+            "Sol is never default cognition, life support, or permission authority",
         ):
             self.assertIn(" ".join(phrase.split()).casefold(), normalized)
         self.assertEqual(len(directive_sha256()), 64)
