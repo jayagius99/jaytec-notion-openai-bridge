@@ -5,10 +5,12 @@ services:
     plan: free
     region: oregon
     branch: staging/execute-task-packet-v1
-    buildCommand: pip install -r requirements.txt
-    # Startup runs deterministic local validation only. Specialist/provider review probes are on-demand; locked or exhausted lanes never spend credits or slow every deploy.
-    startCommand: python staging_adversarial_probe.py && python staging_server.py
-    autoDeploy: true
+    # Run the deterministic adversarial suite once per deploy/build so code and
+    # dependency drift fail closed without adding ~40s to every free-tier cold start.
+    # Provider/live probes remain separately gated and disabled by default.
+    buildCommand: pip install -r requirements.txt && python staging_adversarial_probe.py
+    startCommand: python staging_server.py
+    autoDeployTrigger: checksPass
     envVars:
       - key: MCP_AUTH_TOKEN
         generateValue: true
