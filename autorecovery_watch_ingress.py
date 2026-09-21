@@ -1177,6 +1177,18 @@ def execute_watch_cycle(
             == "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
                "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE"
         ):
+            if str(state.progress_marker or "") == "SPECIALIST_PROTOCOL_REPAIR_PENDING":
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": "SPECIALIST_PROTOCOL_REPAIR_EXHAUSTED",
+                    "protocol_repair": {
+                        "schema_version": "JAYTEC_SPECIALIST_PROTOCOL_REPAIR_V1",
+                        "worker_replaced": False,
+                        "recovery_attempt_consumed": False,
+                        "duplicate_handoff_sent": False,
+                    },
+                }
             repair_context = _specialist_protocol_repair_context()
             handoff = invoker.continue_existing(
                 checkpoint=state.checkpoint,
