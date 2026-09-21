@@ -208,11 +208,11 @@ class RuntimeComponentTests(unittest.TestCase):
             MANUS_MAX_MESSAGE_CHARS,
         )
 
-    def test_uncompactable_constraint_fails_preflight_before_runtime_call(self):
+    def test_component_does_not_reject_before_runtime_compaction(self):
         runtime = FakeRuntime()
         cp = replace(
             checkpoint(),
-            active_constraints=("Z" * 7000,),
+            objective="OBJECTIVE-" + ("O" * 9000),
         ).validate()
         result = ManusLiteRecoveryInvoker(runtime, FakeRegistry()).invoke(
             checkpoint=cp,
@@ -220,13 +220,10 @@ class RuntimeComponentTests(unittest.TestCase):
             route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
             fencing_token=10,
         )
-        self.assertFalse(result.accepted)
-        self.assertEqual(
-            result.detail,
-            "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE",
-        )
-        self.assertEqual(runtime.requests, [])
-        self.assertEqual(runtime.handoffs, [])
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(runtime.requests), 1)
+        self.assertNotIn("O" * 1000, runtime.requests[0])
+        self.assertIn("canonical_objective_sha256", runtime.requests[0])
 
     def test_gate_directive_handoff_keeps_same_worker_and_lite_identity(self):
         runtime = FakeRuntime()
