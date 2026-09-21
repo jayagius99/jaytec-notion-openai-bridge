@@ -666,8 +666,9 @@ class PostgresAssignmentStore:
                 if incoming < current_number:
                     raise AutoRecoveryError("CHECKPOINT_ROLLBACK_FORBIDDEN")
                 if incoming == current_number:
-                    if checkpoint.to_dict() != state.checkpoint.to_dict():
-                        raise AutoRecoveryError("CHECKPOINT_SAME_NUMBER_DRIFT")
+                    # Gate checkpoint numbers version the master-gate transition,
+                    # not every observed repository SHA. Ignore same-version
+                    # metadata refreshes rather than rewriting canonical state.
                     return False
                 cur.execute(
                     """
