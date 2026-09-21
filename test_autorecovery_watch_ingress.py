@@ -565,6 +565,15 @@ class WatchIngressPolicyTests(unittest.TestCase):
     def test_specialist_protocol_repair_keeps_same_worker_fence_and_budget(self):
         refs = {"security/root-owner-control-v1": "b" * 40}
         store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.RUNNING,
+                "progress_marker": "MANUS_PENDING",
+                "recovery_attempts": 0,
+                "last_error": None,
+            }
+        )
         runtime = FakeProtocolRepairRuntime()
         active = SimpleNamespace(
             active=True,
@@ -610,10 +619,19 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(store.state.fencing_token, 9)
         self.assertEqual(store.state.recovery_attempts, 0)
 
-    def test_specialist_protocol_repair_replay_does_not_allocate_recovery(self):
+    def test_specialist_protocol_repair_is_one_shot_and_never_loops(self):
         refs = {"security/root-owner-control-v1": "b" * 40}
         store = FakeBrokerStore()
-        runtime = FakeProtocolRepairRuntime(replay=True)
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.RUNNING,
+                "progress_marker": "SPECIALIST_PROTOCOL_REPAIR_PENDING",
+                "recovery_attempts": 0,
+                "last_error": None,
+            }
+        )
+        runtime = FakeProtocolRepairRuntime()
         active = SimpleNamespace(
             active=True,
             callable_worker_routes=("jaytec-manus-lite-v1",),
@@ -636,11 +654,15 @@ class WatchIngressPolicyTests(unittest.TestCase):
                 env={},
             )
 
-        self.assertEqual(result["status"], "PASS")
-        self.assertEqual(result["protocol_repair"]["status"], "IDEMPOTENT_REPLAY_WAITING")
-        self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
-        self.assertEqual(result["assignment"]["fencing_token"], 9)
-        self.assertEqual(result["assignment"]["recovery_attempts"], 0)
+        self.assertEqual(result["status"], "BLOCKED_FAIL_CLOSED")
+        self.assertEqual(result["reason"], "SPECIALIST_PROTOCOL_REPAIR_EXHAUSTED")
+        self.assertFalse(result["protocol_repair"]["worker_replaced"])
+        self.assertFalse(result["protocol_repair"]["recovery_attempt_consumed"])
+        self.assertFalse(result["protocol_repair"]["duplicate_handoff_sent"])
+        self.assertEqual(runtime.handoffs, [])
+        self.assertEqual(store.state.worker_id, "worker-existing")
+        self.assertEqual(store.state.fencing_token, 9)
+        self.assertEqual(store.state.recovery_attempts, 0)
 
     def test_needs_jaytec_broker_handoff_keeps_same_worker_and_fence(self):
         refs = {"security/root-owner-control-v1": "b" * 40}
