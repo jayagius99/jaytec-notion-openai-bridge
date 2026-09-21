@@ -189,10 +189,9 @@ class WatchSpecialistIngressTests(unittest.TestCase):
         self.assertEqual(runtime.handoffs, [])
 
     def test_core_triad_emergency_holds_without_direct_manus_handoff(self):
-        def runner(requests):
-            return dispatch_manus_model_requests(
-                requests,
-                dispatchers={},
+        def runner(_requests):
+            raise AssertionError(
+                "Core Triad emergency must surface before routine specialist dispatch"
             )
 
         out, _, runtime = self.run_cycle(["core_triad"], runner)
