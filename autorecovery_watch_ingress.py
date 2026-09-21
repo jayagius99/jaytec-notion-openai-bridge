@@ -14,6 +14,7 @@ from autorecovery_components import (
     ManusLiteHealthProbe,
     ManusLiteRecoveryInvoker,
     ObservedRefsCheckpointVerifier,
+    assignment_owner_redirect_handoff_id,
     master_gate_handoff_id,
     master_gate_result_has_receipt,
 )
@@ -43,6 +44,25 @@ MASTER_GATE_FIELDS = frozenset({
     "graph_sha256",
     "checkpoint_number",
 })
+ASSIGNMENT_OWNER_DIRECTIVE_SCHEMA = "JAYTEC_ASSIGNMENT_CONTROLLER_DIRECTIVE_V1"
+ASSIGNMENT_OWNER_DIRECTIVE_FIELDS = frozenset({
+    "schema_version",
+    "task_id",
+    "assignment_owner",
+    "gate_id",
+    "checkpoint_number",
+    "review_id",
+    "request_id",
+    "jaytec_review_id",
+    "decision",
+    "direction",
+    "result_receipt",
+    "result_sha256",
+    "manifest_sha256",
+    "worker_id",
+    "fencing_token",
+})
+
 # WATCH cadence is 15 minutes. Require more than two missed cadence windows
 # before classifying a RUNNING callable worker as lost, so one transient
 # provider-status failure cannot consume a recovery fence/attempt.
@@ -167,6 +187,99 @@ def _master_gate_context(
         "graph_sha256": graph_sha,
         "checkpoint_number": number,
         "instruction": checkpoint.next_intended_action,
+    }
+
+
+def _assignment_owner_directive(
+    value: Any,
+    *,
+    task_id: str,
+    state: Any,
+    master_gate: Mapping[str, Any],
+    terminal_result: Mapping[str, Any],
+    required_receipt: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_INVALID")
+    directive = dict(value)
+    if set(directive) != ASSIGNMENT_OWNER_DIRECTIVE_FIELDS:
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_FIELDS_INVALID")
+    if directive.get("schema_version") != ASSIGNMENT_OWNER_DIRECTIVE_SCHEMA:
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_SCHEMA_INVALID")
+    if directive.get("task_id") != task_id:
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_TASK_MISMATCH")
+    if directive.get("assignment_owner") != "CHATGPT_ASSIGNMENT_OWNER":
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_OWNER_INVALID")
+
+    gate_id = str(directive.get("gate_id") or "").strip()
+    if gate_id != str(master_gate.get("gate_id") or ""):
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_GATE_MISMATCH")
+    checkpoint_number = directive.get("checkpoint_number")
+    if (
+        type(checkpoint_number) is not int
+        or checkpoint_number != state.checkpoint.checkpoint_number
+    ):
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_CHECKPOINT_MISMATCH")
+
+    worker_id = str(directive.get("worker_id") or "").strip()
+    if not worker_id or worker_id != str(state.worker_id or ""):
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_WORKER_MISMATCH")
+    fencing_token = directive.get("fencing_token")
+    if type(fencing_token) is not int or fencing_token != state.fencing_token:
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_FENCE_MISMATCH")
+
+    for field in (
+        "review_id",
+        "request_id",
+        "jaytec_review_id",
+        "result_sha256",
+        "manifest_sha256",
+    ):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(directive.get(field) or "").lower()):
+            raise WatchIngressError(
+                "ASSIGNMENT_OWNER_DIRECTIVE_DIGEST_INVALID:" + field
+            )
+
+    decision = str(directive.get("decision") or "").strip()
+    if decision not in {"REDIRECT", "REJECT_EVIDENCE"}:
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_DECISION_INVALID")
+    direction = str(directive.get("direction") or "").strip()
+    if not direction or len(direction) > 1600:
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_DIRECTION_INVALID")
+
+    receipt = str(directive.get("result_receipt") or "").strip()
+    if receipt != required_receipt:
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_RECEIPT_MISMATCH")
+    if not master_gate_result_has_receipt(terminal_result, receipt):
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_RESULT_RECEIPT_MISSING")
+
+    result_sha = hashlib.sha256(
+        json.dumps(
+            dict(terminal_result),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    if str(directive.get("result_sha256") or "").lower() != result_sha:
+        raise WatchIngressError("ASSIGNMENT_OWNER_DIRECTIVE_RESULT_MISMATCH")
+
+    return {
+        "schema_version": ASSIGNMENT_OWNER_DIRECTIVE_SCHEMA,
+        "task_id": task_id,
+        "assignment_owner": "CHATGPT_ASSIGNMENT_OWNER",
+        "gate_id": gate_id,
+        "checkpoint_number": checkpoint_number,
+        "review_id": str(directive["review_id"]).lower(),
+        "request_id": str(directive["request_id"]).lower(),
+        "jaytec_review_id": str(directive["jaytec_review_id"]).lower(),
+        "decision": decision,
+        "direction": direction,
+        "result_receipt": receipt,
+        "result_sha256": result_sha,
+        "manifest_sha256": str(directive["manifest_sha256"]).lower(),
+        "worker_id": worker_id,
+        "fencing_token": fencing_token,
     }
 
 
@@ -535,6 +648,7 @@ def execute_watch_cycle(
         payload.get("master_gate"),
         incoming_checkpoint,
     )
+    raw_assignment_owner_directive = payload.get("assignment_owner_directive")
 
     schema = prepare_schema_if_authorized(database_url, env=source)
     if schema.get("status") != "PASS" or schema.get("schema_present") is not True:
@@ -718,6 +832,81 @@ def execute_watch_cycle(
             )
         )
         if readonly_ok and terminal_success and receipt_matches:
+            if raw_assignment_owner_directive is not None:
+                try:
+                    owner_directive = _assignment_owner_directive(
+                        raw_assignment_owner_directive,
+                        task_id=task_id,
+                        state=state,
+                        master_gate=master_gate,
+                        terminal_result=terminal,
+                        required_receipt=required_gate_receipt,
+                    )
+                except WatchIngressError as exc:
+                    return {
+                        "status": "BLOCKED_FAIL_CLOSED",
+                        "task_id": task_id,
+                        "reason": str(exc),
+                    }
+                redirect = invoker.continue_assignment_owner_directive(
+                    checkpoint=state.checkpoint,
+                    worker_id=state.worker_id,
+                    fencing_token=state.fencing_token,
+                    directive=owner_directive,
+                )
+                if not redirect.accepted:
+                    return {
+                        "status": "BLOCKED_FAIL_CLOSED",
+                        "task_id": task_id,
+                        "reason": redirect.detail,
+                    }
+                store.heartbeat(
+                    task_id,
+                    fencing_token=state.fencing_token,
+                    worker_id=state.worker_id,
+                    progress_marker=(
+                        "ASSIGNMENT_OWNER_REDIRECT:"
+                        + owner_directive["review_id"][:16]
+                    ),
+                )
+                final = store.get(task_id)
+                return {
+                    "status": "PASS",
+                    "task_id": task_id,
+                    "bootstrapped": bootstrapped,
+                    "checkpoint_advanced": checkpoint_advanced,
+                    "master_gate": master_gate,
+                    "gate_handoff": "OWNER_REDIRECT_CONTINUED",
+                    "owner_redirect": {
+                        "status": redirect.detail,
+                        "review_id": owner_directive["review_id"],
+                        "request_id": owner_directive["request_id"],
+                        "decision": owner_directive["decision"],
+                    },
+                    "health_refreshed": True,
+                    "github_broker": github_broker,
+                    "decision": {
+                        "action": "NOOP_HEALTHY",
+                        "effective_stop_reason": StopReason.RUNNING.value,
+                        "reason": "ASSIGNMENT_OWNER_REDIRECT_CONTINUED",
+                        "recovery_route": None,
+                    },
+                    "assignment": {
+                        "stop_reason": final.stop_reason.value if final else None,
+                        "worker_kind": final.worker_kind.value if final else None,
+                        "worker_id": final.worker_id if final else None,
+                        "worker_route": final.worker_route if final else None,
+                        "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
+                        "repo": final.checkpoint.repo if final else None,
+                        "branch": final.checkpoint.branch if final else None,
+                        "verified_head": final.checkpoint.commit_head if final else None,
+                        "recovery_attempts": final.recovery_attempts if final else None,
+                        "fencing_token": final.fencing_token if final else None,
+                        "progress_marker": final.progress_marker if final else None,
+                        "completed": final.completed if final else None,
+                        "last_error": final.last_error if final else None,
+                    },
+                }
             final = store.get(task_id)
             return {
                 "status": "PASS",
@@ -768,6 +957,13 @@ def execute_watch_cycle(
                 "task_id": task_id,
                 "reason": "MASTER_GATE_RESULT_NOT_VERIFIED",
             }
+
+    if raw_assignment_owner_directive is not None:
+        return {
+            "status": "BLOCKED_FAIL_CLOSED",
+            "task_id": task_id,
+            "reason": "ASSIGNMENT_OWNER_REDIRECT_REQUIRES_CURRENT_GATE_SUCCESS",
+        }
 
     # NEEDS_JAYTEC is an internal orchestration handoff, not an owner boundary.
     # Continue the SAME fenced worker with evidence supplied by GitHub Actions.

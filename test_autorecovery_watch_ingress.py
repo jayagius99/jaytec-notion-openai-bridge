@@ -109,6 +109,35 @@ def gate_receipt_evidence(fence=9):
     }
 
 
+def owner_redirect_payload(terminal, **overrides):
+    value = {
+        "schema_version": "JAYTEC_ASSIGNMENT_CONTROLLER_DIRECTIVE_V1",
+        "task_id": FORGE_TASK_ID,
+        "assignment_owner": "CHATGPT_ASSIGNMENT_OWNER",
+        "gate_id": "G03",
+        "checkpoint_number": 103,
+        "review_id": "a" * 64,
+        "request_id": "b" * 64,
+        "jaytec_review_id": "c" * 64,
+        "decision": "REDIRECT",
+        "direction": "Close the missing alternate-route denial proof and return fresh evidence.",
+        "result_receipt": expected_gate_receipt(9),
+        "result_sha256": hashlib.sha256(
+            json.dumps(
+                dict(terminal),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest(),
+        "manifest_sha256": "d" * 64,
+        "worker_id": "worker-existing",
+        "fencing_token": 9,
+    }
+    value.update(overrides)
+    return value
+
+
 def cycle_payload(refs, *, include_broker=True):
     checkpoint = broker_checkpoint().to_dict()
     if checkpoint["branch"] not in refs:
@@ -568,6 +597,164 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(result["gate_handoff"], "NOT_NEEDED")
         self.assertEqual(result["gate_result"]["status"], "SUCCESS")
 
+
+
+    def test_assignment_owner_redirect_resumes_same_worker_without_recovery_attempt(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.WAITING_FOR_DEPENDENCY,
+                "last_error": "MANUS_TERMINAL:SUCCESS:verified",
+                "progress_marker": "MANUS_TERMINAL:SUCCESS:verified",
+                "recovery_attempts": 2,
+            }
+        )
+        runtime = FakeSuccessBrokerRuntime()
+        terminal = runtime.task_status_readonly("worker-existing")["result"]
+        payload = cycle_payload(refs)
+        payload["assignment_owner_directive"] = owner_redirect_payload(terminal)
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                payload,
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(
+            result["decision"]["reason"],
+            "ASSIGNMENT_OWNER_REDIRECT_CONTINUED",
+        )
+        self.assertEqual(result["gate_handoff"], "OWNER_REDIRECT_CONTINUED")
+        self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
+        self.assertEqual(result["assignment"]["fencing_token"], 9)
+        self.assertEqual(result["assignment"]["recovery_attempts"], 0)
+        self.assertEqual(result["assignment"]["stop_reason"], "RUNNING")
+        self.assertTrue(
+            result["assignment"]["progress_marker"].startswith(
+                "ASSIGNMENT_OWNER_REDIRECT:"
+            )
+        )
+        self.assertEqual(len(runtime.handoffs), 1)
+        worker, kwargs = runtime.handoffs[0]
+        self.assertEqual(worker, "worker-existing")
+        self.assertIn("owner-redirect:G03:", kwargs["handoff_id"])
+        self.assertEqual(
+            kwargs["handoff_context"]["decision"],
+            "REDIRECT",
+        )
+
+    def test_assignment_owner_redirect_wrong_result_hash_fails_before_handoff(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.WAITING_FOR_DEPENDENCY,
+                "last_error": "MANUS_TERMINAL:SUCCESS:verified",
+                "progress_marker": "MANUS_TERMINAL:SUCCESS:verified",
+                "recovery_attempts": 0,
+            }
+        )
+        runtime = FakeSuccessBrokerRuntime()
+        terminal = runtime.task_status_readonly("worker-existing")["result"]
+        payload = cycle_payload(refs)
+        payload["assignment_owner_directive"] = owner_redirect_payload(
+            terminal,
+            result_sha256="f" * 64,
+        )
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                payload,
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+        self.assertEqual(result["status"], "BLOCKED_FAIL_CLOSED")
+        self.assertEqual(
+            result["reason"],
+            "ASSIGNMENT_OWNER_DIRECTIVE_RESULT_MISMATCH",
+        )
+        self.assertEqual(runtime.handoffs, [])
+
+    def test_assignment_owner_redirect_wrong_fence_fails_before_handoff(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.WAITING_FOR_DEPENDENCY,
+                "last_error": "MANUS_TERMINAL:SUCCESS:verified",
+                "progress_marker": "MANUS_TERMINAL:SUCCESS:verified",
+                "recovery_attempts": 0,
+            }
+        )
+        runtime = FakeSuccessBrokerRuntime()
+        terminal = runtime.task_status_readonly("worker-existing")["result"]
+        payload = cycle_payload(refs)
+        payload["assignment_owner_directive"] = owner_redirect_payload(
+            terminal,
+            fencing_token=8,
+        )
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                payload,
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+        self.assertEqual(result["status"], "BLOCKED_FAIL_CLOSED")
+        self.assertEqual(
+            result["reason"],
+            "ASSIGNMENT_OWNER_DIRECTIVE_FENCE_MISMATCH",
+        )
+        self.assertEqual(runtime.handoffs, [])
 
 
     def test_checkpoint_advance_requires_verified_prior_gate_success(self):

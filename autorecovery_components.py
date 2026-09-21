@@ -117,6 +117,27 @@ def master_gate_handoff_id(
     )
 
 
+def assignment_owner_redirect_handoff_id(
+    checkpoint: AssignmentCheckpoint,
+    fencing_token: int,
+    directive: Mapping[str, Any],
+) -> str:
+    review_id = str(directive.get("review_id") or "").strip().lower()
+    gate_id = str(directive.get("gate_id") or "").strip()
+    checkpoint_number = int(directive.get("checkpoint_number") or 0)
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", review_id)
+        or not re.fullmatch(r"G[0-9]{2,4}", gate_id)
+        or checkpoint_number != checkpoint.checkpoint_number
+        or fencing_token < 0
+    ):
+        raise ValueError("ASSIGNMENT_OWNER_REDIRECT_CONTEXT_INVALID")
+    return (
+        f"{checkpoint.task_id}:fence:{fencing_token}:"
+        f"owner-redirect:{gate_id}:{review_id[:16]}"
+    )
+
+
 def master_gate_result_has_receipt(
     result: Mapping[str, Any],
     receipt: str,
@@ -357,6 +378,102 @@ class ManusLiteRecoveryInvoker:
         )
 
 
+    def continue_assignment_owner_directive(
+        self,
+        *,
+        checkpoint: AssignmentCheckpoint,
+        worker_id: str,
+        fencing_token: int,
+        directive: Mapping[str, Any],
+    ) -> WorkerInvocation:
+        """Redirect the same fenced worker from an assignment-owner review.
+
+        The handoff is deterministic/idempotent, stays on the current gate,
+        and never consumes a recovery attempt or changes the fencing token.
+        """
+        try:
+            _actions, connectors, mutation = _authority(checkpoint)
+            hid = assignment_owner_redirect_handoff_id(
+                checkpoint,
+                fencing_token,
+                directive,
+            )
+            context = {
+                "schema_version": "JAYTEC_ASSIGNMENT_CONTROLLER_DIRECTIVE_V1",
+                "kind": "ASSIGNMENT_OWNER_REDIRECT",
+                "task_id": checkpoint.task_id,
+                "gate_id": str(directive.get("gate_id") or ""),
+                "checkpoint_number": checkpoint.checkpoint_number,
+                "review_id": str(directive.get("review_id") or ""),
+                "request_id": str(directive.get("request_id") or ""),
+                "jaytec_review_id": str(directive.get("jaytec_review_id") or ""),
+                "decision": str(directive.get("decision") or ""),
+                "direction": str(directive.get("direction") or ""),
+                "result_receipt": str(directive.get("result_receipt") or ""),
+                "result_sha256": str(directive.get("result_sha256") or ""),
+                "manifest_sha256": str(directive.get("manifest_sha256") or ""),
+                "instruction": (
+                    "The assignment owner reviewed the exact gate result and "
+                    "redirected this same assignment. Stay on the current gate, "
+                    "follow the direction exactly, preserve completed work, and "
+                    "return a fresh terminal result with the gate receipt and "
+                    "evidence manifest required by the current master-gate handoff."
+                ),
+            }
+            result = self.runtime.continue_task_handoff(
+                worker_id,
+                scope="jaytec_delegated_task",
+                authority_source="chatgpt",
+                current_task_authorized=True,
+                connector_purposes=connectors,
+                connector_mutation_authorized=mutation,
+                handoff_id=hid,
+                handoff_context=context,
+            )
+        except Exception as exc:
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_OWNER_REDIRECT_FAILED:" + type(exc).__name__,
+            )
+
+        if result.get("status") != "CONTINUED":
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_OWNER_REDIRECT_NOT_CONTINUED",
+            )
+        if result.get("provider_task_id") != worker_id:
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_OWNER_REDIRECT_WORKER_MISMATCH",
+            )
+        if (
+            result.get("requested_profile") != "lite"
+            or result.get("observed_profile_verified") is not True
+        ):
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_OWNER_REDIRECT_LITE_IDENTITY_UNVERIFIED",
+            )
+        return WorkerInvocation(
+            accepted=True,
+            worker_id=worker_id,
+            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+            detail=(
+                "MANUS_OWNER_REDIRECT_REPLAY"
+                if result.get("idempotent_replay") is True
+                else "MANUS_OWNER_REDIRECT_CONTINUED"
+            ),
+        )
+
+
     def continue_gate_directive(
         self,
         *,
@@ -562,6 +679,7 @@ __all__ = [
     "JsonLogRecoveryNotifier",
     "ManusLiteHealthProbe",
     "ManusLiteRecoveryInvoker",
+    "assignment_owner_redirect_handoff_id",
     "master_gate_handoff_id",
     "master_gate_result_has_receipt",
     "ObservedRefsCheckpointVerifier",
