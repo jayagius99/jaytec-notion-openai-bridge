@@ -32,7 +32,7 @@ MAX_REQUEST_REFS = 128
 MAX_BROKER_CONTEXT_BYTES = 4500
 MAX_BROKER_REQUESTS = 2
 MASTER_GATE_SCHEMA = "FORGE_MASTER_GATE_DIRECTIVE_V1"
-MASTER_GATE_FIELDS = frozenset({
+MASTER_GATE_REQUIRED_FIELDS = frozenset({
     "schema_version",
     "gate_id",
     "phase",
@@ -43,6 +43,12 @@ MASTER_GATE_FIELDS = frozenset({
     "graph_sha256",
     "checkpoint_number",
 })
+MASTER_GATE_OPTIONAL_FIELDS = frozenset({
+    "controller_action",
+    "controller_review_id",
+    "controller_direction",
+})
+MASTER_GATE_FIELDS = MASTER_GATE_REQUIRED_FIELDS | MASTER_GATE_OPTIONAL_FIELDS
 # WATCH cadence is 15 minutes. Require more than two missed cadence windows
 # before classifying a RUNNING callable worker as lost, so one transient
 # provider-status failure cannot consume a recovery fence/attempt.
@@ -114,7 +120,11 @@ def _master_gate_context(
     if not isinstance(value, Mapping):
         raise WatchIngressError("MASTER_GATE_REQUIRED")
     gate = dict(value)
-    if set(gate) != MASTER_GATE_FIELDS:
+    fields = set(gate)
+    if (
+        not MASTER_GATE_REQUIRED_FIELDS.issubset(fields)
+        or fields - MASTER_GATE_FIELDS
+    ):
         raise WatchIngressError("MASTER_GATE_FIELDS_INVALID")
     if gate.get("schema_version") != MASTER_GATE_SCHEMA:
         raise WatchIngressError("MASTER_GATE_SCHEMA_INVALID")
@@ -151,6 +161,18 @@ def _master_gate_context(
     graph_sha = str(gate.get("graph_sha256") or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", graph_sha):
         raise WatchIngressError("MASTER_GATE_GRAPH_DIGEST_INVALID")
+    controller_action = str(gate.get("controller_action") or "").strip()
+    controller_review_id = str(gate.get("controller_review_id") or "").strip().lower()
+    controller_direction = str(gate.get("controller_direction") or "").strip()
+    if controller_action:
+        if controller_action not in {"REDIRECT", "REJECT_EVIDENCE"}:
+            raise WatchIngressError("MASTER_GATE_CONTROLLER_ACTION_INVALID")
+        if not re.fullmatch(r"[0-9a-f]{64}", controller_review_id):
+            raise WatchIngressError("MASTER_GATE_CONTROLLER_REVIEW_ID_INVALID")
+        if not controller_direction or len(controller_direction) > 1600:
+            raise WatchIngressError("MASTER_GATE_CONTROLLER_DIRECTION_INVALID")
+    elif controller_review_id or controller_direction:
+        raise WatchIngressError("MASTER_GATE_CONTROLLER_CONTEXT_INCOMPLETE")
     if not checkpoint.current_phase.startswith(gate_id + "/"):
         raise WatchIngressError("MASTER_GATE_PHASE_CHECKPOINT_MISMATCH")
     if gate_id not in checkpoint.objective:
@@ -166,6 +188,9 @@ def _master_gate_context(
         "evidence": [str(x).strip() for x in evidence],
         "graph_sha256": graph_sha,
         "checkpoint_number": number,
+        "controller_action": controller_action,
+        "controller_review_id": controller_review_id,
+        "controller_direction": controller_direction,
         "instruction": checkpoint.next_intended_action,
     }
 
@@ -699,6 +724,19 @@ def execute_watch_cycle(
         if state.worker_id
         else None
     )
+
+    controller_redirect = bool(master_gate.get("controller_review_id"))
+    if controller_redirect and _gate_result_ready_state(state):
+        store.heartbeat(
+            task_id,
+            fencing_token=state.fencing_token,
+            worker_id=state.worker_id,
+            progress_marker=(
+                "MASTER_GATE_CONTROLLER_REDIRECT:"
+                + str(master_gate.get("controller_review_id"))[:16]
+            ),
+        )
+        state = store.get(task_id)
 
     if _gate_result_ready_state(state):
         readonly = manus_runtime.task_status_readonly(state.worker_id)
