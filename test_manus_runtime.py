@@ -255,7 +255,7 @@ class ManusLiteRuntimeTests(unittest.TestCase):
             out["specialist_request_migrations"],
             {
                 "count": 1,
-                "mode": "EXACT_SIX_FIELD_INTENT_TO_CURRENT_SPECIALIST_REQUEST_V1",
+                "mode": "JAYTEC_CANONICAL_REQUEST_BUILDER_V1",
                 "values_included": False,
             },
         )
@@ -341,8 +341,42 @@ class ManusLiteRuntimeTests(unittest.TestCase):
             "MANUS_RUNTIME_GOVERNANCE_REJECTED:MANUS_SPECIALIST_REQUEST_FIELDS_INVALID",
         )
 
-    def test_legacy_intent_cannot_create_github_or_unknown_specialist(self):
-        for specialist in ("github_broker", "engineer", "unknown"):
+    def test_legacy_github_intent_requires_same_task_reissue(self):
+        legacy = {
+            "request_id": "legacy-request-1",
+            "specialist": "github_broker",
+            "purpose": "Request bounded repository help.",
+            "scope": "G03",
+            "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            "constraints": ["no side effects"],
+        }
+        result = verified_success()
+        result["status"] = "NEEDS_JAYTEC"
+        result["specialist_requests"] = [json.dumps(legacy, sort_keys=True)]
+        readonly = ManusLiteRuntime(
+            FakeClient(observed_profile="lite", task_status="stopped", result=result)
+        ).task_status_readonly(
+            "provider-123",
+            parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+        )
+        self.assertEqual(readonly["status"], "FAILED_CLOSED")
+        self.assertEqual(
+            readonly["reason"],
+            "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+            "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE",
+        )
+        self.assertEqual(
+            readonly["protocol_repair_required"],
+            {
+                "schema_version": "JAYTEC_SPECIALIST_PROTOCOL_REPAIR_V1",
+                "reason": "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE",
+                "target_intent_type": "SPECIALIST_INTENT_V1",
+                "values_included": False,
+            },
+        )
+
+    def test_legacy_unknown_specialist_remains_hard_fail_closed(self):
+        for specialist in ("engineer", "unknown"):
             with self.subTest(specialist=specialist):
                 legacy = {
                     "request_id": "legacy-request-1",
@@ -356,11 +390,7 @@ class ManusLiteRuntimeTests(unittest.TestCase):
                 result["status"] = "NEEDS_JAYTEC"
                 result["specialist_requests"] = [json.dumps(legacy, sort_keys=True)]
                 readonly = ManusLiteRuntime(
-                    FakeClient(
-                        observed_profile="lite",
-                        task_status="stopped",
-                        result=result,
-                    )
+                    FakeClient(observed_profile="lite", task_status="stopped", result=result)
                 ).task_status_readonly(
                     "provider-123",
                     parent_task_id="FORGE-GENESIS-ACTIVATION-001",
@@ -368,8 +398,115 @@ class ManusLiteRuntimeTests(unittest.TestCase):
                 self.assertEqual(readonly["status"], "FAILED_CLOSED")
                 self.assertEqual(
                     readonly["reason"],
-                    "MANUS_RUNTIME_GOVERNANCE_REJECTED:MANUS_LEGACY_SPECIALIST_INTENT_NOT_MODEL_ONLY",
+                    "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+                    "MANUS_LEGACY_SPECIALIST_INTENT_SPECIALIST_INVALID",
                 )
+                self.assertNotIn("protocol_repair_required", readonly)
+
+    def test_specialist_intent_v1_is_canonicalized_by_jaytec(self):
+        intent = {
+            "type": "SPECIALIST_INTENT_V1",
+            "specialist": "deepseek",
+            "objective": "Challenge the bounded security conclusion.",
+            "reason": "Independent adversarial review is useful.",
+            "required_context": {"gate_id": "G03", "artifact_sha256": "a" * 64},
+        }
+        result = verified_success()
+        result["status"] = "NEEDS_JAYTEC"
+        result["specialist_requests"] = [json.dumps(intent, sort_keys=True)]
+        out = ManusLiteRuntime(
+            FakeClient(observed_profile="lite", task_status="stopped", result=result)
+        ).task_status(
+            "provider-123",
+            parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+        )
+        self.assertEqual(out["status"], "VERIFIED_COMPLETE")
+        self.assertEqual(
+            out["specialist_request_migrations"],
+            {
+                "count": 1,
+                "mode": "JAYTEC_CANONICAL_REQUEST_BUILDER_V1",
+                "values_included": False,
+            },
+        )
+        canonical = json.loads(out["result"]["specialist_requests"][0])
+        self.assertEqual(canonical["specialist"], "deepseek")
+        self.assertEqual(canonical["parent_task_id"], "FORGE-GENESIS-ACTIVATION-001")
+        self.assertEqual(canonical["authority"], "REQUEST_ONLY_NO_SELF_DISPATCH")
+        self.assertNotIn("request_id", intent)
+        self.assertRegex(canonical["request_id"], r"^sr-[0-9a-f]{24}$")
+        validate_specialist_request(canonical)
+
+    def test_github_broker_intent_v1_becomes_request_only_packet(self):
+        intent = {
+            "type": "SPECIALIST_INTENT_V1",
+            "specialist": "github_broker",
+            "objective": "Read bounded issue evidence.",
+            "reason": "The same task needs repository evidence.",
+            "required_context": {"operation": "read_issue", "number": 66},
+        }
+        result = verified_success()
+        result["status"] = "NEEDS_JAYTEC"
+        result["specialist_requests"] = [json.dumps(intent, sort_keys=True)]
+        out = ManusLiteRuntime(
+            FakeClient(observed_profile="lite", task_status="stopped", result=result)
+        ).task_status(
+            "provider-123",
+            parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+        )
+        self.assertEqual(out["status"], "VERIFIED_COMPLETE")
+        canonical = json.loads(out["result"]["specialist_requests"][0])
+        self.assertEqual(canonical["specialist"], "github_broker")
+        self.assertEqual(canonical["required_context"]["operation"], "read_issue")
+        self.assertEqual(canonical["authority"], "REQUEST_ONLY_NO_SELF_DISPATCH")
+        validate_specialist_request(canonical)
+
+    def test_specialist_intent_unknown_or_extra_fields_fail_closed(self):
+        cases = [
+            {
+                "type": "SPECIALIST_INTENT_V1",
+                "specialist": "unknown",
+                "objective": "Help.",
+                "reason": "Need help.",
+                "required_context": {},
+            },
+            {
+                "type": "SPECIALIST_INTENT_V1",
+                "specialist": "nemo",
+                "objective": "Help.",
+                "reason": "Need help.",
+                "required_context": {},
+                "authority": "invented",
+            },
+        ]
+        for intent in cases:
+            with self.subTest(intent=intent):
+                result = verified_success()
+                result["status"] = "NEEDS_JAYTEC"
+                result["specialist_requests"] = [json.dumps(intent, sort_keys=True)]
+                readonly = ManusLiteRuntime(
+                    FakeClient(observed_profile="lite", task_status="stopped", result=result)
+                ).task_status_readonly(
+                    "provider-123",
+                    parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+                )
+                self.assertEqual(readonly["status"], "FAILED_CLOSED")
+
+    def test_specialist_intent_requires_canonical_parent_binding(self):
+        intent = {
+            "type": "SPECIALIST_INTENT_V1",
+            "specialist": "nemo",
+            "objective": "Review bounded evidence.",
+            "reason": "Independent review requested.",
+            "required_context": {},
+        }
+        result = verified_success()
+        result["status"] = "NEEDS_JAYTEC"
+        result["specialist_requests"] = [json.dumps(intent, sort_keys=True)]
+        readonly = ManusLiteRuntime(
+            FakeClient(observed_profile="lite", task_status="stopped", result=result)
+        ).task_status_readonly("provider-123")
+        self.assertEqual(readonly["status"], "FAILED_CLOSED")
 
     def test_current_specialist_packet_is_not_rewritten(self):
         current = specialist_request(
