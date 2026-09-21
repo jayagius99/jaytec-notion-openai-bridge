@@ -675,6 +675,96 @@ class AutoRecoveryExecutionTests(unittest.TestCase):
         self.assertEqual(decision.action, SupervisorAction.RECOVERY_FAILED)
         self.assertEqual(len(invoker.calls), 1)
 
+    def test_local_preflight_rejection_keeps_fence_but_refunds_attempt(self):
+        seeded = state(
+            stop_reason=StopReason.TRANSIENT_PROVIDER_FAILURE,
+            recovery_attempts=2,
+            fencing_token=10,
+        )
+        store = MemoryAssignmentStore(seeded)
+
+        class LocalPreflightRejector:
+            def __init__(self):
+                self.calls = []
+            def invoke(self, *, checkpoint, continuation_packet, route, fencing_token):
+                self.calls.append((route, fencing_token))
+                return WorkerInvocation(
+                    accepted=False,
+                    worker_id=None,
+                    route=route,
+                    detail="MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE",
+                )
+
+        invoker = LocalPreflightRejector()
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=invoker,
+            health_probe=FakeHealth(),
+            instance_id="watch-local-preflight",
+        )
+        result = supervisor.tick("GOD-PREP-0017", now=NOW)
+        self.assertEqual(result.action, SupervisorAction.RECOVERY_FAILED)
+        self.assertEqual(
+            result.reason,
+            "RECOVERY_LOCAL_PREFLIGHT_REJECTED_ATTEMPT_NOT_CONSUMED",
+        )
+        self.assertEqual(result.recovery_route, RecoveryRoute.ALTERNATE_APPROVED_ROUTE)
+        self.assertEqual(store.state.recovery_attempts, 2)
+        self.assertEqual(store.state.fencing_token, 11)
+        self.assertEqual(store.state.stop_reason, StopReason.TRANSIENT_PROVIDER_FAILURE)
+        self.assertIn("ATTEMPT_NOT_CONSUMED", str(store.state.last_error))
+        self.assertIsNone(store.state.lease_owner)
+        self.assertEqual(invoker.calls, [(RecoveryRoute.ALTERNATE_APPROVED_ROUTE, 11)])
+
+    def test_exact_exhausted_local_preflight_can_refund_once_without_rolling_back_fence(self):
+        seeded = state(
+            stop_reason=StopReason.RECOVERY_EXHAUSTED,
+            recovery_attempts=3,
+            fencing_token=11,
+        )
+        seeded = AssignmentState(
+            **{
+                **seeded.__dict__,
+                "last_error": (
+                    "RECOVERY_INVOCATION_REJECTED:"
+                    "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE"
+                ),
+            }
+        )
+        store = MemoryAssignmentStore(seeded)
+        repaired = store.reconcile_exhausted_local_preflight(
+            "GOD-PREP-0017",
+            expected_fencing_token=11,
+            expected_recovery_attempts=3,
+            expected_error=(
+                "RECOVERY_INVOCATION_REJECTED:"
+                "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE"
+            ),
+            now=NOW,
+        )
+        self.assertTrue(repaired)
+        self.assertEqual(store.state.recovery_attempts, 2)
+        self.assertEqual(store.state.fencing_token, 11)
+        self.assertEqual(store.state.stop_reason, StopReason.TRANSIENT_PROVIDER_FAILURE)
+        self.assertIn("LOCAL_PREFLIGHT_ATTEMPT_REFUNDED", str(store.state.last_error))
+
+        # The repair is one-way/exact-state scoped. Replaying it cannot refund again.
+        self.assertFalse(
+            store.reconcile_exhausted_local_preflight(
+                "GOD-PREP-0017",
+                expected_fencing_token=11,
+                expected_recovery_attempts=3,
+                expected_error=(
+                    "RECOVERY_INVOCATION_REJECTED:"
+                    "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE"
+                ),
+                now=NOW,
+            )
+        )
+        self.assertEqual(store.state.recovery_attempts, 2)
+        self.assertEqual(store.state.fencing_token, 11)
+
     def test_final_failed_closed_recovery_attempt_exhausts_without_fourth_attempt(self):
         store = MemoryAssignmentStore(
             state(
