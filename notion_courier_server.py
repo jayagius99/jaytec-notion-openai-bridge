@@ -295,6 +295,30 @@ def main() -> None:
         "free_credit_attested": bool(legacy_server.SOL_FREE_CREDIT_ONLY_ATTESTED),
     }
     print("JAYTEC_SOL_PREFLIGHT=" + json.dumps(safe_preflight, sort_keys=True), flush=True)
+
+    # Read-only diagnostic: checks Gateway credit balance only. It cannot invoke
+    # any model, consume inference tokens, purchase credits, or change routing.
+    if os.environ.get("SOL_CREDIT_BALANCE_PROBE_ON_STARTUP", "0").strip() == "1":
+        try:
+            balance = legacy_server.fetch_vercel_gateway_credit_balance(
+                api_key=legacy_server.AI_GATEWAY_API_KEY,
+                base_url=legacy_server.SOL_GATEWAY_URL,
+            )
+            print(
+                "JAYTEC_SOL_CREDIT_BALANCE="
+                + json.dumps({"ok": True, "balance_usd": str(balance)}, sort_keys=True),
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                "JAYTEC_SOL_CREDIT_BALANCE="
+                + json.dumps(
+                    {"ok": False, "error": type(exc).__name__, "detail": str(exc)[:160]},
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+
     mcp = create_mcp_app()
     assert_courier_startup_invariants(mcp)
     uvicorn.run(
