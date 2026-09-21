@@ -338,7 +338,7 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         )
         self.assertIn("JAYTEC_WATCH_RECOVERY_COMPACTION_V1", client.created_prompt)
         self.assertIn("NO FORGE ACTIVATION", client.created_prompt)
-        self.assertIn("Do not spend money.", client.created_prompt)
+        self.assertIn("NO NEW SPEND OR PAID FALLBACK", client.created_prompt)
         self.assertNotIn("O" * 1000, client.created_prompt)
 
     def test_uncompactable_watch_recovery_fails_before_provider_route(self):
