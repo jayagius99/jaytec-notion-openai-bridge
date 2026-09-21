@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from manus_adapter import MANUS_MAX_MESSAGE_CHARS
 from manus_policy import ManusProfile, ManusProfilePolicyError
 from orchestration import ExecutionRegistry
-from manus_governance import specialist_request
+from manus_governance import specialist_request, validate_specialist_request
 from manus_runtime import (
     MANUS_RESULT_JSON_SCHEMA,
     ManusLiteRuntime,
@@ -228,6 +228,172 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         )
         out = ManusLiteRuntime(client).task_status("provider-123")
         self.assertEqual(out["status"], "VERIFIED_COMPLETE")
+
+    def test_exact_legacy_model_intent_is_canonicalized_by_jaytec(self):
+        legacy = {
+            "request_id": "legacy-request-1",
+            "specialist": "nemo",
+            "purpose": "Review the bounded security finding and identify missing evidence.",
+            "scope": "G03 security review",
+            "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            "constraints": ["no side effects", "no spend", "evidence only"],
+        }
+        result = verified_success()
+        result["status"] = "NEEDS_JAYTEC"
+        result["specialist_requests"] = [json.dumps(legacy, sort_keys=True)]
+        client = FakeClient(
+            observed_profile="lite",
+            task_status="stopped",
+            result=result,
+        )
+        out = ManusLiteRuntime(client).task_status(
+            "provider-123",
+            parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+        )
+        self.assertEqual(out["status"], "VERIFIED_COMPLETE")
+        self.assertEqual(
+            out["specialist_request_migrations"],
+            {
+                "count": 1,
+                "mode": "EXACT_SIX_FIELD_INTENT_TO_CURRENT_SPECIALIST_REQUEST_V1",
+                "values_included": False,
+            },
+        )
+        canonical = json.loads(out["result"]["specialist_requests"][0])
+        self.assertEqual(
+            set(canonical),
+            {
+                "type",
+                "request_id",
+                "parent_task_id",
+                "directive_version",
+                "specialist",
+                "objective",
+                "reason",
+                "required_context",
+                "authority",
+                "packet_sha256",
+            },
+        )
+        self.assertEqual(canonical["parent_task_id"], "FORGE-GENESIS-ACTIVATION-001")
+        self.assertEqual(canonical["specialist"], "nemo")
+        self.assertEqual(canonical["authority"], "REQUEST_ONLY_NO_SELF_DISPATCH")
+        self.assertEqual(
+            canonical["reason"],
+            "JAYTEC_CANONICALIZED_EXACT_LEGACY_INTENT_SHAPE",
+        )
+        self.assertEqual(
+            canonical["required_context"]["migration"],
+            "EXACT_SIX_FIELD_INTENT_TO_CURRENT_SPECIALIST_REQUEST_V1",
+        )
+        self.assertRegex(
+            canonical["required_context"]["legacy_intent_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
+        validate_specialist_request(canonical)
+
+    def test_legacy_intent_requires_jaytec_parent_binding(self):
+        legacy = {
+            "request_id": "legacy-request-1",
+            "specialist": "deepseek",
+            "purpose": "Review one bounded finding.",
+            "scope": "G03",
+            "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            "constraints": ["no side effects"],
+        }
+        result = verified_success()
+        result["status"] = "NEEDS_JAYTEC"
+        result["specialist_requests"] = [json.dumps(legacy, sort_keys=True)]
+        client = FakeClient(
+            observed_profile="lite",
+            task_status="stopped",
+            result=result,
+        )
+        readonly = ManusLiteRuntime(client).task_status_readonly("provider-123")
+        self.assertEqual(readonly["status"], "FAILED_CLOSED")
+        self.assertEqual(
+            readonly["reason"],
+            "MANUS_RUNTIME_GOVERNANCE_REJECTED:MANUS_SPECIALIST_REQUEST_FIELDS_INVALID",
+        )
+
+    def test_legacy_intent_extra_field_still_fails_closed(self):
+        legacy = {
+            "request_id": "legacy-request-1",
+            "specialist": "nemo",
+            "purpose": "Review one bounded finding.",
+            "scope": "G03",
+            "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            "constraints": ["no side effects"],
+            "authority": "invented",
+        }
+        result = verified_success()
+        result["status"] = "NEEDS_JAYTEC"
+        result["specialist_requests"] = [json.dumps(legacy, sort_keys=True)]
+        readonly = ManusLiteRuntime(
+            FakeClient(observed_profile="lite", task_status="stopped", result=result)
+        ).task_status_readonly(
+            "provider-123",
+            parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+        )
+        self.assertEqual(readonly["status"], "FAILED_CLOSED")
+        self.assertEqual(
+            readonly["reason"],
+            "MANUS_RUNTIME_GOVERNANCE_REJECTED:MANUS_SPECIALIST_REQUEST_FIELDS_INVALID",
+        )
+
+    def test_legacy_intent_cannot_create_github_or_unknown_specialist(self):
+        for specialist in ("github_broker", "engineer", "unknown"):
+            with self.subTest(specialist=specialist):
+                legacy = {
+                    "request_id": "legacy-request-1",
+                    "specialist": specialist,
+                    "purpose": "Request bounded help.",
+                    "scope": "G03",
+                    "repository": "jayagius99/jaytec-work-engine-v2-g1",
+                    "constraints": ["no side effects"],
+                }
+                result = verified_success()
+                result["status"] = "NEEDS_JAYTEC"
+                result["specialist_requests"] = [json.dumps(legacy, sort_keys=True)]
+                readonly = ManusLiteRuntime(
+                    FakeClient(
+                        observed_profile="lite",
+                        task_status="stopped",
+                        result=result,
+                    )
+                ).task_status_readonly(
+                    "provider-123",
+                    parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+                )
+                self.assertEqual(readonly["status"], "FAILED_CLOSED")
+                self.assertEqual(
+                    readonly["reason"],
+                    "MANUS_RUNTIME_GOVERNANCE_REJECTED:MANUS_LEGACY_SPECIALIST_INTENT_NOT_MODEL_ONLY",
+                )
+
+    def test_current_specialist_packet_is_not_rewritten(self):
+        current = specialist_request(
+            parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+            specialist="nemo",
+            objective="Review current evidence.",
+            reason="Independent review requested.",
+            required_context={"reference": "issue-66"},
+        )
+        result = verified_success()
+        result["status"] = "NEEDS_JAYTEC"
+        result["specialist_requests"] = [json.dumps(current, sort_keys=True)]
+        out = ManusLiteRuntime(
+            FakeClient(observed_profile="lite", task_status="stopped", result=result)
+        ).task_status(
+            "provider-123",
+            parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+        )
+        self.assertEqual(out["status"], "VERIFIED_COMPLETE")
+        self.assertNotIn("specialist_request_migrations", out)
+        self.assertEqual(
+            json.loads(out["result"]["specialist_requests"][0]),
+            current,
+        )
 
     def test_profile_selection_fields_are_impossible_at_runtime_boundary(self):
         for field in (

@@ -85,11 +85,27 @@ class FakeRuntime:
             "observed_profile_verified": True,
         }
 
-    def task_status(self, worker_id):
+    def task_status(self, worker_id, *, parent_task_id=None):
+        self.status_parent_task_id = parent_task_id
         return dict(self.status)
 
 
 class RuntimeComponentTests(unittest.TestCase):
+    def test_health_probe_binds_canonical_parent_task_id(self):
+        runtime = FakeRuntime(status={"status": "PENDING"})
+        probe = ManusLiteHealthProbe(runtime)
+        health = probe.wait_for_healthy(
+            task_id="FORGE-GENESIS-ACTIVATION-001",
+            fencing_token=15,
+            worker_id="worker-existing",
+            timeout_seconds=1,
+        )
+        self.assertTrue(health.healthy)
+        self.assertEqual(
+            runtime.status_parent_task_id,
+            "FORGE-GENESIS-ACTIVATION-001",
+        )
+
     def test_exact_head_verifier_accepts_only_attested_branch_head(self):
         verifier = ObservedRefsCheckpointVerifier(
             {"security/root-owner-control-v1": HEAD}

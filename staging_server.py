@@ -889,7 +889,7 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
     worker_id = str(result.get("worker_id") or "").strip()
     if worker_id and _autorecovery_components_registered():
         try:
-            worker_status = _manus_runtime().task_status_readonly(worker_id)
+            worker_status = _manus_runtime().task_status_readonly(worker_id, parent_task_id=task_id)
         except Exception as exc:
             result["current_worker_result"] = {
                 "status": "DIAGNOSTIC_READ_FAILED",
@@ -910,13 +910,21 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
                     safe_worker["specialist_request_shape_diagnostics"] = dict(
                         worker_status["specialist_request_shape_diagnostics"]
                     )
+                if isinstance(worker_status.get("specialist_request_migrations"), Mapping):
+                    safe_worker["specialist_request_migrations"] = dict(
+                        worker_status["specialist_request_migrations"]
+                    )
                 terminal = worker_status.get("result")
                 if isinstance(terminal, Mapping):
                     safe_worker["result"] = {
                         "status": terminal.get("status"),
                         "summary": terminal.get("summary"),
                         "unresolved_items": terminal.get("unresolved_items"),
-                        "specialist_requests": terminal.get("specialist_requests"),
+                        "specialist_request_count": (
+                            len(terminal.get("specialist_requests"))
+                            if isinstance(terminal.get("specialist_requests"), list)
+                            else 0
+                        ),
                         "verification": terminal.get("verification"),
                     }
                 result["current_worker_result"] = safe_worker

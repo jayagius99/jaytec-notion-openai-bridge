@@ -30,6 +30,7 @@ from manus_governance import (
     ManusGovernanceError,
     build_minimal_task_packet,
     packet_digest,
+    specialist_request,
     validate_specialist_request,
     verify_manus_completion,
 )
@@ -42,6 +43,15 @@ from manus_policy import (
 SCHEMA_VERSION = "JAYTEC_MANUS_LITE_RUNTIME_V1"
 MAX_REQUEST_BYTES = 32_000
 MAX_STATUS_TASK_ID = 200
+_LEGACY_INTENT_FIELDS = frozenset({
+    "request_id",
+    "specialist",
+    "purpose",
+    "scope",
+    "repository",
+    "constraints",
+})
+_LEGACY_INTENT_MODEL_SPECIALISTS = frozenset({"sol", "deepseek", "nemo"})
 
 # Deliberately excludes profile/override fields. Unknown fields fail closed.
 _ALLOWED_START_FIELDS = frozenset({
@@ -236,6 +246,101 @@ def validate_manus_structured_output_schema(
             items,
             _path=_path + "[]",
             _root=False,
+        )
+
+
+def _canonicalize_legacy_specialist_intent(
+    value: Mapping[str, Any],
+    *,
+    parent_task_id: str,
+) -> Mapping[str, Any]:
+    """Migrate one exact observed six-field lite intent into the current contract.
+
+    This is intentionally one-way and model-specialist-only. The legacy
+    request_id is not trusted as authority or identity; it is retained only as
+    bounded provenance inside required_context. JAYTEC creates a fresh canonical
+    request id, directive version, request-only authority marker and digest.
+    """
+    if set(value) != _LEGACY_INTENT_FIELDS:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_FIELDS_INVALID")
+
+    parent = str(parent_task_id or "").strip()
+    if not parent or len(parent) > MAX_STATUS_TASK_ID:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_PARENT_TASK_ID_INVALID")
+
+    specialist = str(value.get("specialist") or "").strip().casefold()
+    if specialist not in _LEGACY_INTENT_MODEL_SPECIALISTS:
+        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_NOT_MODEL_ONLY")
+
+    purpose = value.get("purpose")
+    scope = value.get("scope")
+    repository = value.get("repository")
+    constraints = value.get("constraints")
+    legacy_request_id = value.get("request_id")
+
+    if not isinstance(purpose, str) or not purpose.strip():
+        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_PURPOSE_INVALID")
+    if not isinstance(scope, str) or not scope.strip():
+        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_SCOPE_INVALID")
+    if not isinstance(repository, str) or not repository.strip():
+        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_REPOSITORY_INVALID")
+    if not isinstance(legacy_request_id, str) or not legacy_request_id.strip():
+        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_REQUEST_ID_INVALID")
+    if not isinstance(constraints, list) or not all(
+        isinstance(item, str) and item.strip() for item in constraints
+    ):
+        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_CONSTRAINTS_INVALID")
+
+    bounded_constraints = [item.strip()[:600] for item in constraints[:12]]
+    legacy_seed = json.dumps(
+        {
+            "request_id": legacy_request_id.strip()[:200],
+            "specialist": specialist,
+            "purpose": purpose.strip()[:2000],
+            "scope": scope.strip()[:500],
+            "repository": repository.strip()[:500],
+            "constraints": bounded_constraints,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    legacy_digest = hashlib.sha256(legacy_seed.encode("utf-8")).hexdigest()
+
+    packet = specialist_request(
+        parent_task_id=parent,
+        specialist=specialist,
+        objective=purpose.strip()[:2000],
+        reason="JAYTEC_CANONICALIZED_EXACT_LEGACY_INTENT_SHAPE",
+        required_context={
+            "legacy_intent_sha256": legacy_digest,
+            "scope": scope.strip()[:500],
+            "repository": repository.strip()[:500],
+            "constraints": bounded_constraints,
+            "migration": "EXACT_SIX_FIELD_INTENT_TO_CURRENT_SPECIALIST_REQUEST_V1",
+        },
+    )
+    validate_specialist_request(packet)
+    return packet
+
+
+def _validated_or_canonicalized_specialist_request(
+    value: Any,
+    *,
+    parent_task_id: str | None,
+) -> Mapping[str, Any]:
+    decoded = _decode_specialist_request(value)
+    try:
+        validate_specialist_request(decoded)
+        return decoded
+    except ManusGovernanceError as exc:
+        if str(exc) != "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID":
+            raise
+        if parent_task_id is None:
+            raise
+        return _canonicalize_legacy_specialist_intent(
+            decoded,
+            parent_task_id=parent_task_id,
         )
 
 
@@ -809,7 +914,12 @@ class ManusLiteRuntime:
             "connector_permissions": [list(v) for v in route.connector_permissions],
         }
 
-    def task_status_readonly(self, provider_task_id: str) -> dict[str, Any]:
+    def task_status_readonly(
+        self,
+        provider_task_id: str,
+        *,
+        parent_task_id: str | None = None,
+    ) -> dict[str, Any]:
         """Read and verify one Manus task without mutating provider state.
 
         This diagnostic path never calls stop_task. Any profile/project/result
@@ -888,8 +998,32 @@ class ManusLiteRuntime:
         try:
             requests = result.get("specialist_requests")
             if isinstance(requests, list):
+                canonical_requests = []
+                migrated_count = 0
                 for request in requests:
-                    validate_specialist_request(_decode_specialist_request(request))
+                    decoded = _decode_specialist_request(request)
+                    normalized = _validated_or_canonicalized_specialist_request(
+                        request,
+                        parent_task_id=parent_task_id,
+                    )
+                    if dict(normalized) != dict(decoded):
+                        migrated_count += 1
+                    canonical_requests.append(
+                        json.dumps(
+                            dict(normalized),
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        )
+                    )
+                if migrated_count:
+                    result = dict(result)
+                    result["specialist_requests"] = canonical_requests
+                    out["specialist_request_migrations"] = {
+                        "count": migrated_count,
+                        "mode": "EXACT_SIX_FIELD_INTENT_TO_CURRENT_SPECIALIST_REQUEST_V1",
+                        "values_included": False,
+                    }
 
             verify_manus_completion(result)
         except ManusGovernanceError as exc:
@@ -943,7 +1077,12 @@ class ManusLiteRuntime:
         out["result"] = dict(result)
         return out
 
-    def task_status(self, provider_task_id: str) -> dict[str, Any]:
+    def task_status(
+        self,
+        provider_task_id: str,
+        *,
+        parent_task_id: str | None = None,
+    ) -> dict[str, Any]:
         task_id = str(provider_task_id or "").strip()
         if not task_id or len(task_id) > MAX_STATUS_TASK_ID:
             raise ManusRuntimeError("MANUS_RUNTIME_PROVIDER_TASK_ID_INVALID")
@@ -1007,8 +1146,32 @@ class ManusLiteRuntime:
         # metadata. It never self-dispatches another provider.
         requests = result.get("specialist_requests")
         if isinstance(requests, list):
+            canonical_requests = []
+            migrated_count = 0
             for request in requests:
-                validate_specialist_request(_decode_specialist_request(request))
+                decoded = _decode_specialist_request(request)
+                normalized = _validated_or_canonicalized_specialist_request(
+                    request,
+                    parent_task_id=parent_task_id,
+                )
+                if dict(normalized) != dict(decoded):
+                    migrated_count += 1
+                canonical_requests.append(
+                    json.dumps(
+                        dict(normalized),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                )
+            if migrated_count:
+                result = dict(result)
+                result["specialist_requests"] = canonical_requests
+                out["specialist_request_migrations"] = {
+                    "count": migrated_count,
+                    "mode": "EXACT_SIX_FIELD_INTENT_TO_CURRENT_SPECIALIST_REQUEST_V1",
+                    "values_included": False,
+                }
 
         verify_manus_completion(result)
         out["status"] = "VERIFIED_COMPLETE"

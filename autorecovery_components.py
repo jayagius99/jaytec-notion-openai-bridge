@@ -782,7 +782,7 @@ class ManusLiteHealthProbe:
         timeout_seconds: int,
     ) -> WorkerHealth:
         try:
-            status = self.runtime.task_status(worker_id)
+            status = self.runtime.task_status(worker_id, parent_task_id=task_id)
         except Exception as exc:
             return WorkerHealth(
                 healthy=False,
