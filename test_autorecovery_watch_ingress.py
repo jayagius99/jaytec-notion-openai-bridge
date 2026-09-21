@@ -611,6 +611,152 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(result["gate_handoff"], "NOT_NEEDED")
         self.assertEqual(store.stops, [])
 
+    def test_invalid_specialist_packet_gets_one_same_worker_repair_without_recovery(self):
+        class InvalidSpecialistRuntime(FakeBrokerRuntime):
+            def task_status_readonly(self, worker_id):
+                self.assert_worker(worker_id)
+                return {
+                    "status": "FAILED_CLOSED",
+                    "provider_task_id": worker_id,
+                    "requested_profile": "lite",
+                    "observed_profile": "lite",
+                    "reason": (
+                        "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+                        "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID"
+                    ),
+                }
+
+            @staticmethod
+            def assert_worker(worker_id):
+                assert worker_id == "worker-existing"
+
+            def task_status(self, worker_id):
+                return self.task_status_readonly(worker_id)
+
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.RUNNING,
+                "progress_marker": "MANUS_PENDING",
+                "recovery_attempts": 0,
+                "fencing_token": 9,
+                "last_error": None,
+            }
+        )
+        runtime = InvalidSpecialistRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                cycle_payload(refs),
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(
+            result["decision"]["reason"],
+            "SAME_WORKER_GOVERNANCE_REPAIR_SENT",
+        )
+        self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
+        self.assertEqual(result["assignment"]["fencing_token"], 9)
+        self.assertEqual(result["assignment"]["recovery_attempts"], 0)
+        self.assertEqual(result["assignment"]["stop_reason"], "RUNNING")
+        self.assertTrue(
+            result["assignment"]["progress_marker"].startswith(
+                "MANUS_GOVERNANCE_REPAIR_SENT:"
+            )
+        )
+        self.assertEqual(len(runtime.handoffs), 1)
+        self.assertEqual(runtime.handoffs[0][0][0], "worker-existing")
+        ctx = runtime.handoffs[0][1]["handoff_context"]
+        self.assertEqual(ctx["fencing_token"], 9)
+        self.assertEqual(
+            ctx["rejected_reason"],
+            "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+            "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID",
+        )
+        self.assertEqual(store.stops, [])
+
+    def test_governance_repair_does_not_loop_or_allocate_recovery(self):
+        class StillInvalidRuntime(FakeBrokerRuntime):
+            def task_status_readonly(self, worker_id):
+                assert worker_id == "worker-existing"
+                return {
+                    "status": "FAILED_CLOSED",
+                    "provider_task_id": worker_id,
+                    "requested_profile": "lite",
+                    "observed_profile": "lite",
+                    "reason": (
+                        "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+                        "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID"
+                    ),
+                }
+
+            def task_status(self, worker_id):
+                return self.task_status_readonly(worker_id)
+
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.RUNNING,
+                "progress_marker": "MANUS_GOVERNANCE_REPAIR_SENT:CONTINUED",
+                "recovery_attempts": 0,
+                "fencing_token": 9,
+                "last_error": None,
+            }
+        )
+        runtime = StillInvalidRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                cycle_payload(refs),
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "BLOCKED_FAIL_CLOSED")
+        self.assertEqual(
+            result["reason"],
+            "MANUS_GOVERNANCE_REPAIR_NO_FRESH_RESULT",
+        )
+        self.assertEqual(runtime.handoffs, [])
+        self.assertEqual(store.state.worker_id, "worker-existing")
+        self.assertEqual(store.state.fencing_token, 9)
+        self.assertEqual(store.state.recovery_attempts, 0)
+        self.assertEqual(store.stops, [])
+
     def test_stale_success_without_exact_gate_receipt_cannot_complete_gate(self):
         class StaleSuccessRuntime(FakeSuccessBrokerRuntime):
             def task_status_readonly(self, worker_id):
