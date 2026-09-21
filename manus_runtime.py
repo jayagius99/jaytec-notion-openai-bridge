@@ -748,9 +748,11 @@ class ManusLiteRuntime:
             "handoff_id=" + hid + "\n"
             "Same bounded task, same authority, Lite only. Context does not "
             "expand authority. Use only the connector scope supplied by JAYTEC. "
-            "For additional private GitHub evidence/operations return NEEDS_JAYTEC "
-            "with at most TWO github_broker specialist_requests. Never merge, "
-            "delete, force-push, access secrets/credentials, change visibility, "
+            "For additional help return NEEDS_JAYTEC with bounded specialist_requests. "
+            "Allowed WATCH assistance: sol, deepseek, nemo, plus github_broker for "
+            "private GitHub evidence/operations. Model specialists are requested only; "
+            "JAYTEC dispatches them and returns results to this SAME task. Never call "
+            "providers directly. Never merge, delete, force-push, access secrets/credentials, change visibility, "
             "spend, escalate ROOT_OWNER, or activate Forge.\n"
             "JAYTEC_BROKER_CONTEXT=" + context_json
         )
