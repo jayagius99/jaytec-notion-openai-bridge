@@ -46,8 +46,9 @@ class FakeModelRequestRuntime(FakeBrokerRuntime):
         super().__init__()
         self.names = names
 
-    def task_status_readonly(self, worker_id):
+    def task_status_readonly(self, worker_id, *, parent_task_id=None):
         assert worker_id == "worker-existing"
+        assert parent_task_id == "FORGE-GENESIS-ACTIVATION-001"
         return {
             "status": "VERIFIED_COMPLETE",
             "result": {
