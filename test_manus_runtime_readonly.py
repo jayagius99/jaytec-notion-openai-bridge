@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from manus_runtime import ManusLiteRuntime
 
@@ -57,6 +58,43 @@ class ReadOnlyStatusTests(unittest.TestCase):
         result = runtime.task_status_readonly("worker-1")
         self.assertEqual(result["status"], "PENDING")
         self.assertTrue(result["read_only"])
+        self.assertEqual(client.stop_calls, [])
+
+    def test_governance_rejection_is_safe_and_read_only(self):
+        client = FakeClient(status="completed", messages=[{"ignored": True}])
+        runtime = ManusLiteRuntime(client)
+        invalid_result = {
+            "status": "SUCCESS",
+            "verification": {},
+            "evidence": [],
+            "specialist_requests": [],
+        }
+        with patch("manus_runtime._latest_structured_value", return_value=invalid_result):
+            result = runtime.task_status_readonly("worker-1")
+        self.assertEqual(result["status"], "FAILED_CLOSED")
+        self.assertTrue(
+            result["reason"].startswith(
+                "MANUS_RUNTIME_GOVERNANCE_REJECTED:MANUS_SUCCESS_NOT_VERIFIED:"
+            )
+        )
+        self.assertEqual(client.stop_calls, [])
+
+    def test_bad_specialist_request_reports_governance_code_without_stop(self):
+        client = FakeClient(status="completed", messages=[{"ignored": True}])
+        runtime = ManusLiteRuntime(client)
+        invalid_result = {
+            "status": "NEEDS_JAYTEC",
+            "verification": {},
+            "evidence": [],
+            "specialist_requests": ['{"type":"SPECIALIST_REQUEST"}'],
+        }
+        with patch("manus_runtime._latest_structured_value", return_value=invalid_result):
+            result = runtime.task_status_readonly("worker-1")
+        self.assertEqual(result["status"], "FAILED_CLOSED")
+        self.assertEqual(
+            result["reason"],
+            "MANUS_RUNTIME_GOVERNANCE_REJECTED:MANUS_SPECIALIST_REQUEST_FIELDS_INVALID",
+        )
         self.assertEqual(client.stop_calls, [])
 
 
