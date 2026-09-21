@@ -363,10 +363,11 @@ def _call_sol(request: Mapping[str, Any], client: Optional[OpenAI] = None):
     if client is None and not api_key:
         raise MeetingBusError("sol_api_not_configured")
     client = client or OpenAI(api_key=api_key)
+    prompt = _sol_participant_prompt(request)
     try:
         response = client.responses.create(
             model=SOL_MODEL,
-            input=_sol_participant_prompt(request),
+            input=prompt,
             reasoning={"effort": os.environ.get("MEETING_SOL_REASONING_EFFORT", "medium")},
             max_output_tokens=min(
                 int(request.get("max_output_tokens", 1800)),
