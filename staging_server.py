@@ -1184,7 +1184,7 @@ def execute_task_packet(packet_json: str) -> str:
 
     result = execute_task_packet_core(
         packet,
-        {"codex": CODEX_DISPATCH, "gemini": GEMINI_DISPATCH},
+        {"codex": CODEX_DISPATCH, "gemini": GEMINI_DISPATCH, "reviewer": DEEPSEEK_REVIEW_DISPATCH},
         registry,
     )
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -1255,7 +1255,7 @@ def _run_jaytec_read_bootstrap_probe() -> None:
     )
     result = execute_task_packet_core(
         packet,
-        {"gemini": GEMINI_DISPATCH},
+        {"reviewer": DEEPSEEK_REVIEW_DISPATCH},
         REGISTRY,
     )
     validated = enforce_orchestrated_read_report(result, target)

@@ -13,15 +13,18 @@ from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optio
 from jaytec_read import (
     JAYTEC_READ_ALLOWED_OPERATIONS,
     JAYTEC_READ_REQUIRED_OPERATIONS,
+    JAYTEC_READ_SPECIALIST,
     JAYTEC_READ_WORKFLOW_ID,
+    EXPECTED_READ_REVIEWER_MODEL,
 )
 
 PACKET_VERSION = "1.0"
 RETURN_SCHEMA_VERSION = "1.0"
-ALLOWED_SPECIALISTS = ("codex", "gemini")
+ALLOWED_SPECIALISTS = ("codex", "gemini", "reviewer")
 EXPECTED_MODELS = {
     "codex": "gpt-5.6-sol",
     "gemini": "google/gemini-3.1-pro-preview",
+    "reviewer": EXPECTED_READ_REVIEWER_MODEL,
 }
 ALLOWED_STATUSES = {
     "SUCCESS",
@@ -333,8 +336,8 @@ def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None
             errors.append("duplicate_allowed_operation")
 
     if packet.get("workflow_id") == JAYTEC_READ_WORKFLOW_ID:
-        if plan != ["gemini"]:
-            errors.append("jaytec_read_requires_gemini_only")
+        if plan != [JAYTEC_READ_SPECIALIST]:
+            errors.append("jaytec_read_requires_reviewer_only")
         allowed_ops = set(ops) if isinstance(ops, list) else set()
         if not JAYTEC_READ_REQUIRED_OPERATIONS.issubset(allowed_ops):
             errors.append("jaytec_read_missing_required_operations")
