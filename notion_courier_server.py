@@ -61,6 +61,10 @@ class JaytecCourierRuntime:
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
         )
+        self.sol_circuit = CircuitBreaker(
+            failure_threshold=1,
+            reset_after_seconds=max(legacy_server.CIRCUIT_RESET_SECONDS, 300),
+        )
 
         self.openrouter_client = (
             OpenAI(
@@ -68,6 +72,15 @@ class JaytecCourierRuntime:
                 base_url=legacy_server.OPENROUTER_BASE_URL,
             )
             if legacy_server.OPENROUTER_API_KEY
+            else None
+        )
+
+        self.sol_gateway_client = (
+            OpenAI(
+                api_key=legacy_server.AI_GATEWAY_API_KEY,
+                base_url=legacy_server.SOL_GATEWAY_URL,
+            )
+            if legacy_server.AI_GATEWAY_API_KEY
             else None
         )
 
@@ -96,6 +109,36 @@ class JaytecCourierRuntime:
                 )
             )
 
+        if (
+            self.sol_gateway_client is not None
+            and legacy_server.SOL_RESERVE_ENABLED
+            and legacy_server.SOL_FREE_CREDIT_ONLY_ATTESTED
+        ):
+            self.sol_dispatch = legacy_server.build_sol_reserve_dispatch(
+                gateway_client=self.sol_gateway_client,
+                gateway_api_key=legacy_server.AI_GATEWAY_API_KEY,
+                circuit=self.sol_circuit,
+                credit_balance_fn=lambda: legacy_server.fetch_vercel_gateway_credit_balance(
+                    api_key=legacy_server.AI_GATEWAY_API_KEY,
+                    base_url=legacy_server.SOL_GATEWAY_URL,
+                ),
+                reserve_enabled=legacy_server.SOL_RESERVE_ENABLED,
+                zero_spend_attested=legacy_server.SOL_FREE_CREDIT_ONLY_ATTESTED,
+                sol_timeout_s=legacy_server.SOL_TIMEOUT_S,
+                max_output_tokens=legacy_server.SOL_OUTPUT_TOKEN_CAP,
+                max_input_bytes=legacy_server.SOL_INPUT_BYTE_CAP,
+                min_credit_usd=legacy_server.SOL_MIN_CREDIT_USD,
+                reasoning_effort=legacy_server.SOL_REASONING_EFFORT,
+            )
+        else:
+            self.sol_dispatch = self.sol_circuit.guard(
+                lambda _packet: (_ for _ in ()).throw(
+                    RuntimeError(
+                        "Sol reserve unavailable: zero-spend gates are not fully satisfied"
+                    )
+                )
+            )
+
         self.production_ready = legacy_server.compute_production_ready(
             runtime_mode=legacy_server.RUNTIME_MODE,
             idempotency_store=self.idempotency_store,
@@ -107,15 +150,29 @@ class JaytecCourierRuntime:
         )
 
     def status(self) -> str:
-        return legacy_server._orchestration_status_json(
-            runtime_mode=legacy_server.RUNTIME_MODE,
-            codex_model=legacy_server.CODEX_MODEL,
-            gemini_model=legacy_server.GEMINI_MODEL,
-            codex_circuit=self.codex_circuit.snapshot(),
-            gemini_circuit=self.gemini_circuit.snapshot(),
-            idempotency_store=self.idempotency_store,
-            production_ready=self.production_ready,
+        payload = json.loads(
+            legacy_server._orchestration_status_json(
+                runtime_mode=legacy_server.RUNTIME_MODE,
+                codex_model=legacy_server.CODEX_MODEL,
+                gemini_model=legacy_server.GEMINI_MODEL,
+                codex_circuit=self.codex_circuit.snapshot(),
+                gemini_circuit=self.gemini_circuit.snapshot(),
+                idempotency_store=self.idempotency_store,
+                production_ready=self.production_ready,
+            )
         )
+        payload.update(
+            {
+                "sol_model": legacy_server.EXPECTED_SOL_MODEL,
+                "sol_reserve_enabled": bool(
+                    self.sol_gateway_client is not None
+                    and legacy_server.SOL_RESERVE_ENABLED
+                    and legacy_server.SOL_FREE_CREDIT_ONLY_ATTESTED
+                ),
+                "sol_circuit": self.sol_circuit.snapshot(),
+            }
+        )
+        return json.dumps(payload, sort_keys=True)
 
     def execute(self, packet_json: str) -> str:
         return legacy_server._execute_task_packet_json(
@@ -124,6 +181,7 @@ class JaytecCourierRuntime:
             idempotency_store=self.idempotency_store,
             codex_dispatch=self.codex_dispatch,
             gemini_dispatch=self.gemini_dispatch,
+            sol_dispatch=self.sol_dispatch,
         )
 
 
