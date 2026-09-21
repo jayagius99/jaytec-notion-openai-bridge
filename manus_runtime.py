@@ -403,8 +403,12 @@ def _validated_or_canonicalized_specialist_request(
                 decoded,
                 parent_task_id=parent_task_id,
             )
+        if specialist == "github_broker":
+            raise ManusGovernanceError(
+                "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE"
+            )
         raise ManusGovernanceError(
-            "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE"
+            "MANUS_LEGACY_SPECIALIST_INTENT_SPECIALIST_INVALID"
         )
 
     raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_FIELDS_INVALID")
