@@ -165,6 +165,27 @@ class FakeBrokerStore:
     def get(self, task_id):
         return self.state if task_id == FORGE_TASK_ID else None
 
+    def advance_checkpoint_preserving_runtime(
+        self,
+        checkpoint,
+        *,
+        expected_current_checkpoint_number,
+        now=None,
+    ):
+        assert checkpoint.task_id == FORGE_TASK_ID
+        assert self.state.checkpoint.checkpoint_number == expected_current_checkpoint_number
+        if checkpoint.checkpoint_number <= self.state.checkpoint.checkpoint_number:
+            return False
+        current = now or self.state.updated_at
+        self.state = AssignmentState(
+            **{
+                **self.state.__dict__,
+                "checkpoint": checkpoint,
+                "updated_at": current,
+            }
+        )
+        return True
+
     def heartbeat(self, task_id, *, fencing_token, worker_id, progress_marker=None, now=None):
         assert task_id == FORGE_TASK_ID
         assert fencing_token == self.state.fencing_token
@@ -291,10 +312,38 @@ class WatchIngressPolicyTests(unittest.TestCase):
         checkpoint = broker_checkpoint()
         gate = _master_gate_context(master_gate_payload(), checkpoint)
         self.assertEqual(gate["gate_id"], "G03")
-        bad = master_gate_payload()
-        bad["checkpoint_number"] = 104
+
+        bad_number = master_gate_payload()
+        bad_number["checkpoint_number"] = 0
         with self.assertRaisesRegex(WatchIngressError, "CHECKPOINT_NUMBER_INVALID"):
-            _master_gate_context(bad, checkpoint)
+            _master_gate_context(bad_number, checkpoint)
+
+        mismatch = master_gate_payload()
+        mismatch["checkpoint_number"] = 104
+        with self.assertRaisesRegex(WatchIngressError, "CHECKPOINT_MISMATCH"):
+            _master_gate_context(mismatch, checkpoint)
+
+        dynamic_checkpoint = AssignmentCheckpoint(
+            **{
+                **checkpoint.__dict__,
+                "objective": "Advance canonical Forge master gate G07: dynamic.",
+                "current_phase": "G07/COGNITION: dynamic",
+                "checkpoint_number": 104,
+            }
+        ).validate()
+        dynamic_gate = master_gate_payload()
+        dynamic_gate.update(
+            {
+                "gate_id": "G07",
+                "phase": "COGNITION",
+                "title": "dynamic",
+                "depends_on": ["G04"],
+                "checkpoint_number": 104,
+            }
+        )
+        parsed = _master_gate_context(dynamic_gate, dynamic_checkpoint)
+        self.assertEqual(parsed["gate_id"], "G07")
+        self.assertEqual(parsed["checkpoint_number"], 104)
 
     def test_broker_context_digest_and_secret_fields_fail_closed(self):
         refs = {"security/root-owner-control-v1": "b" * 40}
@@ -519,6 +568,195 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(result["gate_handoff"], "NOT_NEEDED")
         self.assertEqual(result["gate_result"]["status"], "SUCCESS")
 
+
+
+    def test_checkpoint_advance_requires_verified_prior_gate_success(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        runtime = FakePendingBrokerRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        next_checkpoint = AssignmentCheckpoint(
+            **{
+                **broker_checkpoint().__dict__,
+                "objective": "Advance canonical Forge master gate G04: next.",
+                "current_phase": "G04/CONTROL: next",
+                "next_intended_action": "Work only on G04.",
+                "checkpoint_number": 104,
+            }
+        ).validate()
+        next_gate = master_gate_payload()
+        next_gate.update(
+            {
+                "gate_id": "G04",
+                "phase": "CONTROL",
+                "title": "next",
+                "depends_on": ["G03"],
+                "checkpoint_number": 104,
+            }
+        )
+        payload = cycle_payload(refs)
+        payload["bootstrap_checkpoint"] = next_checkpoint.to_dict()
+        payload["master_gate"] = next_gate
+
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                payload,
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "BLOCKED_FAIL_CLOSED")
+        self.assertEqual(
+            result["reason"],
+            "MASTER_GATE_ADVANCE_REQUIRES_VERIFIED_PRIOR_SUCCESS",
+        )
+        self.assertEqual(store.state.checkpoint.checkpoint_number, 103)
+        self.assertEqual(runtime.handoffs, [])
+
+    def test_verified_gate_success_advances_one_checkpoint_and_reuses_worker(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.WAITING_FOR_DEPENDENCY,
+                "last_error": "MANUS_TERMINAL:SUCCESS:verified",
+                "progress_marker": "MANUS_TERMINAL:SUCCESS:verified",
+                "recovery_attempts": 0,
+            }
+        )
+        runtime = FakePendingBrokerRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        next_checkpoint = AssignmentCheckpoint(
+            **{
+                **broker_checkpoint().__dict__,
+                "objective": "Advance canonical Forge master gate G04: next.",
+                "current_phase": "G04/CONTROL: next",
+                "next_intended_action": "Work only on G04.",
+                "checkpoint_number": 104,
+            }
+        ).validate()
+        next_gate = master_gate_payload()
+        next_gate.update(
+            {
+                "gate_id": "G04",
+                "phase": "CONTROL",
+                "title": "next",
+                "depends_on": ["G03"],
+                "checkpoint_number": 104,
+            }
+        )
+        payload = cycle_payload(refs)
+        payload["bootstrap_checkpoint"] = next_checkpoint.to_dict()
+        payload["master_gate"] = next_gate
+
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                payload,
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertTrue(result["checkpoint_advanced"])
+        self.assertEqual(result["assignment"]["checkpoint_number"], 104)
+        self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
+        self.assertEqual(result["assignment"]["fencing_token"], 9)
+        self.assertEqual(result["assignment"]["recovery_attempts"], 0)
+        self.assertEqual(len(runtime.handoffs), 1)
+        self.assertIn("master-gate:G04:", runtime.handoffs[0][1]["handoff_id"])
+        self.assertEqual(result["decision"]["action"], "NOOP_HEALTHY")
+
+    def test_checkpoint_gap_is_rejected_even_after_prior_success(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.WAITING_FOR_DEPENDENCY,
+                "last_error": "MANUS_TERMINAL:SUCCESS:verified",
+                "progress_marker": "MANUS_TERMINAL:SUCCESS:verified",
+                "recovery_attempts": 0,
+            }
+        )
+        runtime = FakePendingBrokerRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        gap_checkpoint = AssignmentCheckpoint(
+            **{
+                **broker_checkpoint().__dict__,
+                "objective": "Advance canonical Forge master gate G07: gap.",
+                "current_phase": "G07/COGNITION: gap",
+                "next_intended_action": "Work only on G07.",
+                "checkpoint_number": 105,
+            }
+        ).validate()
+        gap_gate = master_gate_payload()
+        gap_gate.update(
+            {
+                "gate_id": "G07",
+                "phase": "COGNITION",
+                "title": "gap",
+                "depends_on": ["G04"],
+                "checkpoint_number": 105,
+            }
+        )
+        payload = cycle_payload(refs)
+        payload["bootstrap_checkpoint"] = gap_checkpoint.to_dict()
+        payload["master_gate"] = gap_gate
+
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                payload,
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "BLOCKED_FAIL_CLOSED")
+        self.assertEqual(result["reason"], "MASTER_GATE_CHECKPOINT_GAP_FORBIDDEN")
+        self.assertEqual(store.state.checkpoint.checkpoint_number, 103)
+        self.assertEqual(runtime.handoffs, [])
 
 
     def test_one_transient_health_probe_failure_does_not_consume_recovery(self):
