@@ -30,6 +30,14 @@ services:
         sync: false
       - key: OPENROUTER_PROVIDER_MODE
         value: LOCKED_RESERVE
+      - key: DEEPSEEK_REVIEWER_MODEL
+        value: deepseek/deepseek-v4-flash-0731:free
+      - key: DEEPSEEK_PROVIDER_MODE
+        value: ACTIVE_FREE_ONLY
+      - key: NEMO_MODEL
+        value: nvidia/nemotron-3-ultra-550b-a55b:free
+      - key: NEMO_PROVIDER_MODE
+        value: ACTIVE_FREE_ONLY
       - key: GEMINI_MODEL
         value: google/gemini-3.1-pro-preview
       - key: JAYTEC_READ_BOOTSTRAP_ENABLED
