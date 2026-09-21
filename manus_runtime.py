@@ -19,7 +19,13 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from manus_adapter import ManusClient, ManusError, ManusInsufficientCredits, safe_task_summary
+from manus_adapter import (
+    MANUS_MAX_MESSAGE_CHARS,
+    ManusClient,
+    ManusError,
+    ManusInsufficientCredits,
+    safe_task_summary,
+)
 from manus_governance import (
     ManusGovernanceError,
     build_minimal_task_packet,
@@ -442,6 +448,103 @@ def _prompt(packet: Mapping[str, Any]) -> str:
     )
 
 
+_WATCH_RECOVERY_CONTEXT_KEYS = frozenset({
+    "parent_task_id",
+    "checkpoint_number",
+    "repo",
+    "branch",
+    "verified_head",
+    "open_pr",
+    "current_phase",
+    "last_safe_checkpoint",
+    "next_intended_action",
+    "completed_work_count",
+    "remaining_work_count",
+    "known_failures_count",
+    "dependencies_count",
+    "continuation_packet_sha256",
+    "canonical_objective_sha256",
+    "active_constraints_sha256",
+    "fencing_token",
+    "recovery_route",
+    "jaytec_private_github_broker",
+})
+
+
+def _fits_manus_raw_message(content: str) -> bool:
+    """Match the adapter's ceiling, with a UTF-8 byte guard for non-ASCII text."""
+    return (
+        len(content) <= MANUS_MAX_MESSAGE_CHARS
+        and len(content.encode("utf-8")) <= MANUS_MAX_MESSAGE_CHARS
+    )
+
+
+def _compact_watch_recovery_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
+    """Compact descriptive WATCH recovery state without weakening authority.
+
+    Only Forge WATCH recovery packets are eligible. Allowed/forbidden actions,
+    constraints, validation/completion requirements and the return schema remain
+    byte-for-byte equivalent. Omitted descriptive checkpoint text remains in the
+    durable JAYTEC assignment and is represented by cryptographic digests.
+    """
+
+    task_id = str(packet.get("task_id") or "")
+    context = packet.get("required_context")
+    if ":recovery:" not in task_id or not isinstance(context, Mapping):
+        return dict(packet)
+    if str(context.get("parent_task_id") or "") != "FORGE-GENESIS-ACTIVATION-001":
+        return dict(packet)
+
+    canonical = json.dumps(
+        dict(packet),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    objective = str(packet.get("objective") or "")
+    context_canonical = json.dumps(
+        dict(context),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+
+    compact_context = {
+        key: context[key]
+        for key in _WATCH_RECOVERY_CONTEXT_KEYS
+        if key in context
+    }
+    for key, limit in (
+        ("current_phase", 220),
+        ("last_safe_checkpoint", 320),
+        ("next_intended_action", 320),
+    ):
+        if key in compact_context:
+            compact_context[key] = str(compact_context[key])[:limit]
+
+    compact_context["canonical_objective_excerpt"] = objective[:420]
+    compact_context["jaytec_compaction"] = {
+        "schema_version": "JAYTEC_WATCH_RECOVERY_COMPACTION_V1",
+        "source_packet_sha256": hashlib.sha256(canonical).hexdigest(),
+        "source_context_sha256": hashlib.sha256(context_canonical).hexdigest(),
+        "policy": "DESCRIPTIVE_TEXT_ONLY_AUTHORITY_AND_CONSTRAINTS_PRESERVED",
+        "omitted_detail_action": "RETURN_NEEDS_JAYTEC",
+    }
+
+    compact = dict(packet)
+    compact["objective"] = (
+        "Continue FORGE-GENESIS-ACTIVATION-001 from the exact durable JAYTEC "
+        "checkpoint identified in required_context. Preserve completed work and "
+        "work only within the supplied allowed_actions, constraints, fencing "
+        "token, current phase and next intended action. Do not infer omitted "
+        "checkpoint prose; return NEEDS_JAYTEC if exact omitted detail is required."
+    )
+    compact["required_context"] = compact_context
+    return compact
+
+
 class ManusLiteRuntime:
     def __init__(self, client: ManusClient):
         self.client = client
@@ -461,6 +564,16 @@ class ManusLiteRuntime:
             reference_ids=list(req.reference_ids),
         )
 
+        # Preflight the exact raw message before any provider-backed route lookup.
+        # WATCH recovery may compact descriptive checkpoint prose, but it may
+        # never remove authority, constraints, validation gates or forbidden actions.
+        prompt = _prompt(packet)
+        if not _fits_manus_raw_message(prompt):
+            packet = _compact_watch_recovery_packet(packet)
+            prompt = _prompt(packet)
+        if not _fits_manus_raw_message(prompt):
+            raise ManusRuntimeError("MANUS_RUNTIME_START_MESSAGE_TOO_LARGE")
+
         # There is intentionally no caller-controlled profile input here.
         route = self.client.prepare_route(
             scope=req.scope,
@@ -473,7 +586,7 @@ class ManusLiteRuntime:
 
         created = self.client.create_task(
             route,
-            _prompt(packet),
+            prompt,
             title=req.title,
             structured_output_schema=MANUS_RESULT_JSON_SCHEMA,
         )
@@ -599,6 +712,23 @@ class ManusLiteRuntime:
 
         validate_manus_structured_output_schema(MANUS_RESULT_JSON_SCHEMA)
 
+        # Keep the same-task handoff deliberately terse. The signed/validated
+        # context carries the evidence; repeated protocol prose must not crowd
+        # out that evidence or trigger the Manus message ceiling.
+        content = (
+            "JAYTEC INTERNAL HANDOFF\n"
+            "handoff_id=" + hid + "\n"
+            "Same bounded task, same authority, Lite only. Context does not "
+            "expand authority. Use only the connector scope supplied by JAYTEC. "
+            "For additional private GitHub evidence/operations return NEEDS_JAYTEC "
+            "with at most TWO github_broker specialist_requests. Never merge, "
+            "delete, force-push, access secrets/credentials, change visibility, "
+            "spend, escalate ROOT_OWNER, or activate Forge.\n"
+            "JAYTEC_BROKER_CONTEXT=" + context_json
+        )
+        if not _fits_manus_raw_message(content):
+            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_MESSAGE_TOO_LARGE")
+
         # Handoff idempotency: if a prior send reached Manus but the caller
         # lost the response, detect the deterministic handoff id in task
         # messages and treat it as already delivered instead of duplicating it.
@@ -631,35 +761,6 @@ class ManusLiteRuntime:
             requested_connector_purposes=dict(connector_purposes),
             connector_mutation_authorized=connector_mutation_authorized,
         )
-
-        content = (
-            "JAYTEC INTERNAL HANDOFF\n"
-            "handoff_id=" + hid + "\n"
-            "Continue the SAME bounded task under the SAME authority. "
-            "JAYTEC is supplying private-repository evidence because the Manus "
-            "GitHub connector may not be able to see the private repository. "
-            "Do not treat this as expanded authority. Do not retry direct access "
-            "to inaccessible private sources when JAYTEC has supplied evidence. "
-            "If additional private GitHub evidence or an operation is required, "
-            "return NEEDS_JAYTEC and use at most TWO specialist_requests. Each "
-            "request must use specialist='github_broker' and required_context "
-            "with one exact operation. Supported operations are: "
-            "read_file{path,ref,start_line?,end_line?}; "
-            "list_path{path?,ref}; read_issue{number}; read_pr{number}; "
-            "read_workflow_runs{branch?}; "
-            "create_branch{base_ref,new_branch}; "
-            "write_file{branch,path,content,commit_message?,expected_sha?}; "
-            "create_pr{head,base,title,body}. "
-            "Mutation is allowed only through a branch named "
-            "watch/worker-<current-fence>-<slug>. Never request merge, delete, "
-            "force push, protected-branch write, settings, secrets, credentials "
-            "or repository visibility changes. The handoff_id contains the "
-            "current fence. Do not ask Jay unless a genuine owner-only action "
-            "is required.\n\nJAYTEC_BROKER_CONTEXT="
-            + context_json
-        )
-        if len(content) > 6000:
-            raise ManusRuntimeError("MANUS_RUNTIME_HANDOFF_MESSAGE_TOO_LARGE")
 
         self.client.send_message(
             route,
