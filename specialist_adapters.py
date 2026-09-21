@@ -41,7 +41,7 @@ from worker_json import WorkerJsonError, json_object, json_object_with_diagnosti
 
 EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
 SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V4"
-SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V3.md")
+SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V4.md")
 SOL_MEMORY_MANIFEST_PATH = Path(__file__).with_name("JAYTEC_MEMORY") / "MANIFEST.json"
 SOL_MEMORY_MAX_TOTAL_BYTES = 80_000
 SOL_MEMORY_MAX_FILE_BYTES = 24_000
