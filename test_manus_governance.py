@@ -204,6 +204,9 @@ class ManusGovernanceTests(unittest.TestCase):
             "Manus Lite is the ONLY permitted profile",
             "Never claim success because an action merely ran",
             "You may not alter, bypass, reinterpret, or supersede it yourself",
+            "SPECIALIST_INTENT_V1",
+            "Do NOT invent request_id, parent_task_id, directive_version, authority, or packet_sha256",
+            "Intent is never a dispatch token or authority",
         ):
             self.assertIn(" ".join(phrase.split()).casefold(), normalized)
         self.assertEqual(len(directive_sha256()), 64)
