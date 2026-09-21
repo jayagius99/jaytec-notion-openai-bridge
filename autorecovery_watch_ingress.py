@@ -607,6 +607,15 @@ def execute_watch_cycle(
 
     assert state is not None
 
+    verified_current, current_detail = verifier.verify(state.checkpoint)
+    if not verified_current:
+        return {
+            "status": "BLOCKED_FAIL_CLOSED",
+            "task_id": task_id,
+            "reason": "CURRENT_CHECKPOINT_NOT_ATTESTED",
+            "detail": current_detail,
+        }
+
     checkpoint_advanced = False
     if incoming_checkpoint.checkpoint_number < state.checkpoint.checkpoint_number:
         return {
@@ -705,7 +714,10 @@ def execute_watch_cycle(
 
     # NEEDS_JAYTEC is an internal orchestration handoff, not an owner boundary.
     # Continue the SAME fenced worker with evidence supplied by GitHub Actions.
-    if _needs_jaytec_state(state):
+    # A cycle that is already resolving this transition must not also inject a
+    # new master-gate directive; the terminal/broker transition owns the cycle.
+    had_internal_dependency = _needs_jaytec_state(state)
+    if had_internal_dependency:
         if not broker_context:
             github_broker = "CONTEXT_REQUIRED"
         else:
@@ -907,7 +919,11 @@ def execute_watch_cycle(
                     state = store.get(task_id)
 
     gate_handoff = "NOT_NEEDED"
-    if state.worker_id and state.stop_reason is StopReason.RUNNING:
+    if (
+        not had_internal_dependency
+        and state.worker_id
+        and state.stop_reason is StopReason.RUNNING
+    ):
         handoff = invoker.continue_gate_directive(
             checkpoint=state.checkpoint,
             worker_id=state.worker_id,
