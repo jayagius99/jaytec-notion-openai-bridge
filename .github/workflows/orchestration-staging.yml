@@ -52,6 +52,8 @@ on:
       - 'manus_governance.py'
       - 'manus_dispatch_contract.py'
       - 'manus_runtime.py'
+      - 'manus_system_gateway.py'
+      - 'test_manus_system_gateway.py'
       - 'test_manus_runtime_readonly.py'
       - 'relationship_policy.py'
       - 'participant_contracts.py'
@@ -148,7 +150,7 @@ jobs:
             orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py deepseek_reviewer.py nemo_specialist.py watch_specialist_broker.py watch_controller_advisor.py provider_endpoints.py http_security.py auth_security.py dispatch_authority_boundary.py test_deepseek_reviewer.py test_nemo_specialist.py test_watch_specialist_broker.py test_watch_specialist_ingress.py test_watch_controller_advisor.py test_auth_security.py test_dispatch_authority_boundary.py \
             server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py staging_independent_g1_review.py test_staging_independent_g1_review.py startup_probe_guard.py staging_codex_429_diagnostic.py test_startup_probe_guard.py test_startup_provider_safety.py \
             staging_engineering_provider_probe.py staging_gemini_migration_review.py staging_gemini_manus_governance_review.py staging_manus_review_readback.py staging_manus_governance_acceptance.py staging_manus_usability_eval.py manus_adapter.py \
-            manus_policy.py manus_governance.py manus_dispatch_contract.py manus_runtime.py relationship_policy.py participant_contracts.py \
+            manus_policy.py manus_governance.py manus_dispatch_contract.py manus_runtime.py manus_system_gateway.py relationship_policy.py participant_contracts.py \
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
             test_worker_output_parsing.py test_idempotency_postgres.py test_dockerfile_packaging.py \
@@ -157,7 +159,7 @@ jobs:
             test_autorecovery_supervisor.py test_autorecovery_runtime.py test_autorecovery_loop.py test_autorecovery_components.py test_autorecovery_watch_ingress.py test_github_watch_oidc.py test_watch_auth_isolation.py test_staging_startup_nonblocking.py test_jaytec_watch_command_policy.py test_jaytec_protocol_portal.py test_forge_cognition.py test_forge_cognition_engine.py test_forge_strategic_drives.py test_forge_strategy_engine.py test_forge_strategic_adversarial.py test_forge_genesis_strategic_policy.py test_forge_genesis_binding.py \
             test_manus_adapter.py test_manus_policy.py test_manus_governance.py test_manus_dispatch_contract.py \
             test_relationship_policy.py test_participant_contracts.py test_participant_prompt_injection.py test_manus_policy_integration_guard.py test_manus_runtime.py \
-            test_manus_adversarial_matrix.py test_provider_credit_topup.py test_manus_governance_acceptance.py test_manus_usability_eval.py test_gemini_manus_governance_review.py
+            test_manus_system_gateway.py test_manus_adversarial_matrix.py test_provider_credit_topup.py test_manus_governance_acceptance.py test_manus_usability_eval.py test_gemini_manus_governance_review.py
       - name: Import guard (server.py must be importable without secrets)
         run: python -c "import server; print('server_import_ok')"
       - name: Run unit tests
