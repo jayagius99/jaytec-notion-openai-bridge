@@ -16,6 +16,7 @@ from autorecovery_supervisor import (
 from manus_governance import build_minimal_task_packet
 from manus_runtime import (
     ManusLiteRuntime,
+    _compact_watch_recovery_packet,
     _fits_manus_raw_message,
     _prompt,
     parse_start_request,
@@ -218,7 +219,7 @@ class ManusLiteRecoveryInvoker:
                 "canonical_objective_sha256": hashlib.sha256(
                     checkpoint.objective.encode("utf-8")
                 ).hexdigest(),
-                "canonical_objective_excerpt": checkpoint.objective[:700],
+                "canonical_objective_excerpt": checkpoint.objective[:320],
                 "active_constraints_sha256": hashlib.sha256(
                     json.dumps(
                         list(checkpoint.active_constraints),
@@ -289,7 +290,16 @@ class ManusLiteRecoveryInvoker:
                 constraints=list(parsed.constraints),
                 reference_ids=list(parsed.reference_ids),
             )
-            if not _fits_manus_raw_message(_prompt(preflight_packet)):
+            rendered_preflight = _prompt(preflight_packet)
+            if not _fits_manus_raw_message(rendered_preflight):
+                # Mirror the runtime's WATCH-only descriptive compaction before
+                # deciding the task is impossible. Authority, forbidden actions,
+                # validation gates, constraints, fencing and anti-activation rules
+                # remain unchanged. This avoids rejecting a packet that the runtime
+                # can safely fit without making any provider call.
+                preflight_packet = _compact_watch_recovery_packet(preflight_packet)
+                rendered_preflight = _prompt(preflight_packet)
+            if not _fits_manus_raw_message(rendered_preflight):
                 return WorkerInvocation(
                     accepted=False,
                     worker_id=None,
