@@ -543,6 +543,20 @@ def _compact_watch_recovery_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
         "checkpoint prose; return NEEDS_JAYTEC if exact omitted detail is required."
     )
     compact["required_context"] = compact_context
+
+    # The provider already enforces MANUS_RESULT_JSON_SCHEMA out-of-band on
+    # create_task(). Repeating the full human-readable schema inside the prompt
+    # wastes ~1 KiB of the 6 KiB provider message budget and caused live WATCH
+    # recovery to fail closed even after descriptive checkpoint compaction.
+    # Keep an explicit marker/status contract in-band; the exact shape remains
+    # enforced by the structured_output_schema argument at the provider boundary.
+    compact["return_schema"] = {
+        "provider_enforced": "MANUS_RESULT_JSON_SCHEMA",
+        "status": (
+            "SUCCESS|PARTIAL_SUCCESS|NEEDS_JAYTEC|NEEDS_OWNER|FAILED_CLOSED"
+        ),
+        "instruction": "Return only the provider-enforced structured result.",
+    }
     return compact
 
 
