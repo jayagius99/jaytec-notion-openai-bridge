@@ -904,6 +904,36 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
                     }
                 result["current_worker_result"] = safe_worker
 
+    result["specialist_fabric"] = {
+        "default_watch_trio": ["sol", "deepseek", "nemo"],
+        "sol": {
+            "model": ENGINEERING_MODEL,
+            "provider_mode": ENGINEERING_PROVIDER_MODE,
+            "configured": bool(OPENAI_CLIENT),
+            "requires_explicit_spend_authority": True,
+        },
+        "deepseek": {
+            "model": DEEPSEEK_REVIEWER_MODEL,
+            "provider_mode": DEEPSEEK_PROVIDER_MODE,
+            "configured": bool(
+                WATCH_FREE_SPECIALISTS_CLIENT
+                and DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+            ),
+            "cost_policy": "EXACT_FREE_ONLY",
+        },
+        "nemo": {
+            "model": NEMO_MODEL,
+            "provider_mode": NEMO_PROVIDER_MODE,
+            "configured": bool(
+                WATCH_FREE_SPECIALISTS_CLIENT
+                and NEMO_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+            ),
+            "cost_policy": "EXACT_FREE_ONLY",
+        },
+        "legacy_openrouter_provider_mode": OPENROUTER_PROVIDER_MODE,
+        "manus_direct_provider_access": False,
+        "read_only": True,
+    }
     result["read_only"] = True
     result["lease_acquired"] = False
     result["worker_invoked"] = False
