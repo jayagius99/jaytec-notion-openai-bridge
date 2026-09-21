@@ -1112,7 +1112,7 @@ def execute_watch_cycle(
     )
 
     if _gate_result_ready_state(state):
-        readonly = manus_runtime.task_status_readonly(state.worker_id)
+        readonly = manus_runtime.task_status_readonly(state.worker_id, parent_task_id=task_id)
         terminal = (
             readonly.get("result")
             if isinstance(readonly, Mapping)
@@ -1268,7 +1268,7 @@ def execute_watch_cycle(
     # package before being returned to that SAME Manus task.
     had_internal_dependency = _needs_jaytec_state(state)
     if had_internal_dependency:
-        readonly = manus_runtime.task_status_readonly(state.worker_id)
+        readonly = manus_runtime.task_status_readonly(state.worker_id, parent_task_id=task_id)
         terminal = (
             readonly.get("result")
             if isinstance(readonly, Mapping)
@@ -1666,7 +1666,7 @@ def execute_watch_cycle(
     refreshed = supervisor.refresh_worker_health(task_id)
     refreshed_state = store.get(task_id)
     if _gate_result_ready_state(refreshed_state):
-        readonly = manus_runtime.task_status_readonly(refreshed_state.worker_id)
+        readonly = manus_runtime.task_status_readonly(refreshed_state.worker_id, parent_task_id=task_id)
         terminal = (
             readonly.get("result")
             if isinstance(readonly, Mapping)
