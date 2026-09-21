@@ -317,7 +317,10 @@ class ManusLiteRuntimeTests(unittest.TestCase):
             len(client.created_prompt.encode("utf-8")),
             MANUS_MAX_MESSAGE_CHARS,
         )
-        self.assertIn("JAYTEC_WATCH_RECOVERY_COMPACTION_V1", client.created_prompt)
+        self.assertIn("JAYTEC_WATCH_RECOVERY_COMPACTION_V2", client.created_prompt)
+        self.assertIn("MANUS_RESULT_JSON_SCHEMA", client.created_prompt)
+        self.assertIn("provider_enforced", client.created_prompt)
+        self.assertEqual(client.created_schema, MANUS_RESULT_JSON_SCHEMA)
         self.assertIn("Do not activate Forge.", client.created_prompt)
         self.assertIn("Do not spend money.", client.created_prompt)
         self.assertNotIn("O" * 1000, client.created_prompt)

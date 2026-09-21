@@ -293,6 +293,112 @@ class RuntimeComponentTests(unittest.TestCase):
         self.assertEqual(runtime.requests, [])
         self.assertEqual(runtime.handoffs, [])
 
+    def test_live_g03_recovery_shape_fits_after_safe_compaction(self):
+        runtime = FakeRuntime()
+        cp = replace(
+            checkpoint(),
+            objective=(
+                "Close G03 Security Audit #47 with a rule-to-enforcement-to-bypass "
+                "map, confirmed weakness register, regression/adversarial tests, "
+                "and no unresolved CRITICAL/HIGH bypass."
+            ),
+            current_phase=(
+                "SECURITY / G03 — Security Audit #47 closed with enforcement map "
+                "and hostile review"
+            ),
+            last_safe_checkpoint=(
+                "ROOT=06c00355d2b13f03ebb870c7c13f0eeb7eb2026d; "
+                "Genesis=6f886ec3c32300085b5ad79a27cfa9824fe3092c; "
+                "main=0339acb8f2822ed4b3c4e58ef319599c6905933e; "
+                "15-minute callable recovery driver enabled only after live proof."
+            ),
+            active_constraints=(
+                "NO FORGE ACTIVATION",
+                "NO GENESIS_EVENT_0001",
+                "NO ROOT_OWNER IDENTITY/RECOVERY/SECRET/HARDWARE-KEY CHANGE",
+                "NO MERGE OF ROOT PR #17 OR GENESIS PR #58",
+                "NO NOTION AGENT",
+                "NO NEW SPEND OR PAID FALLBACK",
+                "NO DIRECT MUTATION OF ROOT OR GENESIS HEAD BRANCHES",
+                "USE ISOLATED FEATURE BRANCHES/PULL REQUESTS FOR CODE CHANGES",
+                "NEVER CLAIM VERIFIED WITHOUT INSPECTED EVIDENCE",
+            ),
+            authority_envelope={
+                "root_owner": "Jay",
+                "allowed_actions": [
+                    "inspect repository, issues and pull requests",
+                    "run and inspect tests and CI",
+                    "create isolated feature branches",
+                    "edit safe software files on isolated branches",
+                    "open pull requests",
+                    "append checkpoints/evidence to issues 59 and 66",
+                ],
+                "connector_purposes": {"github": "write"},
+                "connector_mutation_authorized": True,
+            },
+            dependencies=(
+                "G02",
+                "owner physical-key enrollment and final activation remain external",
+            ),
+            next_intended_action=(
+                "Complete Security Audit #47 with rule-to-enforcement-to-bypass map, "
+                "confirmed weakness register, regression/adversarial tests and no "
+                "unresolved CRITICAL/HIGH bypass."
+            ),
+            checkpoint_number=103,
+            commit_head="06c00355d2b13f03ebb870c7c13f0eeb7eb2026d",
+        ).validate()
+        invoker = ManusLiteRecoveryInvoker(
+            runtime,
+            FakeRegistry(),
+            broker_context={
+                "schema_version": "JAYTEC_GITHUB_BROKER_CONTEXT_V1",
+                "kind": "PRIVATE_REPO_BOOTSTRAP",
+                "repo": cp.repo,
+                "sha256": "f" * 64,
+            },
+        )
+        result = invoker.invoke(
+            checkpoint=cp,
+            continuation_packet={
+                "instruction": "Resume — do not recreate completed work",
+                "fencing_token": 10,
+                "recovery_route": "FRESH_WORKER_SAME_CHECKPOINT",
+            },
+            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+            fencing_token=10,
+        )
+        self.assertTrue(result.accepted, result.detail)
+        raw = runtime.requests[0]
+        req = parse_start_request(raw)
+        packet = build_minimal_task_packet(
+            task_id=req.task_id,
+            objective=req.objective,
+            scope=req.scope,
+            authority_source=req.authority_source,
+            allowed_actions=list(req.allowed_actions),
+            required_context=req.required_context,
+            constraints=list(req.constraints),
+            reference_ids=list(req.reference_ids),
+        )
+        compact = _compact_watch_recovery_packet(packet)
+        rendered = _prompt(compact)
+        self.assertLessEqual(len(rendered), MANUS_MAX_MESSAGE_CHARS)
+        self.assertLessEqual(
+            len(rendered.encode("utf-8")),
+            MANUS_MAX_MESSAGE_CHARS,
+        )
+        self.assertEqual(
+            compact["return_schema"]["provider_enforced"],
+            "MANUS_RESULT_JSON_SCHEMA",
+        )
+        for constraint in cp.active_constraints:
+            self.assertIn(constraint, rendered)
+        self.assertIn("Do not activate Forge", rendered)
+        self.assertIn("Do not spend money", rendered)
+        self.assertIn("Do not weaken security gates", rendered)
+        self.assertIn("fencing_token", rendered)
+
     def test_gate_directive_handoff_keeps_same_worker_and_lite_identity(self):
         runtime = FakeRuntime()
         cp = checkpoint()
