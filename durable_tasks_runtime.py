@@ -53,7 +53,7 @@ def retry_delay_for_result(result: Mapping[str, Any], attempt_count: int) -> int
     """Use exponential backoff, extended when a provider gives Retry-After."""
     delay = retry_delay_seconds(attempt_count)
     nodes = [result]
-    for key in ("codex_result", "gemini_result"):
+    for key in ("sol_result", "codex_result", "gemini_result"):
         child = result.get(key)
         if isinstance(child, Mapping):
             nodes.append(child)
