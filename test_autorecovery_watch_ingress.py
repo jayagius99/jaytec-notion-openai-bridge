@@ -387,8 +387,8 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(result["assignment"]["fencing_token"], 9)
         self.assertEqual(result["assignment"]["recovery_attempts"], 0)
         self.assertEqual(result["assignment"]["stop_reason"], "RUNNING")
-        self.assertEqual(len(runtime.handoffs), 1)
-        self.assertIn("master-gate:G03:", runtime.handoffs[0][1]["handoff_id"])
+        self.assertEqual(runtime.handoffs, [])
+        self.assertEqual(result["gate_handoff"], "NOT_NEEDED")
         self.assertEqual(store.stops, [])
 
     def test_post_handoff_new_success_terminal_uses_canonical_terminal_policy(self):
@@ -433,8 +433,8 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertFalse(result["assignment"]["completed"])
         self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
         self.assertEqual(result["assignment"]["fencing_token"], 9)
-        self.assertEqual(len(runtime.handoffs), 1)
-        self.assertIn("master-gate:G03:", runtime.handoffs[0][1]["handoff_id"])
+        self.assertEqual(runtime.handoffs, [])
+        self.assertEqual(result["gate_handoff"], "NOT_NEEDED")
         self.assertEqual(result["gate_result"]["status"], "SUCCESS")
 
 
