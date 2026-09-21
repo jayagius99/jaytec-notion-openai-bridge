@@ -1338,6 +1338,61 @@ def execute_watch_cycle(
                 }
 
             if not request_order:
+                # Compatibility for a pre-specialist-fabric Manus task that reached
+                # NEEDS_JAYTEC before returning explicit SPECIALIST_REQUEST packets.
+                # A prevalidated private-GitHub bootstrap context may still be
+                # returned to the SAME worker/fence exactly once. New model help
+                # never uses this compatibility path.
+                if broker_context:
+                    handoff = invoker.continue_existing(
+                        checkpoint=state.checkpoint,
+                        worker_id=state.worker_id,
+                        fencing_token=state.fencing_token,
+                        broker_context=broker_context,
+                    )
+                    if handoff.accepted:
+                        digest = str(broker_context.get("sha256") or "")[:16]
+                        store.heartbeat(
+                            task_id,
+                            fencing_token=state.fencing_token,
+                            worker_id=state.worker_id,
+                            progress_marker="JAYTEC_BROKER_HANDOFF:" + digest,
+                        )
+                        final = store.get(task_id)
+                        return {
+                            "status": "PASS",
+                            "task_id": task_id,
+                            "bootstrapped": bootstrapped,
+                            "health_refreshed": False,
+                            "github_broker": "HANDOFF_CONTINUED",
+                            "decision": {
+                                "action": "NOOP_HEALTHY",
+                                "effective_stop_reason": StopReason.RUNNING.value,
+                                "reason": "JAYTEC_INTERNAL_HANDOFF_CONTINUED",
+                                "recovery_route": None,
+                            },
+                            "assignment": {
+                                "stop_reason": final.stop_reason.value if final else None,
+                                "worker_kind": final.worker_kind.value if final else None,
+                                "worker_id": final.worker_id if final else None,
+                                "worker_route": final.worker_route if final else None,
+                                "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
+                                "repo": final.checkpoint.repo if final else None,
+                                "branch": final.checkpoint.branch if final else None,
+                                "verified_head": final.checkpoint.commit_head if final else None,
+                                "recovery_attempts": final.recovery_attempts if final else None,
+                                "fencing_token": final.fencing_token if final else None,
+                                "progress_marker": final.progress_marker if final else None,
+                                "completed": final.completed if final else None,
+                                "last_error": final.last_error if final else None,
+                            },
+                        }
+                    return {
+                        "status": "BLOCKED_FAIL_CLOSED",
+                        "task_id": task_id,
+                        "reason": str(handoff.detail or "LEGACY_BROKER_HANDOFF_FAILED"),
+                    }
+
                 final = store.get(task_id)
                 return {
                     "status": "PASS",
@@ -1356,14 +1411,10 @@ def execute_watch_cycle(
                         "worker_kind": final.worker_kind.value if final else None,
                         "worker_id": final.worker_id if final else None,
                         "worker_route": final.worker_route if final else None,
-                        "checkpoint_number": (
-                            final.checkpoint.checkpoint_number if final else None
-                        ),
+                        "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
                         "repo": final.checkpoint.repo if final else None,
                         "branch": final.checkpoint.branch if final else None,
-                        "verified_head": (
-                            final.checkpoint.commit_head if final else None
-                        ),
+                        "verified_head": final.checkpoint.commit_head if final else None,
                         "recovery_attempts": final.recovery_attempts if final else None,
                         "fencing_token": final.fencing_token if final else None,
                         "progress_marker": final.progress_marker if final else None,
