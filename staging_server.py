@@ -60,6 +60,8 @@ from deepseek_reviewer import (
     EXPECTED_DEEPSEEK_REVIEWER_MODEL,
     build_deepseek_security_review_dispatch,
 )
+from nemo_specialist import EXPECTED_NEMO_MODEL, build_nemo_dispatch
+from watch_specialist_broker import dispatch_manus_model_requests
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from jaytec_protocol_portal import PortalStore, safe_error as portal_safe_error
 from forge_cognition import ForgeMindStore, safe_error as forge_cognition_safe_error
@@ -107,6 +109,18 @@ DEEPSEEK_REVIEWER_MODEL = os.environ.get(
 DEEPSEEK_REVIEWER_TIMEOUT_S = float(
     os.environ.get("DEEPSEEK_REVIEWER_TIMEOUT_S", "120")
 )
+DEEPSEEK_PROVIDER_MODE = os.environ.get(
+    "DEEPSEEK_PROVIDER_MODE", "LOCKED_RESERVE"
+).strip().upper()
+NEMO_MODEL = os.environ.get("NEMO_MODEL", EXPECTED_NEMO_MODEL).strip()
+NEMO_TIMEOUT_S = float(os.environ.get("NEMO_TIMEOUT_S", "90"))
+NEMO_PROVIDER_MODE = os.environ.get(
+    "NEMO_PROVIDER_MODE", "LOCKED_RESERVE"
+).strip().upper()
+if DEEPSEEK_PROVIDER_MODE not in {"ACTIVE", "LOCKED_RESERVE"}:
+    raise RuntimeError("invalid DEEPSEEK_PROVIDER_MODE")
+if NEMO_PROVIDER_MODE not in {"ACTIVE", "LOCKED_RESERVE"}:
+    raise RuntimeError("invalid NEMO_PROVIDER_MODE")
 CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
 CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
 DATABASE_URL = (
@@ -183,6 +197,10 @@ DEEPSEEK_REVIEWER_CIRCUIT = CircuitBreaker(
     failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
     reset_after_seconds=CIRCUIT_RESET_SECONDS,
 )
+NEMO_CIRCUIT = CircuitBreaker(
+    failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+    reset_after_seconds=CIRCUIT_RESET_SECONDS,
+)
 
 OPENAI_CLIENT = (
     OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
@@ -232,13 +250,40 @@ DEEPSEEK_REVIEW_DISPATCH = (
         timeout_s=DEEPSEEK_REVIEWER_TIMEOUT_S,
         circuit=DEEPSEEK_REVIEWER_CIRCUIT,
     )
-    if OPENROUTER_CLIENT
+    if OPENROUTER_CLIENT and DEEPSEEK_PROVIDER_MODE == "ACTIVE"
     else DEEPSEEK_REVIEWER_CIRCUIT.guard(
         lambda _packet: (_ for _ in ()).throw(
-            RuntimeError(GEMINI_BLOCK_REASON)
+            RuntimeError("DEEPSEEK_PROVIDER_DOOR_LOCKED_RESERVE")
         )
     )
 )
+
+NEMO_DISPATCH = (
+    build_nemo_dispatch(
+        openrouter_client=OPENROUTER_CLIENT,
+        model=NEMO_MODEL,
+        timeout_s=NEMO_TIMEOUT_S,
+        circuit=NEMO_CIRCUIT,
+    )
+    if OPENROUTER_CLIENT and NEMO_PROVIDER_MODE == "ACTIVE"
+    else NEMO_CIRCUIT.guard(
+        lambda _packet: (_ for _ in ()).throw(
+            RuntimeError("NEMO_PROVIDER_DOOR_LOCKED_RESERVE")
+        )
+    )
+)
+
+
+def _watch_specialist_runner(requests):
+    """JAYTEC-owned specialist fan-out for the single fenced Manus worker."""
+    return dispatch_manus_model_requests(
+        requests,
+        dispatchers={
+            "sol": ENGINEERING_DISPATCH,
+            "deepseek": DEEPSEEK_REVIEW_DISPATCH,
+            "nemo": NEMO_DISPATCH,
+        },
+    )
 
 
 @mcp.tool
@@ -514,6 +559,7 @@ async def jaytec_watch_cycle(request: Request) -> JSONResponse:
             manus_runtime=(_manus_runtime() if components_registered else None),
             registry=REGISTRY,
             runtime_components_registered=components_registered,
+            specialist_runner=_watch_specialist_runner,
             env=os.environ,
         )
     except WatchIngressError as exc:
