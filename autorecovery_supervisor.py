@@ -1083,7 +1083,7 @@ class AutoRecoverySupervisor:
 
         if result_state == "SUCCESS":
             is_master_gate = bool(
-                re.match(r"^G[0-9]{2}/", state.checkpoint.current_phase)
+                re.match(r"^G[0-9]{2,4}/", state.checkpoint.current_phase)
                 and 100 <= state.checkpoint.checkpoint_number < 200
             )
             if is_master_gate:
