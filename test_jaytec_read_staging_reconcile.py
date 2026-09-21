@@ -13,6 +13,10 @@ from deepseek_reviewer import (
 SOURCE_URL = "https://chatgpt.com/share/example"
 
 
+class _NotFound(Exception):
+    status_code = 404
+
+
 def _read_report(*, verified: bool) -> dict:
     return {
         "status": "SUCCESS" if verified else "FAILED_CLOSED",
@@ -64,6 +68,8 @@ class _FakeCompletions:
     def create(self, **kwargs):
         self.calls.append(kwargs)
         payload = self.payloads.pop(0)
+        if isinstance(payload, Exception):
+            raise payload
         return SimpleNamespace(
             model=EXPECTED_DEEPSEEK_REVIEWER_MODEL,
             choices=[
@@ -129,6 +135,55 @@ class TestJaytecReadStagingReconcile(unittest.TestCase):
             ],
             attempts,
         )
+
+    def test_read_continues_to_exa_after_openrouter_404(self):
+        client, dispatch = _dispatch([
+            _NotFound("openrouter fetch unavailable"),
+            _read_report(verified=True),
+        ])
+        result = dispatch(build_jaytec_read_packet(SOURCE_URL))
+
+        self.assertEqual("SUCCESS", result["status"])
+        engines = [
+            call["tools"][0]["parameters"]["engine"]
+            for call in client.completions.calls
+        ]
+        self.assertEqual(["openrouter", "exa"], engines)
+        attempts = result["bridge_diagnostics"]["web_retrieval_attempts"]
+        self.assertEqual("FETCH_ENGINE_UNAVAILABLE", attempts[0]["status"])
+        self.assertEqual("_NotFound", attempts[0]["error_class"])
+        self.assertEqual("SUCCESS", attempts[1]["status"])
+        self.assertTrue(attempts[1]["verified"])
+
+    def test_non_404_read_error_still_fails_immediately(self):
+        client, dispatch = _dispatch([RuntimeError("transport boom")])
+        with self.assertRaisesRegex(RuntimeError, "transport boom"):
+            dispatch(build_jaytec_read_packet(SOURCE_URL))
+        self.assertEqual(1, len(client.completions.calls))
+
+    def test_all_declared_fetch_engines_404_return_bounded_failed_closed(self):
+        client, dispatch = _dispatch([
+            _NotFound("first"),
+            _NotFound("second"),
+            _NotFound("third"),
+        ])
+        result = dispatch(build_jaytec_read_packet(SOURCE_URL))
+
+        self.assertEqual("FAILED_CLOSED", result["status"])
+        self.assertIn(
+            "jaytec_read_all_fetch_engines_unavailable",
+            result["unresolved_items"],
+        )
+        attempts = result["bridge_diagnostics"]["web_retrieval_attempts"]
+        self.assertEqual(
+            ["openrouter", "exa", "parallel"],
+            [item["engine"] for item in attempts],
+        )
+        self.assertTrue(
+            all(item["status"] == "FETCH_ENGINE_UNAVAILABLE" for item in attempts)
+        )
+        self.assertFalse(result["bridge_diagnostics"]["provider_fallbacks"])
+        self.assertFalse(result["bridge_diagnostics"]["notion_fallback"])
 
     def test_non_read_reviewer_dispatch_does_not_gain_web_tool(self):
         client, dispatch = _dispatch([
