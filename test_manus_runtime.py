@@ -437,6 +437,35 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         self.assertRegex(canonical["request_id"], r"^sr-[0-9a-f]{24}$")
         validate_specialist_request(canonical)
 
+    def test_specialist_intent_context_is_redacted_before_packet_hash(self):
+        intent = {
+            "type": "SPECIALIST_INTENT_V1",
+            "specialist": "nemo",
+            "objective": "Review bounded evidence.",
+            "reason": "Independent review requested.",
+            "required_context": {
+                "api_key": "sk-proj-this-must-not-survive",
+                "nested": {"token": "secret-value"},
+                "safe": "keep-me",
+            },
+        }
+        result = verified_success()
+        result["status"] = "NEEDS_JAYTEC"
+        result["specialist_requests"] = [json.dumps(intent, sort_keys=True)]
+        out = ManusLiteRuntime(
+            FakeClient(observed_profile="lite", task_status="stopped", result=result)
+        ).task_status(
+            "provider-123",
+            parent_task_id="FORGE-GENESIS-ACTIVATION-001",
+        )
+        canonical = json.loads(out["result"]["specialist_requests"][0])
+        self.assertEqual(canonical["required_context"]["api_key"], "[REDACTED]")
+        self.assertEqual(canonical["required_context"]["nested"]["token"], "[REDACTED]")
+        self.assertEqual(canonical["required_context"]["safe"], "keep-me")
+        self.assertNotIn("sk-proj-this-must-not-survive", json.dumps(canonical))
+        self.assertNotIn("secret-value", json.dumps(canonical))
+        validate_specialist_request(canonical)
+
     def test_github_broker_intent_v1_becomes_request_only_packet(self):
         intent = {
             "type": "SPECIALIST_INTENT_V1",
