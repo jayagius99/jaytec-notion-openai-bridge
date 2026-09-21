@@ -42,6 +42,7 @@ MANUS_TIMEOUT_S = float(os.environ.get("MANUS_TIMEOUT_S", "20"))
 MANUS_MAX_RETRIES = min(max(int(os.environ.get("MANUS_MAX_RETRIES", "1")), 0), 3)
 MANUS_MAX_RESPONSE_BYTES = min(max(int(os.environ.get("MANUS_MAX_RESPONSE_BYTES", "1048576")), 4096), 4 * 1024 * 1024)
 MANUS_MAX_MESSAGE_CHARS = min(max(int(os.environ.get("MANUS_MAX_MESSAGE_CHARS", "6000")), 1), 10000)
+MANUS_DIRECT_RECIPIENT = "lite"
 JAYTEC_MANUS_PROJECT_ID = os.environ.get("JAYTEC_MANUS_PROJECT_ID", "").strip()
 
 APPROVED_CONNECTOR_KEYS = ("github", "neon", "render")
@@ -438,7 +439,9 @@ class ManusClient:
             else "NONE — no connector use is authorized for this task"
         )
         return (
-            render_actor_contract(Actor.MANUS)
+            MANUS_DIRECT_RECIPIENT
+            + "\n\n"
+            + render_actor_contract(Actor.MANUS)
             + "\n\nCANONICAL MANUS DIRECTIVE\n"
             + render_directive()
             + "\n\nCURRENT TASK CONNECTOR SCOPE\n"
