@@ -61,7 +61,7 @@ from proving_grounds import (
     catalog as proving_grounds_catalog_data,
     run_registered_suite as proving_grounds_run_registered_suite,
 )
-from manus_adapter import MANUS_API_KEY, ManusClient
+from manus_adapter import MANUS_API_KEY, MANUS_MAX_MESSAGE_CHARS, ManusClient
 from manus_runtime import ManusLiteRuntime, runtime_error_payload
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
 from startup_probe_guard import authorize_startup_probe, sha256_json, sha256_text
@@ -147,6 +147,7 @@ print(
             "event": "JAYTEC_MANUS_RUNTIME_STATUS",
             "configured": bool(MANUS_API_KEY),
             "profile_policy": "lite_only_no_exceptions",
+            "max_message_chars": MANUS_MAX_MESSAGE_CHARS,
         },
         sort_keys=True,
     ),

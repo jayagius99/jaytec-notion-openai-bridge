@@ -27,6 +27,14 @@ class StartupProviderSafetyTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, blueprint)
 
+    def test_manus_startup_telemetry_exposes_only_nonsecret_message_budget(self):
+        source = (ROOT / "staging_server.py").read_text(encoding="utf-8")
+        self.assertIn('"max_message_chars": MANUS_MAX_MESSAGE_CHARS', source)
+        self.assertIn(
+            "from manus_adapter import MANUS_API_KEY, MANUS_MAX_MESSAGE_CHARS, ManusClient",
+            source,
+        )
+
     def test_persistent_staging_blueprint_has_no_manus_credentials(self):
         blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
         for forbidden in (
