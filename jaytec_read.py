@@ -20,6 +20,8 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 JAYTEC_READ_WORKFLOW_ID = "JAYTEC_READ"
+JAYTEC_READ_SPECIALIST = "reviewer"
+EXPECTED_READ_REVIEWER_MODEL = "deepseek/deepseek-v4-flash-0731:free"
 JAYTEC_READ_ALLOWED_OPERATIONS = frozenset(
     {"read", "research", "analyze", "validate", "web_fetch"}
 )
@@ -207,7 +209,7 @@ def build_jaytec_read_packet(
         "intent": "Recover source-specific content from a public URL for JAYTEC continuity.",
         "workflow_id": JAYTEC_READ_WORKFLOW_ID,
         "risk_level": "LOW",
-        "specialist_plan": ["gemini"],
+        "specialist_plan": [JAYTEC_READ_SPECIALIST],
         "allowed_operations": ["read", "research", "analyze", "validate", "web_fetch"],
         "expected_output": "A standardized conclusion.READ_REPORT with source-specific evidence.",
         "validation_requirements": validations,
@@ -308,19 +310,19 @@ def enforce_orchestrated_read_report(
 ) -> dict[str, Any]:
     """Validate a JAYTEC:READ orchestration envelope using its Gemini specialist result.
 
-    execute_task_packet_core returns the specialist payload under gemini_result.
+    execute_task_packet_core returns the specialist payload under reviewer_result.
     The READ_REPORT contract belongs to that specialist payload, not the outer
     orchestration envelope. Preserve orchestration metadata while projecting the
     validated READ result to the top level for one-shot/bootstrap callers.
     """
 
     out = dict(result)
-    specialist = out.get("gemini_result")
+    specialist = out.get("reviewer_result")
     if not isinstance(specialist, Mapping):
         return enforce_read_report(out, source_url)
 
     validated = enforce_read_report(specialist, source_url)
-    out["gemini_result"] = validated
+    out["reviewer_result"] = validated
     out["findings"] = list(validated.get("findings") or [])
     out["evidence"] = list(validated.get("evidence") or [])
     out["confidence"] = validated.get("confidence")
