@@ -35,12 +35,15 @@ _SECRET_VALUE = re.compile(
 # Detection markers only. No sealed provenance content is embedded here.
 _SEALED_MARKERS = (
     "uren origin",
+    "origin of uren",
     "uren birth",
     "how uren was born",
     "how uren will be born",
-    "uren construction",
-    "uren activation sequence",
-    "genesis_event_0001",
+    "uren construction history",
+    "uren creation history",
+    "uren creation story",
+    "uren provenance",
+    "uren source lineage",
     "/jaytec/uren/pre-genesis",
     "uren_identity_genesis",
 )
