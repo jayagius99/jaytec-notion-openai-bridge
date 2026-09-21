@@ -85,7 +85,7 @@ class FakeRuntime:
             "observed_profile_verified": True,
         }
 
-    def task_status(self, worker_id):
+    def task_status(self, worker_id, *, parent_task_id=None):
         return dict(self.status)
 
 
