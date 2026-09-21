@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 from circuit_breaker import CircuitBreaker
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report
-from specialist_adapters import (
-    EXPECTED_GEMINI_MODEL,
-    build_gemini_dispatch,
+from deepseek_reviewer import (
+    EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+    build_deepseek_security_review_dispatch,
 )
 
 
@@ -16,7 +16,7 @@ SOURCE_URL = "https://chatgpt.com/share/example"
 def _read_report(*, verified: bool) -> dict:
     return {
         "status": "SUCCESS" if verified else "FAILED_CLOSED",
-        "model": EXPECTED_GEMINI_MODEL,
+        "model": EXPECTED_DEEPSEEK_REVIEWER_MODEL,
         "findings": ["Recovered source-specific shared-chat content."] if verified else [],
         "evidence": ["Exact requested page fetched."] if verified else [],
         "confidence": "HIGH" if verified else "LOW",
@@ -65,7 +65,7 @@ class _FakeCompletions:
         self.calls.append(kwargs)
         payload = self.payloads.pop(0)
         return SimpleNamespace(
-            model=EXPECTED_GEMINI_MODEL,
+            model=EXPECTED_DEEPSEEK_REVIEWER_MODEL,
             choices=[
                 SimpleNamespace(
                     finish_reason="stop",
@@ -83,10 +83,10 @@ class _FakeClient:
 
 def _dispatch(payloads):
     client = _FakeClient(payloads)
-    dispatch = build_gemini_dispatch(
+    dispatch = build_deepseek_security_review_dispatch(
         openrouter_client=client,
-        gemini_model=EXPECTED_GEMINI_MODEL,
-        gemini_timeout_s=30,
+        model=EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+        timeout_s=30,
         circuit=CircuitBreaker(failure_threshold=3, reset_after_seconds=60),
     )
     return client, dispatch
@@ -130,9 +130,9 @@ class TestJaytecReadStagingReconcile(unittest.TestCase):
             attempts,
         )
 
-    def test_non_read_gemini_dispatch_does_not_gain_web_tool(self):
+    def test_non_read_reviewer_dispatch_does_not_gain_web_tool(self):
         client, dispatch = _dispatch([
-            {"status": "SUCCESS", "model": EXPECTED_GEMINI_MODEL}
+            {"status": "SUCCESS", "model": EXPECTED_DEEPSEEK_REVIEWER_MODEL}
         ])
         packet = {
             "task_id": "GENERAL-1",
@@ -164,13 +164,17 @@ class TestJaytecReadStagingReconcile(unittest.TestCase):
 
 
 class TestJaytecReadEnvelope(unittest.TestCase):
+    def test_read_packet_uses_reviewer_not_gemini(self):
+        packet = build_jaytec_read_packet(SOURCE_URL)
+        self.assertEqual(["reviewer"], packet["specialist_plan"])
+
     def test_verified_specialist_result_projects_from_success_envelope(self):
         specialist = _read_report(verified=True)
         wrapped = {
             "execution_id": "exec-1",
             "overall_status": "SUCCESS",
             "packet_hash": "abc",
-            "gemini_result": specialist,
+            "reviewer_result": specialist,
         }
         out = enforce_orchestrated_read_report(wrapped, SOURCE_URL)
         self.assertEqual("SUCCESS", out["status"])
@@ -182,7 +186,7 @@ class TestJaytecReadEnvelope(unittest.TestCase):
         wrapped = {
             "execution_id": "exec-2",
             "overall_status": "FAILED_CLOSED",
-            "gemini_result": specialist,
+            "reviewer_result": specialist,
         }
         out = enforce_orchestrated_read_report(wrapped, SOURCE_URL)
         self.assertEqual("FAILED_CLOSED", out["status"])
