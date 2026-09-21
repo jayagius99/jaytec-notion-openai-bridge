@@ -82,3 +82,18 @@ def test_proving_grounds_watch_route_is_oidc_only_and_no_arbitrary_execution_pat
     assert "subprocess" not in route
     assert "MCP_AUTH_TOKEN" not in route
     assert "static_auth" not in route
+
+
+def test_watch_controller_advice_route_is_oidc_only_and_sol_advisory():
+    assert '@mcp.custom_route("/jaytec/watch-controller-advice", methods=["POST"])' in SERVER
+    route = SERVER.split('@mcp.custom_route("/jaytec/watch-controller-advice", methods=["POST"])', 1)[1]
+    route = route.split('@mcp.custom_route("/jaytec/watch-status"', 1)[0]
+    assert 'watch_oidc_auth.verify_token(raw_token)' in route
+    assert '"jaytec:watch-controller-advice"' in route
+    assert 'watch_controller_advise(' in route
+    assert 'engineering_dispatch=ENGINEERING_DISPATCH' in route
+    assert 'REGISTRY.lookup(cache_key, normalized["request_sha256"])' in route
+    assert 'REGISTRY.store(' in route
+    assert "MCP_AUTH_TOKEN" not in route
+    assert "static_auth" not in route
+    assert "execute_watch_cycle(" not in route
