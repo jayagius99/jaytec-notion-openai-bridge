@@ -20,6 +20,7 @@ on:
       - 'watch_specialist_broker.py'
       - 'test_watch_specialist_broker.py'
       - 'test_watch_specialist_ingress.py'
+      - 'test_watch_specialist_provider_isolation.py'
       - 'SOL_PRIMARY_SANITIZED_CONTEXT_V3.md'
       - 'SOL_PRIMARY_SANITIZED_CONTEXT_V4.md'
       - 'JAYTEC_MEMORY/**'
@@ -145,7 +146,7 @@ jobs:
       - name: Compile modules (including production entrypoint)
         run: |
           python -m py_compile \
-            orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py deepseek_reviewer.py nemo_specialist.py watch_specialist_broker.py watch_controller_advisor.py provider_endpoints.py http_security.py auth_security.py dispatch_authority_boundary.py test_deepseek_reviewer.py test_nemo_specialist.py test_watch_specialist_broker.py test_watch_specialist_ingress.py test_watch_controller_advisor.py test_auth_security.py test_dispatch_authority_boundary.py \
+            orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py deepseek_reviewer.py nemo_specialist.py watch_specialist_broker.py watch_controller_advisor.py provider_endpoints.py http_security.py auth_security.py dispatch_authority_boundary.py test_deepseek_reviewer.py test_nemo_specialist.py test_watch_specialist_broker.py test_watch_specialist_ingress.py test_watch_specialist_provider_isolation.py test_watch_controller_advisor.py test_auth_security.py test_dispatch_authority_boundary.py \
             server.py staging_server.py staging_runtime_probe.py staging_adversarial_probe.py staging_independent_g1_review.py test_staging_independent_g1_review.py startup_probe_guard.py staging_codex_429_diagnostic.py test_startup_probe_guard.py test_startup_provider_safety.py \
             staging_engineering_provider_probe.py staging_gemini_migration_review.py staging_gemini_manus_governance_review.py staging_manus_review_readback.py staging_manus_governance_acceptance.py staging_manus_usability_eval.py manus_adapter.py \
             manus_policy.py manus_governance.py manus_dispatch_contract.py manus_runtime.py relationship_policy.py participant_contracts.py \
