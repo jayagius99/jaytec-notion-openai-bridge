@@ -62,6 +62,7 @@ from deepseek_reviewer import (
 )
 from nemo_specialist import EXPECTED_NEMO_MODEL, build_nemo_dispatch
 from watch_specialist_broker import dispatch_manus_model_requests
+from watch_controller_advisor import WatchControllerAdvisorError, advise as watch_controller_advise, validate_request as validate_watch_controller_advice_request
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from jaytec_protocol_portal import PortalStore, safe_error as portal_safe_error
 from forge_cognition import ForgeMindStore, safe_error as forge_cognition_safe_error
@@ -571,6 +572,94 @@ async def jaytec_watch_cycle(request: Request) -> JSONResponse:
             "reason": "WATCH_CYCLE_EXCEPTION:" + type(exc).__name__,
         }
         return JSONResponse(result, status_code=503)
+
+    status_code = 200 if result.get("status") == "PASS" else 409
+    return JSONResponse(result, status_code=status_code)
+
+
+@mcp.custom_route("/jaytec/watch-controller-advice", methods=["POST"])
+async def jaytec_watch_controller_advice(request: Request) -> JSONResponse:
+    """OIDC-authenticated WATCH-only door for bounded SOL controller advice."""
+
+    auth_header = str(request.headers.get("authorization") or "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_BEARER_REQUIRED"},
+            status_code=401,
+        )
+    raw_token = auth_header[len("Bearer "):].strip()
+    if not raw_token:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_OIDC_BEARER_REQUIRED"},
+            status_code=401,
+        )
+    try:
+        access = await watch_oidc_auth.verify_token(raw_token)
+    except Exception:
+        access = None
+    if (
+        access is None
+        or "jaytec:watch-controller-advice" not in set(access.scopes or [])
+    ):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_CONTROLLER_ADVICE_OIDC_FAILED"},
+            status_code=403,
+        )
+    ok, reason = validate_watch_claims(access.claims)
+    if not ok:
+        return JSONResponse(
+            {"status": "DENIED", "reason": reason},
+            status_code=403,
+        )
+
+    raw = await request.body()
+    if len(raw) > 24_000:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_CONTROLLER_ADVICE_REQUEST_TOO_LARGE"},
+            status_code=413,
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_CONTROLLER_ADVICE_JSON_INVALID"},
+            status_code=400,
+        )
+    if not isinstance(payload, Mapping):
+        return JSONResponse(
+            {"status": "DENIED", "reason": "WATCH_CONTROLLER_ADVICE_ROOT_INVALID"},
+            status_code=400,
+        )
+
+    try:
+        normalized = validate_watch_controller_advice_request(payload)
+        cache_key = "watch-controller-advice:" + normalized["request_sha256"]
+        cached = REGISTRY.lookup(cache_key, normalized["request_sha256"])
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
+        result = watch_controller_advise(
+            normalized,
+            engineering_dispatch=ENGINEERING_DISPATCH,
+        )
+        if result.get("status") == "PASS":
+            REGISTRY.store(
+                cache_key,
+                normalized["request_sha256"],
+                result,
+            )
+    except WatchControllerAdvisorError as exc:
+        return JSONResponse(
+            {"status": "DENIED", "reason": str(exc)},
+            status_code=409,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {
+                "status": "FAILED_CLOSED",
+                "reason": "WATCH_CONTROLLER_ADVICE_EXCEPTION:" + type(exc).__name__,
+            },
+            status_code=503,
+        )
 
     status_code = 200 if result.get("status") == "PASS" else 409
     return JSONResponse(result, status_code=status_code)
