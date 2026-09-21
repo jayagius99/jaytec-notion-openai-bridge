@@ -113,6 +113,7 @@ def _transient_safe_execute_task_packet_json(
     idempotency_store: str,
     codex_dispatch: Any,
     gemini_dispatch: Any,
+    sol_dispatch: Any,
 ) -> str:
     return _ORIGINAL_EXECUTE(
         packet_json,
@@ -120,6 +121,7 @@ def _transient_safe_execute_task_packet_json(
         idempotency_store=idempotency_store,
         codex_dispatch=codex_dispatch,
         gemini_dispatch=gemini_dispatch,
+        sol_dispatch=sol_dispatch,
     )
 
 
