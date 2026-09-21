@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from fastmcp import FastMCP
@@ -290,139 +289,7 @@ def create_http_app(mcp: FastMCP | None = None):
 
 
 
-def _run_durable_sol_live_proof_once() -> None:
-    """Run at most one owner-authorized live Sol proof for a durable proof ID.
-
-    A Postgres claim is committed before inference. Any concurrent or later
-    startup with the same proof ID skips without calling a model.
-    """
-    if os.environ.get("SOL_DURABLE_PROOF_ON_STARTUP", "0").strip() != "1":
-        return
-
-    proof_id = os.environ.get(
-        "SOL_DURABLE_PROOF_ID",
-        "JAYTEC_SOL_DURABLE_LIVE_PROOF_20260922_V1",
-    ).strip()
-    if not proof_id or len(proof_id) > 200:
-        print('JAYTEC_SOL_DURABLE_PROOF={"ok":false,"error":"invalid_proof_id"}', flush=True)
-        return
-    if not legacy_server.DATABASE_URL:
-        print('JAYTEC_SOL_DURABLE_PROOF={"ok":false,"error":"database_required"}', flush=True)
-        return
-
-    import psycopg2
-
-    claimed = False
-    with psycopg2.connect(legacy_server.DATABASE_URL) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS jaytec_one_shot_proof_claims (
-                    proof_id TEXT PRIMARY KEY,
-                    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            cur.execute(
-                """
-                INSERT INTO jaytec_one_shot_proof_claims (proof_id)
-                VALUES (%s)
-                ON CONFLICT (proof_id) DO NOTHING
-                RETURNING proof_id
-                """,
-                (proof_id,),
-            )
-            claimed = cur.fetchone() is not None
-
-    if not claimed:
-        print(
-            "JAYTEC_SOL_DURABLE_PROOF="
-            + json.dumps({"ok": False, "skipped": "already_claimed", "proof_id": proof_id}, sort_keys=True),
-            flush=True,
-        )
-        return
-
-    runtime = JaytecCourierRuntime()
-    now = datetime.now(timezone.utc)
-    packet = {
-        "packet_version": "1.0",
-        "task_id": "JAYTEC-SOL-LIVE-PROOF-001",
-        "subtask_id": "JAYTEC-SOL-LIVE-PROOF-001-A",
-        "parent_task_id": "JAYTEC-SOL-LIVE-PROOF-001",
-        "request": "Return a minimal readiness acknowledgement for this bounded live proof.",
-        "intent": "verify live GPT-5.6 Sol reserve routing",
-        "workflow_id": "JAYTEC_OWNER_SOL_LIVE_PROOF",
-        "risk_level": "low",
-        "required_context": {
-            "authority_controller": "CHATGPT_OPENAI_LEAD",
-            "specialist_authority": "SUBORDINATE",
-            "owner_explicit_sol_request": True,
-            "proof_scope": "minimal reachability only",
-        },
-        "context_digests": {},
-        "known_facts": [],
-        "constraints": [
-            "no side effects",
-            "zero retries",
-            "no paid fallback",
-            "exact Sol model only",
-        ],
-        "specialist_plan": ["sol"],
-        "allowed_operations": ["analyze", "validate"],
-        "expected_output": "minimal structured readiness confirmation",
-        "validation_requirements": [
-            "exact model openai/gpt-5.6-sol",
-            "no side effects",
-            "no fallback models",
-        ],
-        "side_effect_policy": "none",
-        "idempotency_key": proof_id,
-        "deadline": (now + timedelta(minutes=3)).isoformat(),
-        "max_fanout": 1,
-        "max_retries": 0,
-        "return_schema_version": "1.0",
-    }
-
-    try:
-        envelope = json.loads(runtime.execute(json.dumps(packet, sort_keys=True)))
-        sol = envelope.get("sol_result") or {}
-        diag = sol.get("bridge_diagnostics") or {}
-        safe = {
-            "ok": envelope.get("overall_status") == "SUCCESS"
-            and sol.get("model") == legacy_server.EXPECTED_SOL_MODEL,
-            "overall_status": envelope.get("overall_status"),
-            "model": sol.get("model"),
-            "gateway": diag.get("gateway"),
-            "provider_only": diag.get("provider_only"),
-            "model_lock": diag.get("model_lock"),
-            "fallback_models": diag.get("fallback_models"),
-            "zero_spend_attested": diag.get("zero_spend_attested"),
-            "credit_balance_before_usd": diag.get("credit_balance_before_usd"),
-            "credit_balance_after_usd": diag.get("credit_balance_after_usd"),
-            "credit_used_usd": diag.get("credit_used_usd"),
-            "idempotent_replay": (envelope.get("usage_summary") or {}).get("idempotent_replay"),
-            "proof_id": proof_id,
-        }
-        print("JAYTEC_SOL_DURABLE_PROOF=" + json.dumps(safe, sort_keys=True), flush=True)
-    except Exception as exc:
-        print(
-            "JAYTEC_SOL_DURABLE_PROOF="
-            + json.dumps(
-                {
-                    "ok": False,
-                    "error": type(exc).__name__,
-                    "detail": str(exc)[:160],
-                    "proof_id": proof_id,
-                },
-                sort_keys=True,
-            ),
-            flush=True,
-        )
-
-
-
 def main() -> None:
-    _run_durable_sol_live_proof_once()
     safe_preflight = {
         "key_present": bool(legacy_server.AI_GATEWAY_API_KEY),
         "reserve_enabled": bool(legacy_server.SOL_RESERVE_ENABLED),
