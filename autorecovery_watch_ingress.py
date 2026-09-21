@@ -14,6 +14,8 @@ from autorecovery_components import (
     ManusLiteHealthProbe,
     ManusLiteRecoveryInvoker,
     ObservedRefsCheckpointVerifier,
+    master_gate_handoff_id,
+    master_gate_result_has_receipt,
 )
 from autorecovery_runtime import runtime_status, schema_probe
 from manus_governance import validate_specialist_request
@@ -660,6 +662,15 @@ def execute_watch_cycle(
         broker_context=broker_context,
     )
     github_broker = "AVAILABLE" if broker_context else "NONE"
+    required_gate_receipt = (
+        master_gate_handoff_id(
+            state.checkpoint,
+            state.fencing_token,
+            master_gate,
+        )
+        if state.worker_id
+        else None
+    )
 
     if _gate_result_ready_state(state):
         readonly = manus_runtime.task_status_readonly(state.worker_id)
@@ -672,6 +683,11 @@ def execute_watch_cycle(
         if (
             str(readonly.get("status") or "") != "VERIFIED_COMPLETE"
             or str(terminal.get("status") or "") != "SUCCESS"
+            or not required_gate_receipt
+            or not master_gate_result_has_receipt(
+                terminal,
+                required_gate_receipt,
+            )
         ):
             return {
                 "status": "BLOCKED_FAIL_CLOSED",
@@ -958,7 +974,10 @@ def execute_watch_cycle(
         store=store,
         verifier=verifier,
         invoker=invoker,
-        health_probe=ManusLiteHealthProbe(manus_runtime),
+        health_probe=ManusLiteHealthProbe(
+            manus_runtime,
+            required_result_receipt=required_gate_receipt,
+        ),
         notifier=JsonLogRecoveryNotifier(),
         instance_id="github-watch-cycle",
         heartbeat_timeout_seconds=WATCH_HEARTBEAT_TIMEOUT_SECONDS,
@@ -978,6 +997,11 @@ def execute_watch_cycle(
         if (
             str(readonly.get("status") or "") != "VERIFIED_COMPLETE"
             or str(terminal.get("status") or "") != "SUCCESS"
+            or not required_gate_receipt
+            or not master_gate_result_has_receipt(
+                terminal,
+                required_gate_receipt,
+            )
         ):
             return {
                 "status": "BLOCKED_FAIL_CLOSED",
