@@ -4,6 +4,7 @@ import os
 import random
 import string
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import notion_courier_policy as p
@@ -166,6 +167,39 @@ class TestNotionCourierServer(unittest.TestCase):
         self.assertIsNotNone(app)
         self.assertEqual(fake.status_calls, 0)
         self.assertEqual(fake.execute_calls, [])
+
+    def test_live_runtime_forwards_sol_dispatch_to_execution_core(self):
+        runtime = s.JaytecCourierRuntime.__new__(s.JaytecCourierRuntime)
+        runtime.registry = object()
+        runtime.idempotency_store = "test"
+        runtime.codex_dispatch = object()
+        runtime.gemini_dispatch = object()
+        runtime.sol_dispatch = object()
+        with patch.object(
+            s.legacy_server,
+            "_execute_task_packet_json",
+            return_value='{"overall_status":"SUCCESS"}',
+        ) as execute:
+            result = runtime.execute("{}")
+        self.assertIn("SUCCESS", result)
+        kwargs = execute.call_args.kwargs
+        self.assertIs(kwargs["sol_dispatch"], runtime.sol_dispatch)
+        self.assertIs(kwargs["codex_dispatch"], runtime.codex_dispatch)
+        self.assertIs(kwargs["gemini_dispatch"], runtime.gemini_dispatch)
+
+    def test_live_runtime_builds_sol_only_when_all_zero_spend_gates_are_true(self):
+        sentinel = object()
+        with patch.object(s.legacy_server, "_require_startup_prereqs", return_value=None), \
+             patch.object(s.legacy_server, "DATABASE_URL", ""), \
+             patch.object(s.legacy_server, "OPENROUTER_API_KEY", ""), \
+             patch.object(s.legacy_server, "AI_GATEWAY_API_KEY", "gateway-key"), \
+             patch.object(s.legacy_server, "SOL_RESERVE_ENABLED", True), \
+             patch.object(s.legacy_server, "SOL_FREE_CREDIT_ONLY_ATTESTED", True), \
+             patch.object(s, "OpenAI", return_value=SimpleNamespace()), \
+             patch.object(s.legacy_server, "build_sol_reserve_dispatch", return_value=sentinel) as build:
+            runtime = s.JaytecCourierRuntime()
+        self.assertIs(runtime.sol_dispatch, sentinel)
+        self.assertEqual(build.call_count, 1)
 
     def test_tool_description_is_transport_only(self):
         app, _ = self._make_app()

@@ -24,8 +24,11 @@ from reliability_registry import TransientAwareRegistry
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
+    EXPECTED_SOL_MODEL,
     build_codex_dispatch,
     build_gemini_dispatch,
+    build_sol_reserve_dispatch,
+    fetch_vercel_gateway_credit_balance,
 )
 from workload_read_model import WorkloadReadModel
 
@@ -113,6 +116,7 @@ def _transient_safe_execute_task_packet_json(
     idempotency_store: str,
     codex_dispatch: Any,
     gemini_dispatch: Any,
+    sol_dispatch: Any = None,
 ) -> str:
     return _ORIGINAL_EXECUTE(
         packet_json,
@@ -120,6 +124,7 @@ def _transient_safe_execute_task_packet_json(
         idempotency_store=idempotency_store,
         codex_dispatch=codex_dispatch,
         gemini_dispatch=gemini_dispatch,
+        sol_dispatch=sol_dispatch,
     )
 
 
@@ -304,6 +309,7 @@ def create_mcp_app():
     workload_read_model: Optional[WorkloadReadModel] = None
     durable_codex_circuit: Optional[CircuitBreaker] = None
     durable_gemini_circuit: Optional[CircuitBreaker] = None
+    durable_sol_circuit: Optional[CircuitBreaker] = None
 
     if legacy_server.DATABASE_URL:
         queue = ReliableDurableTaskQueue(
@@ -331,6 +337,14 @@ def create_mcp_app():
             if legacy_server.OPENROUTER_API_KEY
             else None
         )
+        durable_sol_gateway = (
+            OpenAI(
+                api_key=legacy_server.AI_GATEWAY_API_KEY,
+                base_url=legacy_server.SOL_GATEWAY_URL,
+            )
+            if legacy_server.AI_GATEWAY_API_KEY
+            else None
+        )
         durable_codex_circuit = CircuitBreaker(
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
@@ -338,6 +352,10 @@ def create_mcp_app():
         durable_gemini_circuit = CircuitBreaker(
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
+        )
+        durable_sol_circuit = CircuitBreaker(
+            failure_threshold=1,
+            reset_after_seconds=max(legacy_server.CIRCUIT_RESET_SECONDS, 300),
         )
         if durable_openrouter is not None:
             durable_codex_dispatch = _retryable_single_attempt_dispatch(
@@ -373,6 +391,39 @@ def create_mcp_app():
                 )
             )
 
+        if (
+            durable_sol_gateway is not None
+            and legacy_server.SOL_RESERVE_ENABLED
+            and legacy_server.SOL_FREE_CREDIT_ONLY_ATTESTED
+        ):
+            durable_sol_dispatch = _retryable_single_attempt_dispatch(
+                build_sol_reserve_dispatch(
+                    gateway_client=durable_sol_gateway,
+                    gateway_api_key=legacy_server.AI_GATEWAY_API_KEY,
+                    circuit=durable_sol_circuit,
+                    credit_balance_fn=lambda: fetch_vercel_gateway_credit_balance(
+                        api_key=legacy_server.AI_GATEWAY_API_KEY,
+                        base_url=legacy_server.SOL_GATEWAY_URL,
+                    ),
+                    reserve_enabled=legacy_server.SOL_RESERVE_ENABLED,
+                    zero_spend_attested=legacy_server.SOL_FREE_CREDIT_ONLY_ATTESTED,
+                    sol_timeout_s=legacy_server.SOL_TIMEOUT_S,
+                    max_output_tokens=legacy_server.SOL_OUTPUT_TOKEN_CAP,
+                    max_input_bytes=legacy_server.SOL_INPUT_BYTE_CAP,
+                    min_credit_usd=legacy_server.SOL_MIN_CREDIT_USD,
+                    reasoning_effort=legacy_server.SOL_REASONING_EFFORT,
+                ),
+                model=EXPECTED_SOL_MODEL,
+            )
+        else:
+            durable_sol_dispatch = durable_sol_circuit.guard(
+                lambda _packet: (_ for _ in ()).throw(
+                    RuntimeError(
+                        "Sol reserve unavailable: zero-spend gates are not fully satisfied"
+                    )
+                )
+            )
+
         def _execute_durable(packet_json: str) -> Mapping[str, Any]:
             text = _transient_safe_execute_task_packet_json(
                 packet_json,
@@ -380,6 +431,7 @@ def create_mcp_app():
                 idempotency_store="postgres",
                 codex_dispatch=durable_codex_dispatch,
                 gemini_dispatch=durable_gemini_dispatch,
+                sol_dispatch=durable_sol_dispatch,
             )
             value = json.loads(text)
             if not isinstance(value, dict):
@@ -482,6 +534,12 @@ def create_mcp_app():
             "guardian_runtime": "ReliabilityGuardian",
             "durable_codex_circuit": durable_codex_circuit.snapshot() if durable_codex_circuit else None,
             "durable_gemini_circuit": durable_gemini_circuit.snapshot() if durable_gemini_circuit else None,
+            "durable_sol_circuit": durable_sol_circuit.snapshot() if durable_sol_circuit else None,
+            "sol_reserve_enabled": bool(
+                legacy_server.AI_GATEWAY_API_KEY
+                and legacy_server.SOL_RESERVE_ENABLED
+                and legacy_server.SOL_FREE_CREDIT_ONLY_ATTESTED
+            ),
             "stats": queue.stats(),
         })
 

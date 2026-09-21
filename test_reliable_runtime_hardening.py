@@ -1,3 +1,4 @@
+import inspect
 import json
 import os
 import subprocess
@@ -447,6 +448,15 @@ except Exception as exc:
         payload = json.loads(completed.stdout.strip())
         self.assertIn("unsupported engineering provider mode", payload["error"])
         self.assertEqual(payload["calls"], 0)
+
+    def test_reliable_runtime_carries_sol_dispatch_through_sync_and_durable_paths(self):
+        import reliable_server
+        sync_source = inspect.getsource(reliable_server._transient_safe_execute_task_packet_json)
+        runtime_source = inspect.getsource(reliable_server.create_mcp_app)
+        self.assertIn("sol_dispatch=sol_dispatch", sync_source)
+        self.assertIn("build_sol_reserve_dispatch", runtime_source)
+        self.assertIn("sol_dispatch=durable_sol_dispatch", runtime_source)
+        self.assertIn("SOL_FREE_CREDIT_ONLY_ATTESTED", runtime_source)
 
     def test_runtime_call_sites_use_central_engineering_config(self):
         env = os.environ.copy()
