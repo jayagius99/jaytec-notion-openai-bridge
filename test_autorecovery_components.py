@@ -15,7 +15,7 @@ from autorecovery_components import (
 )
 from manus_adapter import MANUS_MAX_MESSAGE_CHARS
 from manus_governance import build_minimal_task_packet
-from manus_runtime import _prompt, parse_start_request
+from manus_runtime import _compact_watch_recovery_packet, _prompt, parse_start_request
 from autorecovery_supervisor import (
     AssignmentCheckpoint,
     RecoveryRoute,
@@ -207,6 +207,71 @@ class RuntimeComponentTests(unittest.TestCase):
             len(rendered.encode("utf-8")),
             MANUS_MAX_MESSAGE_CHARS,
         )
+
+    def test_current_g03_constraint_set_uses_runtime_compaction_before_rejecting(self):
+        runtime = FakeRuntime()
+        current_constraints = (
+            "NO FORGE ACTIVATION",
+            "NO GENESIS_EVENT_0001",
+            "NO ROOT_OWNER IDENTITY/RECOVERY/SECRET/HARDWARE-KEY CHANGE",
+            "NO MERGE OF ROOT PR #17 OR GENESIS PR #58",
+            "NO NOTION AGENT",
+            "NO NEW SPEND OR PAID FALLBACK",
+            "NO DIRECT MUTATION OF ROOT OR GENESIS HEAD BRANCHES",
+            "USE ISOLATED FEATURE BRANCHES/PULL REQUESTS FOR CODE CHANGES",
+            "NEVER CLAIM VERIFIED WITHOUT INSPECTED EVIDENCE",
+        )
+        cp = replace(
+            checkpoint(),
+            objective=(
+                "Close G03 Security Audit #47 with an executable enforcement map, "
+                "hostile/adversarial review, alternate-route denial evidence and "
+                "governed evidence manifest tied to the exact result commit. "
+                + ("detail " * 180)
+            ),
+            current_phase="G03 / Security Audit #47 / hostile review",
+            active_constraints=current_constraints,
+            next_intended_action=(
+                "Continue G03 only; produce substantive security evidence and "
+                "do not advance the gate without independently inspectable proof."
+            ),
+        ).validate()
+        result = ManusLiteRecoveryInvoker(runtime, FakeRegistry()).invoke(
+            checkpoint=cp,
+            continuation_packet={
+                "instruction": "Resume — do not recreate completed work",
+                "controller": "G03",
+                "evidence_history": "E" * 1800,
+            },
+            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+            fencing_token=10,
+        )
+        self.assertTrue(result.accepted)
+        self.assertEqual(len(runtime.requests), 1)
+
+        req = parse_start_request(runtime.requests[0])
+        packet = build_minimal_task_packet(
+            task_id=req.task_id,
+            objective=req.objective,
+            scope=req.scope,
+            authority_source=req.authority_source,
+            allowed_actions=list(req.allowed_actions),
+            required_context=req.required_context,
+            constraints=list(req.constraints),
+            reference_ids=list(req.reference_ids),
+        )
+        if len(_prompt(packet)) > MANUS_MAX_MESSAGE_CHARS:
+            packet = _compact_watch_recovery_packet(packet)
+        rendered = _prompt(packet)
+        self.assertLessEqual(len(rendered), MANUS_MAX_MESSAGE_CHARS)
+        self.assertLessEqual(
+            len(rendered.encode("utf-8")),
+            MANUS_MAX_MESSAGE_CHARS,
+        )
+        for constraint in current_constraints:
+            self.assertIn(constraint, rendered)
+        self.assertIn("Do not activate Forge", rendered)
+        self.assertIn("Do not spend money", rendered)
 
     def test_uncompactable_constraint_fails_preflight_before_runtime_call(self):
         runtime = FakeRuntime()
