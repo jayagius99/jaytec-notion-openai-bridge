@@ -122,6 +122,52 @@ class WatchControllerAdvisorTests(unittest.TestCase):
         with self.assertRaisesRegex(WatchControllerAdvisorError, "MODEL_MISMATCH"):
             advise(request(), engineering_dispatch=lambda _packet: bad)
 
+    def test_provider_model_mismatch_fails_closed(self):
+        bad = sol_result()
+        bad["bridge_diagnostics"]["provider_model"] = "other/model"
+        with self.assertRaisesRegex(
+            WatchControllerAdvisorError,
+            "PROVIDER_MODEL_MISMATCH",
+        ):
+            advise(request(), engineering_dispatch=lambda _packet: bad)
+
+    def test_provider_identity_must_be_observed(self):
+        bad = sol_result()
+        bad["bridge_diagnostics"]["model_identity_observed"] = False
+        with self.assertRaisesRegex(
+            WatchControllerAdvisorError,
+            "PROVIDER_IDENTITY_UNOBSERVED",
+        ):
+            advise(request(), engineering_dispatch=lambda _packet: bad)
+
+    def test_provider_fallback_is_forbidden(self):
+        bad = sol_result()
+        bad["bridge_diagnostics"]["provider_fallbacks"] = True
+        with self.assertRaisesRegex(
+            WatchControllerAdvisorError,
+            "PROVIDER_FALLBACK_FORBIDDEN",
+        ):
+            advise(request(), engineering_dispatch=lambda _packet: bad)
+
+    def test_partial_success_cannot_approve_continue(self):
+        bad = sol_result()
+        bad["status"] = "PARTIAL_SUCCESS"
+        with self.assertRaisesRegex(
+            WatchControllerAdvisorError,
+            "APPROVAL_REQUIRES_SUCCESS",
+        ):
+            advise(request(), engineering_dispatch=lambda _packet: bad)
+
+    def test_partial_success_can_redirect(self):
+        value = sol_result(
+            "REDIRECT",
+            "Return exact-head hostile-review evidence before continuing.",
+        )
+        value["status"] = "PARTIAL_SUCCESS"
+        out = advise(request(), engineering_dispatch=lambda _packet: value)
+        self.assertEqual(out["status"], "PASS")
+        self.assertEqual(out["decision"], "REDIRECT")
+
     def test_side_effect_claim_rejected(self):
         bad = sol_result()
         bad["side_effects_attempted"] = ["write repo"]
