@@ -21,8 +21,8 @@ No specialist sits beside or above ChatGPT in the JAYTEC authority chain.
 Each specialist must have an explicit designated role and allowed task classes. A specialist does not inherit another specialist's capabilities.
 
 Examples:
-- Nemotron 3 Ultra free: primary coding/engineering specialist for normal JAYTEC and V2 engineering work routed by ChatGPT.
-- Sol: premium engineering/review reserve for meetings, difficult engineering work, and owner-explicit Sol tasks when the paid OpenAI route is funded and available.
+- Sol: primary high-capability engineering/reasoning Core Triad specialist. Live provider calls remain owner-cost-gated and fail closed when the cost gate is shut.
+- Nemotron 3 Ultra free: explicit zero-cost engineering backup only; never a silent substitution for Sol.
 - DeepSeek V4 Flash free: primary independent research / architecture / adversarial review specialist for normal JAYTEC and V2 review work. It is not an engineering-write specialist.
 - Gemini: premium research/review reserve only when funded or explicitly requested. Gemini is not required for normal V2 progress.
 - Manus: automation/orchestration work inside its Manus-specific boundary plus bounded meeting participation. Manus does not inherit Sol coding authority over JAYTEC.
@@ -91,9 +91,9 @@ No future specialist may be considered ACTIVE/REGISTERED until all of the follow
 
 Missing any item = specialist registration fails closed.
 
-## Primary engineering specialist — Nemotron 3 Ultra free
+## Zero-cost engineering backup — Nemotron 3 Ultra free
 
-Primary role: coding / engineering specialist and reviewer for normal JAYTEC work, including V2.
+Role: explicit zero-cost coding / engineering backup for bounded JAYTEC work when ChatGPT deliberately selects that route. It is not a silent Sol replacement.
 Exact registered model: `nvidia/nemotron-3-ultra-550b-a55b:free` through OpenRouter.
 Allowed use:
 - coding and engineering tasks assigned by ChatGPT;
@@ -121,10 +121,13 @@ DeepSeek does not decide JAYTEC changes, does not self-initiate work, and cannot
 Role: premium research / architecture review reserve.
 Allowed only when funded and explicitly routed by ChatGPT/Jay. Gemini is not required for ordinary V2 progress.
 
-## Sol
+## Sol — Primary / Core Triad
 
-Role: premium engineering / review reserve.
-Allowed use when the paid OpenAI route is funded and available:
+Role: primary high-capability engineering / reasoning specialist in the JAYTEC Core Triad.
+Runtime identity: exact `gpt-5.6-sol` only, with no silent model/provider fallback.
+Knowledge scope: sanitized JAYTEC operational context only; owner-only identity provenance and private construction/activation-history material are excluded and must fail closed before provider dispatch.
+Live use remains owner-cost-gated. Registration does not authorize spending.
+Allowed use when the cost gate is explicitly open:
 - JAYTEC meetings;
 - coding/engineering tasks assigned by ChatGPT;
 - reviews/tests assigned by ChatGPT;
