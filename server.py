@@ -258,7 +258,7 @@ def _execute_task_packet_json(
     idempotency_store: str,
     codex_dispatch: Any,
     gemini_dispatch: Any,
-    sol_dispatch: Any,
+    sol_dispatch: Any = None,
 ) -> str:
     packet, parse_errors = parse_packet_json(packet_json)
     if packet is None:
