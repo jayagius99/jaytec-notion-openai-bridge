@@ -11,13 +11,16 @@ tool is exposed to Notion. No background worker or autonomous loop is started.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
+import os
 from typing import Any, Protocol
 
 from fastmcp import FastMCP
 from fastmcp.server.auth import StaticTokenVerifier
 from openai import OpenAI
 from starlette.middleware import Middleware
+from starlette.responses import JSONResponse
 import uvicorn
 
 import server as legacy_server
@@ -268,6 +271,86 @@ def assert_courier_startup_invariants(mcp: FastMCP) -> None:
     asyncio.run(_assert_one_tool_catalog(mcp))
 
 
+
+class SolProofMiddleware:
+    """Temporary owner-authorized live proof hook.
+
+    It is not an MCP tool, exposes no secret material, requires a dedicated
+    throwaway token, and exercises the exact Sol reserve dispatcher once per
+    explicit HTTP request.
+    """
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("path") != "/__jaytec/sol-proof":
+            await self.app(scope, receive, send)
+            return
+
+        expected = os.environ.get("SOL_PROBE_TOKEN", "")
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        presented = headers.get("x-jaytec-sol-probe-token", "")
+        if not expected or not presented or not hmac.compare_digest(expected, presented):
+            await JSONResponse({"ok": False, "error": "not_found"}, status_code=404)(
+                scope, receive, send
+            )
+            return
+        if scope.get("method") != "POST":
+            await JSONResponse({"ok": False, "error": "method_not_allowed"}, status_code=405)(
+                scope, receive, send
+            )
+            return
+
+        runtime = JaytecCourierRuntime()
+        packet = {
+            "task_id": "JAYTEC-SOL-LIVE-PROOF-001",
+            "subtask_id": "JAYTEC-SOL-LIVE-PROOF-001-A",
+            "workflow_id": "JAYTEC_OWNER_SOL_LIVE_PROOF",
+            "required_context": {
+                "authority_controller": "CHATGPT_OPENAI_LEAD",
+                "specialist_authority": "SUBORDINATE",
+                "owner_explicit_sol_request": True,
+                "proof_scope": "Return a minimal validation of live Sol reserve reachability.",
+            },
+            "allowed_operations": ["analyze", "validate"],
+            "max_retries": 0,
+            "side_effect_policy": "none",
+        }
+        try:
+            result = runtime.sol_dispatch(packet)
+            diagnostics = result.get("bridge_diagnostics") or {}
+            safe = {
+                "ok": result.get("model") == legacy_server.EXPECTED_SOL_MODEL,
+                "status": result.get("status"),
+                "model": result.get("model"),
+                "gateway": diagnostics.get("gateway"),
+                "provider_only": diagnostics.get("provider_only"),
+                "model_lock": diagnostics.get("model_lock"),
+                "fallback_models": diagnostics.get("fallback_models"),
+                "zero_spend_attested": diagnostics.get("zero_spend_attested"),
+                "credit_balance_before_usd": diagnostics.get("credit_balance_before_usd"),
+                "credit_balance_after_usd": diagnostics.get("credit_balance_after_usd"),
+                "credit_used_usd": diagnostics.get("credit_used_usd"),
+            }
+            await JSONResponse(safe, status_code=200 if safe["ok"] else 502)(
+                scope, receive, send
+            )
+        except Exception as exc:
+            await JSONResponse(
+                {
+                    "ok": False,
+                    "error": type(exc).__name__,
+                    "detail": str(exc)[:160],
+                },
+                status_code=502,
+            )(scope, receive, send)
+
+
+
 def create_http_app(mcp: FastMCP | None = None):
     """Expose the locked Notion courier plus the separate authenticated meeting bus.
 
@@ -276,7 +359,7 @@ def create_http_app(mcp: FastMCP | None = None):
     """
     server = mcp or create_mcp_app()
     return server.http_app(
-        middleware=[Middleware(MeetingBusMiddleware)],
+        middleware=[Middleware(SolProofMiddleware), Middleware(MeetingBusMiddleware)],
         stateless_http=True,
         host_origin_protection=False,
     )
