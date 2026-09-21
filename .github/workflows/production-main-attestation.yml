@@ -109,7 +109,7 @@ jobs:
             echo "production compatibility container did not become reachable"
             exit 1
           fi
-          python notion_courier_transport_probe.py http://127.0.0.1:18000/mcp test
+          docker exec "$cid" python notion_courier_transport_probe.py http://127.0.0.1:8000/mcp test
 
   exact-sha-attestation:
     name: exact-sha-attestation
