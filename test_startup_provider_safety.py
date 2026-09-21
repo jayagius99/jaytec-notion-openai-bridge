@@ -8,14 +8,21 @@ ROOT = Path(__file__).resolve().parent
 class StartupProviderSafetyTests(unittest.TestCase):
     def test_render_startup_contains_no_provider_review_scripts(self):
         blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
+        self.assertIn("startCommand: python staging_server.py", blueprint)
         self.assertIn(
-            "startCommand: python staging_adversarial_probe.py && python staging_server.py",
+            "buildCommand: pip install -r requirements.txt && python staging_adversarial_probe.py",
+            blueprint,
+        )
+        self.assertNotIn(
+            "startCommand: python staging_adversarial_probe.py",
             blueprint,
         )
         for forbidden in (
             "staging_independent_g1_review.py &&",
             "staging_gemini_manus_governance_review.py &&",
             "staging_manus_governance_acceptance.py &&",
+            "staging_codex_429_diagnostic.py &&",
+            "staging_engineering_provider_probe.py &&",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, blueprint)
