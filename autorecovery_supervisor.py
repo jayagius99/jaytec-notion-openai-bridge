@@ -627,6 +627,63 @@ class PostgresAssignmentStore:
                 row = cur.fetchone()
                 return self._state_from_row(row) if row else None
 
+    def advance_checkpoint_preserving_runtime(
+        self,
+        checkpoint: AssignmentCheckpoint,
+        *,
+        expected_current_checkpoint_number: int,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Advance checkpoint metadata without resetting worker/fence/runtime state.
+
+        Returns True when a newer checkpoint was installed, False for an exact
+        idempotent replay of the already-installed checkpoint. Any rollback or
+        same-number drift fails closed.
+        """
+        checkpoint.validate()
+        current = _aware(now or utcnow())
+        assert current is not None
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    (_lock_id(checkpoint.task_id),),
+                )
+                cur.execute(
+                    "SELECT * FROM jaytec_assignment_state WHERE task_id = %s FOR UPDATE",
+                    (checkpoint.task_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise AutoRecoveryError("ASSIGNMENT_NOT_FOUND")
+                state = self._state_from_row(row)
+                if state.checkpoint.checkpoint_number != int(
+                    expected_current_checkpoint_number
+                ):
+                    raise AutoRecoveryError("CHECKPOINT_ADVANCE_EXPECTATION_MISMATCH")
+                incoming = checkpoint.checkpoint_number
+                current_number = state.checkpoint.checkpoint_number
+                if incoming < current_number:
+                    raise AutoRecoveryError("CHECKPOINT_ROLLBACK_FORBIDDEN")
+                if incoming == current_number:
+                    if checkpoint.to_dict() != state.checkpoint.to_dict():
+                        raise AutoRecoveryError("CHECKPOINT_SAME_NUMBER_DRIFT")
+                    return False
+                cur.execute(
+                    """
+                    UPDATE jaytec_assignment_state
+                    SET checkpoint_json = %s,
+                        updated_at = %s
+                    WHERE task_id = %s
+                    """,
+                    (
+                        psycopg2.extras.Json(checkpoint.to_dict()),
+                        current,
+                        checkpoint.task_id,
+                    ),
+                )
+                return True
+
     def acquire_recovery_lease(
         self,
         task_id: str,
