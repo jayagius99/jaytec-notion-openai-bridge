@@ -73,6 +73,26 @@ def broker_checkpoint():
     ).validate()
 
 
+def legacy_checkpoint():
+    checkpoint = broker_checkpoint()
+    return AssignmentCheckpoint(
+        **{
+            **checkpoint.__dict__,
+            "objective": (
+                "Continue Forge/Genesis preparation from the exact saved state. "
+                "Complete every safe software-only preparation, verification, "
+                "hardening and evidence step possible without activating Forge."
+            ),
+            "current_phase": "pre-activation software convergence and evidence hardening",
+            "next_intended_action": (
+                "Refresh live state, collision-check active work, then advance "
+                "the highest-priority safe software-only convergence step."
+            ),
+            "checkpoint_number": 1,
+        }
+    ).validate()
+
+
 def master_gate_payload():
     return {
         "schema_version": "FORGE_MASTER_GATE_DIRECTIVE_V1",
@@ -756,6 +776,101 @@ class WatchIngressPolicyTests(unittest.TestCase):
         )
         self.assertEqual(runtime.handoffs, [])
 
+
+    def test_exact_legacy_checkpoint_migrates_once_to_first_master_gate(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "checkpoint": legacy_checkpoint(),
+                "stop_reason": StopReason.RUNNING,
+                "progress_marker": "MANUS_PENDING",
+                "recovery_attempts": 0,
+                "completed": False,
+                "last_error": None,
+                "lease_owner": None,
+                "lease_expires_at": None,
+            }
+        )
+        runtime = FakePendingBrokerRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                cycle_payload(refs),
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertTrue(result["checkpoint_advanced"])
+        self.assertEqual(result["assignment"]["checkpoint_number"], 103)
+        self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
+        self.assertEqual(result["assignment"]["fencing_token"], 9)
+        self.assertEqual(result["assignment"]["recovery_attempts"], 0)
+        self.assertIn("MASTER_GATE_NAMESPACE_MIGRATED:G03:103", store.heartbeats)
+        self.assertEqual(len(runtime.handoffs), 1)
+        self.assertIn("master-gate:G03:", runtime.handoffs[0][1]["handoff_id"])
+
+    def test_legacy_namespace_migration_is_exact_state_only(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "checkpoint": legacy_checkpoint(),
+                "stop_reason": StopReason.RUNNING,
+                "progress_marker": "OTHER_LEGACY_STATE",
+                "recovery_attempts": 0,
+                "completed": False,
+                "last_error": None,
+                "lease_owner": None,
+                "lease_expires_at": None,
+            }
+        )
+        runtime = FakePendingBrokerRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                cycle_payload(refs),
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "BLOCKED_FAIL_CLOSED")
+        self.assertEqual(result["reason"], "MASTER_GATE_CHECKPOINT_GAP_FORBIDDEN")
+        self.assertEqual(store.state.checkpoint.checkpoint_number, 1)
+        self.assertEqual(runtime.handoffs, [])
 
     def test_checkpoint_advance_requires_verified_prior_gate_success(self):
         refs = {"security/root-owner-control-v1": "b" * 40}
