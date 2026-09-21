@@ -464,6 +464,7 @@ _WATCH_RECOVERY_CONTEXT_KEYS = frozenset({
     "dependencies_count",
     "continuation_packet_sha256",
     "canonical_objective_sha256",
+    "canonical_objective_excerpt",
     "active_constraints_sha256",
     "fencing_token",
     "recovery_route",
@@ -524,7 +525,7 @@ def _compact_watch_recovery_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
         if key in compact_context:
             compact_context[key] = str(compact_context[key])[:limit]
 
-    compact_context["canonical_objective_excerpt"] = objective[:420]
+    compact_context.setdefault("canonical_objective_excerpt", objective[:420])
     compact_context["jaytec_compaction"] = {
         "schema_version": "JAYTEC_WATCH_RECOVERY_COMPACTION_V1",
         "source_packet_sha256": hashlib.sha256(canonical).hexdigest(),
