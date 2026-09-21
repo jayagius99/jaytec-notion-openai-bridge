@@ -284,22 +284,20 @@ class SolProofMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or scope.get("path") != "/__jaytec/sol-proof":
+        prefix = "/__jaytec/sol-proof/"
+        path = scope.get("path", "")
+        if scope.get("type") != "http" or not path.startswith(prefix):
             await self.app(scope, receive, send)
             return
 
         expected = os.environ.get("SOL_PROBE_TOKEN", "")
-        headers = {
-            key.decode("latin-1").lower(): value.decode("latin-1")
-            for key, value in scope.get("headers", [])
-        }
-        presented = headers.get("x-jaytec-sol-probe-token", "")
+        presented = path[len(prefix):]
         if not expected or not presented or not hmac.compare_digest(expected, presented):
             await JSONResponse({"ok": False, "error": "not_found"}, status_code=404)(
                 scope, receive, send
             )
             return
-        if scope.get("method") != "POST":
+        if scope.get("method") not in {"GET", "POST"}:
             await JSONResponse({"ok": False, "error": "method_not_allowed"}, status_code=405)(
                 scope, receive, send
             )
