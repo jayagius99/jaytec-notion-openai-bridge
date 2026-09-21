@@ -168,6 +168,9 @@ class JaytecCourierRuntime:
         payload.update(
             {
                 "sol_model": legacy_server.EXPECTED_SOL_MODEL,
+                "sol_gateway_key_present": bool(legacy_server.AI_GATEWAY_API_KEY),
+                "sol_reserve_flag_enabled": bool(legacy_server.SOL_RESERVE_ENABLED),
+                "sol_free_credit_attested": bool(legacy_server.SOL_FREE_CREDIT_ONLY_ATTESTED),
                 "sol_reserve_enabled": bool(
                     self.sol_gateway_client is not None
                     and legacy_server.SOL_RESERVE_ENABLED
@@ -285,59 +288,13 @@ def create_http_app(mcp: FastMCP | None = None):
 
 
 
-def _run_internal_sol_live_proof_once() -> None:
-    """Owner-authorized, internal-only Sol reachability proof.
-
-    No HTTP route is exposed. The proof runs only when explicitly enabled by
-    SOL_LIVE_PROOF_ON_STARTUP=1 and prints safe diagnostics only.
-    """
-    if os.environ.get("SOL_LIVE_PROOF_ON_STARTUP", "0").strip() != "1":
-        return
-
-    runtime = JaytecCourierRuntime()
-    packet = {
-        "task_id": "JAYTEC-SOL-LIVE-PROOF-001",
-        "subtask_id": "JAYTEC-SOL-LIVE-PROOF-001-A",
-        "workflow_id": "JAYTEC_OWNER_SOL_LIVE_PROOF",
-        "required_context": {
-            "authority_controller": "CHATGPT_OPENAI_LEAD",
-            "specialist_authority": "SUBORDINATE",
-            "owner_explicit_sol_request": True,
-            "proof_scope": "Return only a minimal validation of live Sol reserve reachability.",
-        },
-        "allowed_operations": ["analyze", "validate"],
-        "max_retries": 0,
-        "side_effect_policy": "none",
-    }
-    try:
-        result = runtime.sol_dispatch(packet)
-        diagnostics = result.get("bridge_diagnostics") or {}
-        safe = {
-            "ok": result.get("model") == legacy_server.EXPECTED_SOL_MODEL,
-            "status": result.get("status"),
-            "model": result.get("model"),
-            "gateway": diagnostics.get("gateway"),
-            "provider_only": diagnostics.get("provider_only"),
-            "model_lock": diagnostics.get("model_lock"),
-            "fallback_models": diagnostics.get("fallback_models"),
-            "zero_spend_attested": diagnostics.get("zero_spend_attested"),
-            "credit_balance_before_usd": diagnostics.get("credit_balance_before_usd"),
-            "credit_balance_after_usd": diagnostics.get("credit_balance_after_usd"),
-            "credit_used_usd": diagnostics.get("credit_used_usd"),
-        }
-        print("JAYTEC_SOL_LIVE_PROOF_RESULT=" + json.dumps(safe, sort_keys=True), flush=True)
-    except Exception as exc:
-        safe_error = {
-            "ok": False,
-            "error": type(exc).__name__,
-            "detail": str(exc)[:160],
-        }
-        print("JAYTEC_SOL_LIVE_PROOF_RESULT=" + json.dumps(safe_error, sort_keys=True), flush=True)
-
-
-
 def main() -> None:
-    _run_internal_sol_live_proof_once()
+    safe_preflight = {
+        "key_present": bool(legacy_server.AI_GATEWAY_API_KEY),
+        "reserve_enabled": bool(legacy_server.SOL_RESERVE_ENABLED),
+        "free_credit_attested": bool(legacy_server.SOL_FREE_CREDIT_ONLY_ATTESTED),
+    }
+    print("JAYTEC_SOL_PREFLIGHT=" + json.dumps(safe_preflight, sort_keys=True), flush=True)
     mcp = create_mcp_app()
     assert_courier_startup_invariants(mcp)
     uvicorn.run(
