@@ -617,12 +617,18 @@ class WatchIngressPolicyTests(unittest.TestCase):
     def test_stale_success_without_exact_gate_receipt_cannot_complete_gate(self):
         class StaleSuccessRuntime(FakeSuccessBrokerRuntime):
             def task_status_readonly(self, worker_id, *, parent_task_id=None):
-                value = super().task_status_readonly(worker_id)
+                value = super().task_status_readonly(
+                    worker_id,
+                    parent_task_id=parent_task_id,
+                )
                 value["result"]["evidence"] = []
                 return value
 
             def task_status(self, worker_id, *, parent_task_id=None):
-                return self.task_status_readonly(worker_id)
+                return self.task_status_readonly(
+                    worker_id,
+                    parent_task_id=parent_task_id,
+                )
 
         refs = {"security/root-owner-control-v1": "b" * 40}
         store = FakeBrokerStore()
@@ -728,7 +734,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             }
         )
         runtime = FakeSuccessBrokerRuntime()
-        terminal = runtime.task_status_readonly("worker-existing")["result"]
+        terminal = runtime.task_status_readonly("worker-existing", parent_task_id=FORGE_TASK_ID)["result"]
         payload = cycle_payload(refs)
         payload["assignment_owner_directive"] = owner_redirect_payload(terminal)
         active = SimpleNamespace(
@@ -791,7 +797,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             }
         )
         runtime = FakeSuccessBrokerRuntime()
-        terminal = runtime.task_status_readonly("worker-existing")["result"]
+        terminal = runtime.task_status_readonly("worker-existing", parent_task_id=FORGE_TASK_ID)["result"]
         payload = cycle_payload(refs)
         payload["assignment_owner_directive"] = owner_redirect_payload(
             terminal,
@@ -838,7 +844,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             }
         )
         runtime = FakeSuccessBrokerRuntime()
-        terminal = runtime.task_status_readonly("worker-existing")["result"]
+        terminal = runtime.task_status_readonly("worker-existing", parent_task_id=FORGE_TASK_ID)["result"]
         payload = cycle_payload(refs)
         payload["assignment_owner_directive"] = owner_redirect_payload(
             terminal,
