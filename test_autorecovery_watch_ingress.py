@@ -278,6 +278,7 @@ class FakeBrokerRuntime:
 
     def task_status_readonly(self, worker_id, *, parent_task_id=None):
         assert worker_id == "worker-existing"
+        assert parent_task_id == FORGE_TASK_ID
         return {
             "status": "VERIFIED_COMPLETE",
             "result": {
@@ -301,6 +302,7 @@ class FakeBrokerRuntime:
 class FakePendingBrokerRuntime(FakeBrokerRuntime):
     def task_status_readonly(self, worker_id, *, parent_task_id=None):
         assert worker_id == "worker-existing"
+        assert parent_task_id == FORGE_TASK_ID
         return {
             "status": "PENDING",
             "provider_task_id": worker_id,
@@ -309,12 +311,13 @@ class FakePendingBrokerRuntime(FakeBrokerRuntime):
         }
 
     def task_status(self, worker_id, *, parent_task_id=None):
-        return self.task_status_readonly(worker_id)
+        return self.task_status_readonly(worker_id, parent_task_id=parent_task_id)
 
 
 class FakeSuccessBrokerRuntime(FakeBrokerRuntime):
     def task_status_readonly(self, worker_id, *, parent_task_id=None):
         assert worker_id == "worker-existing"
+        assert parent_task_id == FORGE_TASK_ID
         return {
             "status": "VERIFIED_COMPLETE",
             "result": {
@@ -335,7 +338,7 @@ class FakeSuccessBrokerRuntime(FakeBrokerRuntime):
         }
 
     def task_status(self, worker_id, *, parent_task_id=None):
-        return self.task_status_readonly(worker_id)
+        return self.task_status_readonly(worker_id, parent_task_id=parent_task_id)
 
 
 class FakeTransientStatusFailureRuntime(FakeBrokerRuntime):
