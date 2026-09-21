@@ -113,8 +113,10 @@ def _transient_safe_execute_task_packet_json(
     idempotency_store: str,
     codex_dispatch: Any,
     gemini_dispatch: Any,
-    sol_dispatch: Any,
+    sol_dispatch: Any = None,
 ) -> str:
+    if sol_dispatch is None:
+        sol_dispatch = lambda _packet: (_ for _ in ()).throw(RuntimeError("sol_dispatch_unavailable"))
     return _ORIGINAL_EXECUTE(
         packet_json,
         registry=TransientAwareRegistry(registry),
