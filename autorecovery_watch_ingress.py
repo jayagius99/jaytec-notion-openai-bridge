@@ -950,6 +950,58 @@ def execute_watch_cycle(
     )
 
     refreshed = supervisor.refresh_worker_health(task_id)
+    refreshed_state = store.get(task_id)
+    if _gate_result_ready_state(refreshed_state):
+        readonly = manus_runtime.task_status_readonly(refreshed_state.worker_id)
+        terminal = (
+            readonly.get("result")
+            if isinstance(readonly, Mapping)
+            and isinstance(readonly.get("result"), Mapping)
+            else {}
+        )
+        if (
+            str(readonly.get("status") or "") != "VERIFIED_COMPLETE"
+            or str(terminal.get("status") or "") != "SUCCESS"
+        ):
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "MASTER_GATE_RESULT_NOT_VERIFIED",
+            }
+        final = refreshed_state
+        return {
+            "status": "PASS",
+            "task_id": task_id,
+            "bootstrapped": bootstrapped,
+            "checkpoint_advanced": checkpoint_advanced,
+            "master_gate": master_gate,
+            "gate_handoff": gate_handoff,
+            "health_refreshed": refreshed,
+            "github_broker": github_broker,
+            "gate_result": terminal,
+            "decision": {
+                "action": "HOLD",
+                "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
+                "reason": "MASTER_GATE_RESULT_READY",
+                "recovery_route": None,
+            },
+            "assignment": {
+                "stop_reason": final.stop_reason.value,
+                "worker_kind": final.worker_kind.value,
+                "worker_id": final.worker_id,
+                "worker_route": final.worker_route,
+                "checkpoint_number": final.checkpoint.checkpoint_number,
+                "repo": final.checkpoint.repo,
+                "branch": final.checkpoint.branch,
+                "verified_head": final.checkpoint.commit_head,
+                "recovery_attempts": final.recovery_attempts,
+                "fencing_token": final.fencing_token,
+                "progress_marker": final.progress_marker,
+                "completed": final.completed,
+                "last_error": final.last_error,
+            },
+        }
+
     decision = supervisor.tick(task_id)
     final = store.get(task_id)
     return {
