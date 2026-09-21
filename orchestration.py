@@ -280,6 +280,8 @@ def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None
             errors.append("sol_owner_workflow_required")
         if packet.get("max_retries") != 0:
             errors.append("sol_retries_forbidden")
+        if packet.get("side_effect_policy") != "none":
+            errors.append("sol_side_effects_forbidden")
 
     if packet.get("workflow_id") == JAYTEC_READ_WORKFLOW_ID:
         if plan != ["gemini"]:
