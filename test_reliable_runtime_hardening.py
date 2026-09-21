@@ -5,7 +5,7 @@ import sys
 import unittest
 from types import SimpleNamespace
 
-from durable_tasks_runtime import ReliableDurableTaskQueue, ReliableDurableTaskWorker
+from durable_tasks_runtime import ReliableDurableTaskQueue, ReliableDurableTaskWorker, retry_delay_for_result
 from reliability_registry import should_cache_reliable_result, transient_specialist_statuses
 
 
@@ -477,6 +477,26 @@ print(json.dumps({
         )
         payload = json.loads(completed.stdout.strip())
         self.assertEqual(payload, {"server": True, "legacy_wrapper": True, "durable": True})
+
+    def test_sol_transient_retry_after_is_honored(self):
+        result = {
+            "overall_status": "RATE_LIMITED",
+            "sol_result": {
+                "status": "RATE_LIMITED",
+                "unresolved_items": ["retryable_rate_limit:retry_after=17"],
+            },
+        }
+        self.assertGreaterEqual(retry_delay_for_result(result, 1), 17)
+
+    def test_reliable_runtime_wires_durable_sol_dispatch(self):
+        import inspect
+        import reliable_server
+        source = inspect.getsource(reliable_server.create_mcp_app)
+        self.assertIn("durable_sol_dispatch", source)
+        self.assertIn("build_sol_dispatch(", source)
+        self.assertIn("sol_dispatch=durable_sol_dispatch", source)
+        self.assertIn("SOL_PRIMARY_COST_AUTHORIZED", source)
+
 
 if __name__ == "__main__":
     unittest.main()
