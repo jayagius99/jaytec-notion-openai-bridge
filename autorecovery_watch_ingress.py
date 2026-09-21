@@ -708,53 +708,66 @@ def execute_watch_cycle(
             and isinstance(readonly.get("result"), Mapping)
             else {}
         )
-        if (
-            str(readonly.get("status") or "") != "VERIFIED_COMPLETE"
-            or str(terminal.get("status") or "") != "SUCCESS"
-            or not required_gate_receipt
-            or not master_gate_result_has_receipt(
+        readonly_ok = str(readonly.get("status") or "") == "VERIFIED_COMPLETE"
+        terminal_success = str(terminal.get("status") or "") == "SUCCESS"
+        receipt_matches = bool(
+            required_gate_receipt
+            and master_gate_result_has_receipt(
                 terminal,
                 required_gate_receipt,
             )
-        ):
+        )
+        if readonly_ok and terminal_success and receipt_matches:
+            final = store.get(task_id)
+            return {
+                "status": "PASS",
+                "task_id": task_id,
+                "bootstrapped": bootstrapped,
+                "checkpoint_advanced": checkpoint_advanced,
+                "master_gate": master_gate,
+                "gate_handoff": "RESULT_READY",
+                "health_refreshed": False,
+                "github_broker": github_broker,
+                "gate_result": terminal,
+                "decision": {
+                    "action": "HOLD",
+                    "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
+                    "reason": "MASTER_GATE_RESULT_READY",
+                    "recovery_route": None,
+                },
+                "assignment": {
+                    "stop_reason": final.stop_reason.value if final else None,
+                    "worker_kind": final.worker_kind.value if final else None,
+                    "worker_id": final.worker_id if final else None,
+                    "worker_route": final.worker_route if final else None,
+                    "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
+                    "repo": final.checkpoint.repo if final else None,
+                    "branch": final.checkpoint.branch if final else None,
+                    "verified_head": final.checkpoint.commit_head if final else None,
+                    "recovery_attempts": final.recovery_attempts if final else None,
+                    "fencing_token": final.fencing_token if final else None,
+                    "progress_marker": final.progress_marker if final else None,
+                    "completed": final.completed if final else None,
+                    "last_error": final.last_error if final else None,
+                },
+            }
+        if readonly_ok and terminal_success and not receipt_matches:
+            # A completed result from the prior master gate is valid evidence
+            # for that prior gate, but it has no authority over the newly
+            # selected gate. Re-open the SAME fenced worker and continue below.
+            store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                progress_marker="MASTER_GATE_STALE_RESULT_IGNORED",
+            )
+            state = store.get(task_id)
+        else:
             return {
                 "status": "BLOCKED_FAIL_CLOSED",
                 "task_id": task_id,
                 "reason": "MASTER_GATE_RESULT_NOT_VERIFIED",
             }
-        final = store.get(task_id)
-        return {
-            "status": "PASS",
-            "task_id": task_id,
-            "bootstrapped": bootstrapped,
-            "checkpoint_advanced": checkpoint_advanced,
-            "master_gate": master_gate,
-            "gate_handoff": "RESULT_READY",
-            "health_refreshed": False,
-            "github_broker": github_broker,
-            "gate_result": terminal,
-            "decision": {
-                "action": "HOLD",
-                "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
-                "reason": "MASTER_GATE_RESULT_READY",
-                "recovery_route": None,
-            },
-            "assignment": {
-                "stop_reason": final.stop_reason.value if final else None,
-                "worker_kind": final.worker_kind.value if final else None,
-                "worker_id": final.worker_id if final else None,
-                "worker_route": final.worker_route if final else None,
-                "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
-                "repo": final.checkpoint.repo if final else None,
-                "branch": final.checkpoint.branch if final else None,
-                "verified_head": final.checkpoint.commit_head if final else None,
-                "recovery_attempts": final.recovery_attempts if final else None,
-                "fencing_token": final.fencing_token if final else None,
-                "progress_marker": final.progress_marker if final else None,
-                "completed": final.completed if final else None,
-                "last_error": final.last_error if final else None,
-            },
-        }
 
     # NEEDS_JAYTEC is an internal orchestration handoff, not an owner boundary.
     # Continue the SAME fenced worker with evidence supplied by GitHub Actions.
