@@ -299,6 +299,39 @@ class FakeBrokerRuntime:
 
 
 
+class FakeProtocolRepairRuntime(FakeBrokerRuntime):
+    def __init__(self, *, replay=False):
+        super().__init__()
+        self.replay = replay
+
+    def task_status_readonly(self, worker_id, *, parent_task_id=None):
+        assert worker_id == "worker-existing"
+        assert parent_task_id == FORGE_TASK_ID
+        return {
+            "status": "FAILED_CLOSED",
+            "reason": (
+                "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+                "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE"
+            ),
+            "protocol_repair_required": {
+                "schema_version": "JAYTEC_SPECIALIST_PROTOCOL_REPAIR_V1",
+                "reason": "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE",
+                "target_intent_type": "SPECIALIST_INTENT_V1",
+                "values_included": False,
+            },
+        }
+
+    def continue_task_handoff(self, worker_id, **kwargs):
+        self.handoffs.append((worker_id, dict(kwargs)))
+        return {
+            "status": "CONTINUED",
+            "provider_task_id": worker_id,
+            "requested_profile": "lite",
+            "observed_profile_verified": True,
+            "idempotent_replay": self.replay,
+        }
+
+
 class FakePendingBrokerRuntime(FakeBrokerRuntime):
     def task_status_readonly(self, worker_id, *, parent_task_id=None):
         assert worker_id == "worker-existing"
@@ -528,6 +561,108 @@ class WatchIngressPolicyTests(unittest.TestCase):
                 self.assertEqual(observed.fencing_token, drifted.fencing_token)
                 self.assertEqual(observed.recovery_attempts, drifted.recovery_attempts)
                 self.assertEqual(observed.stop_reason, drifted.stop_reason)
+
+    def test_specialist_protocol_repair_keeps_same_worker_fence_and_budget(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.RUNNING,
+                "progress_marker": "MANUS_PENDING",
+                "recovery_attempts": 0,
+                "last_error": None,
+            }
+        )
+        runtime = FakeProtocolRepairRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                cycle_payload(refs),
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(result["decision"]["reason"], "SPECIALIST_PROTOCOL_REPAIR_CONTINUED")
+        self.assertEqual(result["protocol_repair"]["status"], "SAME_WORKER_CONTINUED")
+        self.assertFalse(result["protocol_repair"]["worker_replaced"])
+        self.assertFalse(result["protocol_repair"]["recovery_attempt_consumed"])
+        self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
+        self.assertEqual(result["assignment"]["fencing_token"], 9)
+        self.assertEqual(result["assignment"]["recovery_attempts"], 0)
+        self.assertEqual(result["assignment"]["progress_marker"], "SPECIALIST_PROTOCOL_REPAIR_PENDING")
+        self.assertEqual(len(runtime.handoffs), 1)
+        worker_id, kwargs = runtime.handoffs[0]
+        self.assertEqual(worker_id, "worker-existing")
+        context = kwargs["handoff_context"]
+        self.assertEqual(context["schema_version"], "JAYTEC_SPECIALIST_PROTOCOL_REPAIR_V1")
+        self.assertEqual(context["kind"], "SPECIALIST_PROTOCOL_REPAIR")
+        self.assertEqual(context["target_intent"]["type"], "SPECIALIST_INTENT_V1")
+        self.assertNotIn("request_id", context)
+        self.assertNotIn("purpose", context)
+        self.assertNotIn("repository", context)
+        self.assertEqual(store.state.fencing_token, 9)
+        self.assertEqual(store.state.recovery_attempts, 0)
+
+    def test_specialist_protocol_repair_is_one_shot_and_never_loops(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.RUNNING,
+                "progress_marker": "SPECIALIST_PROTOCOL_REPAIR_PENDING",
+                "recovery_attempts": 0,
+                "last_error": None,
+            }
+        )
+        runtime = FakeProtocolRepairRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                cycle_payload(refs),
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+
+        self.assertEqual(result["status"], "BLOCKED_FAIL_CLOSED")
+        self.assertEqual(result["reason"], "SPECIALIST_PROTOCOL_REPAIR_EXHAUSTED")
+        self.assertFalse(result["protocol_repair"]["worker_replaced"])
+        self.assertFalse(result["protocol_repair"]["recovery_attempt_consumed"])
+        self.assertFalse(result["protocol_repair"]["duplicate_handoff_sent"])
+        self.assertEqual(runtime.handoffs, [])
+        self.assertEqual(store.state.worker_id, "worker-existing")
+        self.assertEqual(store.state.fencing_token, 9)
+        self.assertEqual(store.state.recovery_attempts, 0)
 
     def test_needs_jaytec_broker_handoff_keeps_same_worker_and_fence(self):
         refs = {"security/root-owner-control-v1": "b" * 40}

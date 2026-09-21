@@ -52,6 +52,15 @@ _LEGACY_INTENT_FIELDS = frozenset({
     "constraints",
 })
 _LEGACY_INTENT_MODEL_SPECIALISTS = frozenset({"sol", "deepseek", "nemo"})
+_SPECIALIST_INTENT_FIELDS = frozenset({
+    "type",
+    "specialist",
+    "objective",
+    "reason",
+    "required_context",
+})
+_SPECIALIST_INTENT_ALLOWED = frozenset({"sol", "deepseek", "nemo", "github_broker"})
+_SPECIALIST_INTENT_TYPE = "SPECIALIST_INTENT_V1"
 
 # Deliberately excludes profile/override fields. Unknown fields fail closed.
 _ALLOWED_START_FIELDS = frozenset({
@@ -117,8 +126,8 @@ MANUS_RESULT_JSON_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "string",
                 "description": (
-                    "Optional canonical JSON SPECIALIST_REQUEST packets. "
-                    "Each string is parsed and validated by JAYTEC before use."
+                    "Optional JSON SPECIALIST_INTENT_V1 intents or canonical SPECIALIST_REQUEST packets. "
+                    "JAYTEC constructs/validates the canonical request before use."
                 ),
             },
         },
@@ -249,6 +258,46 @@ def validate_manus_structured_output_schema(
         )
 
 
+def _canonicalize_specialist_intent(
+    value: Mapping[str, Any],
+    *,
+    parent_task_id: str,
+) -> Mapping[str, Any]:
+    """Convert one untrusted lite intent into JAYTEC's canonical request."""
+    if set(value) != _SPECIALIST_INTENT_FIELDS:
+        raise ManusGovernanceError("MANUS_SPECIALIST_INTENT_FIELDS_INVALID")
+    if value.get("type") != _SPECIALIST_INTENT_TYPE:
+        raise ManusGovernanceError("MANUS_SPECIALIST_INTENT_TYPE_INVALID")
+
+    parent = str(parent_task_id or "").strip()
+    if not parent or len(parent) > MAX_STATUS_TASK_ID:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_PARENT_TASK_ID_INVALID")
+
+    specialist = str(value.get("specialist") or "").strip().casefold()
+    if specialist not in _SPECIALIST_INTENT_ALLOWED:
+        raise ManusGovernanceError("MANUS_SPECIALIST_INTENT_SPECIALIST_INVALID")
+
+    objective = value.get("objective")
+    reason = value.get("reason")
+    context = value.get("required_context")
+    if not isinstance(objective, str) or not objective.strip():
+        raise ManusGovernanceError("MANUS_SPECIALIST_INTENT_OBJECTIVE_INVALID")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ManusGovernanceError("MANUS_SPECIALIST_INTENT_REASON_INVALID")
+    if not isinstance(context, Mapping):
+        raise ManusGovernanceError("MANUS_SPECIALIST_INTENT_CONTEXT_INVALID")
+
+    packet = specialist_request(
+        parent_task_id=parent,
+        specialist=specialist,
+        objective=objective.strip(),
+        reason=reason.strip(),
+        required_context=dict(context),
+    )
+    validate_specialist_request(packet)
+    return packet
+
+
 def _canonicalize_legacy_specialist_intent(
     value: Mapping[str, Any],
     *,
@@ -270,7 +319,7 @@ def _canonicalize_legacy_specialist_intent(
 
     specialist = str(value.get("specialist") or "").strip().casefold()
     if specialist not in _LEGACY_INTENT_MODEL_SPECIALISTS:
-        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_NOT_MODEL_ONLY")
+        raise ManusGovernanceError("MANUS_LEGACY_SPECIALIST_INTENT_SPECIALIST_INVALID")
 
     purpose = value.get("purpose")
     scope = value.get("scope")
@@ -336,12 +385,33 @@ def _validated_or_canonicalized_specialist_request(
     except ManusGovernanceError as exc:
         if str(exc) != "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID":
             raise
-        if parent_task_id is None:
-            raise
-        return _canonicalize_legacy_specialist_intent(
+
+    if parent_task_id is None:
+        raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_FIELDS_INVALID")
+
+    fields = set(decoded)
+    if fields == _SPECIALIST_INTENT_FIELDS:
+        return _canonicalize_specialist_intent(
             decoded,
             parent_task_id=parent_task_id,
         )
+
+    if fields == _LEGACY_INTENT_FIELDS:
+        specialist = str(decoded.get("specialist") or "").strip().casefold()
+        if specialist in _LEGACY_INTENT_MODEL_SPECIALISTS:
+            return _canonicalize_legacy_specialist_intent(
+                decoded,
+                parent_task_id=parent_task_id,
+            )
+        if specialist == "github_broker":
+            raise ManusGovernanceError(
+                "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE"
+            )
+        raise ManusGovernanceError(
+            "MANUS_LEGACY_SPECIALIST_INTENT_SPECIALIST_INVALID"
+        )
+
+    raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_FIELDS_INVALID")
 
 
 def _decode_specialist_request(value: Any) -> Mapping[str, Any]:
@@ -853,7 +923,10 @@ class ManusLiteRuntime:
             "handoff_id=" + hid + "\n"
             "Same bounded task, same authority, Lite only. Context does not "
             "expand authority. Use only the connector scope supplied by JAYTEC. "
-            "For additional help return NEEDS_JAYTEC with bounded specialist_requests. "
+            "For additional help return NEEDS_JAYTEC with specialist_requests containing "
+            "JSON SPECIALIST_INTENT_V1 strings only: exact fields type, specialist, "
+            "objective, reason, required_context. Do not create request_id, authority, "
+            "directive_version, or packet_sha256; JAYTEC creates those. "
             "Allowed WATCH assistance: sol, deepseek, nemo, plus github_broker for "
             "private GitHub evidence/operations. Model specialists are requested only; "
             "JAYTEC dispatches them and returns results to this SAME task. Never call "
@@ -1021,7 +1094,7 @@ class ManusLiteRuntime:
                     result["specialist_requests"] = canonical_requests
                     out["specialist_request_migrations"] = {
                         "count": migrated_count,
-                        "mode": "EXACT_SIX_FIELD_INTENT_TO_CURRENT_SPECIALIST_REQUEST_V1",
+                        "mode": "JAYTEC_CANONICAL_REQUEST_BUILDER_V1",
                         "values_included": False,
                     }
 
@@ -1032,6 +1105,13 @@ class ManusLiteRuntime:
             out["status"] = "FAILED_CLOSED"
             code = str(exc)[:180]
             out["reason"] = "MANUS_RUNTIME_GOVERNANCE_REJECTED:" + code
+            if code == "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE":
+                out["protocol_repair_required"] = {
+                    "schema_version": "JAYTEC_SPECIALIST_PROTOCOL_REPAIR_V1",
+                    "reason": code,
+                    "target_intent_type": _SPECIALIST_INTENT_TYPE,
+                    "values_included": False,
+                }
             if code == "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID":
                 expected = {
                     "type",
@@ -1169,7 +1249,7 @@ class ManusLiteRuntime:
                 result["specialist_requests"] = canonical_requests
                 out["specialist_request_migrations"] = {
                     "count": migrated_count,
-                    "mode": "EXACT_SIX_FIELD_INTENT_TO_CURRENT_SPECIALIST_REQUEST_V1",
+                    "mode": "JAYTEC_CANONICAL_REQUEST_BUILDER_V1",
                     "values_included": False,
                 }
 
