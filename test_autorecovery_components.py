@@ -676,6 +676,66 @@ class RuntimeComponentTests(unittest.TestCase):
             "MANUS_RECOVERY_NOT_STARTED:FAILED_CLOSED:MANUS_HTTP_400:invalid_argument",
         )
 
+    def test_governance_repair_keeps_same_worker_fence_and_exact_schema(self):
+        runtime = FakeRuntime()
+        invoker = ManusLiteRecoveryInvoker(runtime, FakeRegistry())
+        result = invoker.continue_governance_repair(
+            checkpoint=checkpoint(),
+            worker_id="worker-existing",
+            fencing_token=15,
+            rejected_reason=(
+                "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+                "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID"
+            ),
+        )
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.worker_id, "worker-existing")
+        self.assertEqual(len(runtime.requests), 0)
+        self.assertEqual(len(runtime.handoffs), 1)
+        args, kwargs = runtime.handoffs[0]
+        self.assertEqual(args[0], "worker-existing")
+        self.assertIn(":fence:15:governance-repair:", kwargs["handoff_id"])
+        ctx = kwargs["handoff_context"]
+        self.assertEqual(ctx["fencing_token"], 15)
+        self.assertEqual(
+            ctx["required_authority"],
+            "REQUEST_ONLY_NO_SELF_DISPATCH",
+        )
+        self.assertEqual(
+            ctx["required_specialist_request_fields"],
+            [
+                "type",
+                "request_id",
+                "parent_task_id",
+                "directive_version",
+                "specialist",
+                "objective",
+                "reason",
+                "required_context",
+                "authority",
+                "packet_sha256",
+            ],
+        )
+        self.assertIn("empty specialist_requests", ctx["instruction"])
+        self.assertIn("Do not expand scope", ctx["instruction"])
+
+    def test_governance_repair_rejects_any_other_failure_reason_locally(self):
+        runtime = FakeRuntime()
+        result = ManusLiteRecoveryInvoker(runtime, FakeRegistry()).continue_governance_repair(
+            checkpoint=checkpoint(),
+            worker_id="worker-existing",
+            fencing_token=15,
+            rejected_reason="MANUS_RUNTIME_GOVERNANCE_REJECTED:OTHER",
+        )
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.worker_id, "worker-existing")
+        self.assertEqual(runtime.handoffs, [])
+        self.assertEqual(runtime.requests, [])
+        self.assertEqual(
+            result.detail,
+            "MANUS_GOVERNANCE_REPAIR_REASON_NOT_ALLOWLISTED",
+        )
+
     def test_health_pending_is_healthy(self):
         health = ManusLiteHealthProbe(FakeRuntime()).wait_for_healthy(
             task_id="task",
