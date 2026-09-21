@@ -1,0 +1,70 @@
+name: Step 6 Free Independent Review
+
+on:
+  push:
+    branches:
+      - 'review/uren-jib-step6-free-review-v1'
+    paths:
+      - '.github/workflows/step6-free-independent-review.yml'
+      - 'step6_free_reviewer.py'
+      - 'review_packets/**'
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - candidate: uren
+            model: nvidia/nemotron-3-ultra-550b-a55b:free
+            packet: review_packets/uren_v1_2_review.json
+            packet_sha256: d9eaa845ff583363f5fa7cbc19788aea46a47069a415644c57437a1e12492cdd
+          - candidate: uren
+            model: deepseek/deepseek-v4-flash-0731:free
+            packet: review_packets/uren_v1_2_review.json
+            packet_sha256: d9eaa845ff583363f5fa7cbc19788aea46a47069a415644c57437a1e12492cdd
+          - candidate: jib
+            model: nvidia/nemotron-3-ultra-550b-a55b:free
+            packet: review_packets/jib_v0_3_review.json
+            packet_sha256: 2dc2fd597ee346fb7c0d7f9ab4de0bd589258c8bbfc61b5ba1da0f3c5cee7590
+          - candidate: jib
+            model: deepseek/deepseek-v4-flash-0731:free
+            packet: review_packets/jib_v0_3_review.json
+            packet_sha256: 2dc2fd597ee346fb7c0d7f9ab4de0bd589258c8bbfc61b5ba1da0f3c5cee7590
+    steps:
+      - name: Checkout isolated review branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Install locked dependencies
+        run: python -m pip install -r requirements.lock.txt
+      - name: Compile reviewer
+        run: python -m py_compile step6_free_reviewer.py
+      - name: Verify zero-cost model pin
+        env:
+          STEP6_REVIEW_MODEL: ${{ matrix.model }}
+        run: |
+          python - <<'PY'
+          import os
+          model=os.environ["STEP6_REVIEW_MODEL"]
+          allowed={
+              "nvidia/nemotron-3-ultra-550b-a55b:free",
+              "deepseek/deepseek-v4-flash-0731:free",
+          }
+          assert model in allowed and model.endswith(":free")
+          print("ZERO_COST_MODEL_PIN=PASS")
+          PY
+      - name: Run independent review
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          STEP6_REVIEW_MODEL: ${{ matrix.model }}
+          STEP6_REVIEW_PACKET: ${{ matrix.packet }}
+          STEP6_REVIEW_PACKET_SHA256: ${{ matrix.packet_sha256 }}
+        run: python step6_free_reviewer.py
