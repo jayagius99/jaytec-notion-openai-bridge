@@ -62,7 +62,7 @@ from deepseek_reviewer import (
 )
 from nemo_specialist import EXPECTED_NEMO_MODEL, build_nemo_dispatch
 from watch_specialist_broker import dispatch_manus_model_requests
-from watch_controller_advisor import WatchControllerAdvisorError, advise as watch_controller_advise
+from watch_controller_advisor import WatchControllerAdvisorError, advise as watch_controller_advise, validate_request as validate_watch_controller_advice_request
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from jaytec_protocol_portal import PortalStore, safe_error as portal_safe_error
 from forge_cognition import ForgeMindStore, safe_error as forge_cognition_safe_error
@@ -632,10 +632,21 @@ async def jaytec_watch_controller_advice(request: Request) -> JSONResponse:
         )
 
     try:
+        normalized = validate_watch_controller_advice_request(payload)
+        cache_key = "watch-controller-advice:" + normalized["request_sha256"]
+        cached = REGISTRY.lookup(cache_key, normalized["request_sha256"])
+        if cached is not None:
+            return JSONResponse(cached, status_code=200)
         result = watch_controller_advise(
-            payload,
+            normalized,
             engineering_dispatch=ENGINEERING_DISPATCH,
         )
+        if result.get("status") == "PASS":
+            REGISTRY.store(
+                cache_key,
+                normalized["request_sha256"],
+                result,
+            )
     except WatchControllerAdvisorError as exc:
         return JSONResponse(
             {"status": "DENIED", "reason": str(exc)},
