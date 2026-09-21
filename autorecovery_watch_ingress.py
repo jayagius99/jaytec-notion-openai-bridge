@@ -708,6 +708,154 @@ def _broker_requests(
     return out
 
 
+def _split_help_requests(
+    terminal: Mapping[str, Any],
+    *,
+    refs: Mapping[str, str],
+    fencing_token: int,
+    mutation_authorized: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    """Split one Manus help request batch into GitHub and model assistance.
+
+    Every request remains request-only. Unknown specialists fail closed rather
+    than being silently routed to another model/provider.
+    """
+    raw_requests = terminal.get("specialist_requests")
+    if raw_requests in (None, []):
+        return [], [], []
+    if not isinstance(raw_requests, list) or len(raw_requests) > MAX_HELP_REQUESTS:
+        raise WatchIngressError("JAYTEC_HELP_REQUEST_COUNT_INVALID")
+
+    github_requests: list[dict[str, Any]] = []
+    model_requests: list[dict[str, Any]] = []
+    order: list[str] = []
+    seen: set[str] = set()
+
+    for raw in raw_requests:
+        if not isinstance(raw, str) or not raw.strip():
+            raise WatchIngressError("JAYTEC_HELP_REQUEST_INVALID")
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise WatchIngressError("JAYTEC_HELP_REQUEST_JSON_INVALID") from exc
+        if not isinstance(decoded, Mapping):
+            raise WatchIngressError("JAYTEC_HELP_REQUEST_INVALID")
+
+        validate_specialist_request(decoded)
+        specialist = str(decoded.get("specialist") or "").strip().casefold()
+        if specialist == "github_broker":
+            if len(github_requests) >= MAX_BROKER_REQUESTS:
+                raise WatchIngressError("GITHUB_BROKER_REQUEST_COUNT_INVALID")
+            normalized = _normalize_broker_operation(
+                decoded,
+                refs=refs,
+                fencing_token=fencing_token,
+                mutation_authorized=mutation_authorized,
+            )
+            github_requests.append(normalized)
+            rid = str(normalized["request_id"])
+        elif specialist in ALLOWED_MANUS_MODEL_SPECIALISTS:
+            try:
+                normalized_model = normalize_manus_model_request(
+                    decoded,
+                    parent_task_prefix=FORGE_TASK_ID,
+                )
+            except SpecialistBrokerError as exc:
+                raise WatchIngressError(str(exc)) from exc
+            model_requests.append(normalized_model)
+            rid = str(normalized_model["request_id"])
+        else:
+            raise WatchIngressError("JAYTEC_HELP_SPECIALIST_NOT_ALLOWLISTED:" + specialist)
+
+        if rid in seen:
+            raise WatchIngressError("JAYTEC_HELP_DUPLICATE_REQUEST_ID")
+        seen.add(rid)
+        order.append(rid)
+
+    return github_requests, model_requests, order
+
+
+def _model_results_match_requests(
+    package: Mapping[str, Any],
+    requests: list[Mapping[str, Any]],
+) -> bool:
+    rows = package.get("request_results")
+    if not isinstance(rows, list) or len(rows) != len(requests):
+        return False
+    expected = [
+        (str(req.get("request_id") or ""), str(req.get("specialist") or ""))
+        for req in requests
+    ]
+    observed = [
+        (str(row.get("request_id") or ""), str(row.get("specialist") or ""))
+        for row in rows
+        if isinstance(row, Mapping)
+    ]
+    return observed == expected
+
+
+def _compose_assistance_context(
+    *,
+    github_context: Mapping[str, Any],
+    github_requests: list[Mapping[str, Any]],
+    model_package: Mapping[str, Any],
+    model_requests: list[Mapping[str, Any]],
+    request_order: list[str],
+) -> dict[str, Any]:
+    """Create one bounded result packet returned to the same Manus task."""
+    rows_by_id: dict[str, dict[str, Any]] = {}
+
+    if github_requests:
+        if not _broker_results_match_requests(github_context, github_requests):
+            raise WatchIngressError("GITHUB_BROKER_RESULTS_REQUEST_MISMATCH")
+        raw_rows = github_context.get("request_results")
+        assert isinstance(raw_rows, list)
+        for request, row in zip(github_requests, raw_rows):
+            if not isinstance(row, Mapping):
+                raise WatchIngressError("GITHUB_BROKER_RESULT_INVALID")
+            rid = str(request.get("request_id") or "")
+            rows_by_id[rid] = {
+                "request_id": rid,
+                "specialist": "github_broker",
+                "status": str(row.get("status") or "FAILED_CLOSED"),
+                "operation": str(request.get("operation") or ""),
+                "evidence": row.get("evidence"),
+            }
+
+    if model_requests:
+        if not _model_results_match_requests(model_package, model_requests):
+            raise WatchIngressError("MODEL_SPECIALIST_RESULTS_REQUEST_MISMATCH")
+        raw_rows = model_package.get("request_results")
+        assert isinstance(raw_rows, list)
+        for row in raw_rows:
+            assert isinstance(row, Mapping)
+            rid = str(row.get("request_id") or "")
+            rows_by_id[rid] = dict(row)
+
+    ordered_rows = [rows_by_id[rid] for rid in request_order if rid in rows_by_id]
+    if len(ordered_rows) != len(request_order):
+        raise WatchIngressError("JAYTEC_ASSISTANCE_RESULT_SET_INCOMPLETE")
+
+    unsigned = {
+        "schema_version": "JAYTEC_ASSISTANCE_RESULTS_V1",
+        "kind": "SPECIALIST_REQUEST_RESULTS",
+        "authority": "RESULTS_ONLY_NO_AUTHORITY_EXPANSION",
+        "request_results": ordered_rows,
+    }
+    encoded = json.dumps(
+        unsigned,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(encoded) > 4500:
+        raise WatchIngressError("JAYTEC_ASSISTANCE_CONTEXT_TOO_LARGE")
+    return {
+        **unsigned,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
 def _broker_results_match_requests(
     context: Mapping[str, Any],
     requests: list[Mapping[str, Any]],
