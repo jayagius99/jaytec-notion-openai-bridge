@@ -1,0 +1,21 @@
+{
+  "schema_version": "JAYTEC_GITHUB_MEMORY_V1",
+  "knowledge_scope": "JAYTEC_SANITIZED_CORE_V4",
+  "ordered_files": [
+    "JAYTEC_MEMORY/00_INDEX.md",
+    "JAYTEC_MEMORY/01_CORE_ARCHITECTURE.md",
+    "JAYTEC_MEMORY/02_EXECUTION_PROTOCOLS.md",
+    "JAYTEC_MEMORY/03_SPECIALIST_FABRIC.md",
+    "JAYTEC_MEMORY/04_FORGE_PROGRAM.md",
+    "JAYTEC_MEMORY/05_INTERFACE_AND_RELIABILITY.md",
+    "JAYTEC_MEMORY/06_HISTORY_AND_CONTINUITY.md",
+    "JAYTEC_MEMORY/99_LIVE_STATE_RULES.md"
+  ],
+  "rules": {
+    "static_memory_is_not_live_state": true,
+    "no_secrets": true,
+    "no_spend_authority": true,
+    "no_owner_authority_inheritance": true,
+    "owner_sealed_backstory_excluded": true
+  }
+}
