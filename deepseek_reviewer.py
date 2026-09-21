@@ -182,7 +182,6 @@ def build_deepseek_security_review_dispatch(
         *,
         retry_format: bool,
         attempt: int,
-        allow_provider_fallbacks: bool,
     ) -> Mapping[str, Any]:
         request_kwargs: dict[str, Any] = {
             "model": model,
@@ -206,7 +205,7 @@ def build_deepseek_security_review_dispatch(
             },
             "extra_body": {
                 "provider": {
-                    "allow_fallbacks": allow_provider_fallbacks,
+                    "allow_fallbacks": False,
                     "require_parameters": True,
                 },
             },
@@ -257,7 +256,7 @@ def build_deepseek_security_review_dispatch(
             provider_model=returned_model,
             attempt=attempt,
             extracted_object=diagnostics.extracted_object,
-            provider_fallbacks=allow_provider_fallbacks,
+            provider_fallbacks=False,
         )
         return result
 
@@ -276,17 +275,18 @@ def build_deepseek_security_review_dispatch(
                 packet,
                 retry_format=False,
                 attempt=1,
-                allow_provider_fallbacks=False,
             )
         except Exception as exc:
-            retryable = isinstance(exc, WorkerJsonError) or _provider_route_unavailable(exc)
+            # One transport-format retry is permitted, but JAYTEC never enables
+            # OpenRouter provider fallback here. A provider-route failure is a
+            # real dependency failure, not permission to silently switch routes.
+            retryable = isinstance(exc, WorkerJsonError)
             if max_retries < 1 or not retryable:
                 raise
             return _single(
                 packet,
                 retry_format=True,
                 attempt=2,
-                allow_provider_fallbacks=True,
             )
 
     return circuit.guard(_dispatch)
