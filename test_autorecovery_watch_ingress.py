@@ -264,7 +264,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(gate["gate_id"], "G03")
         bad = master_gate_payload()
         bad["checkpoint_number"] = 104
-        with self.assertRaisesRegex(WatchIngressError, "CHECKPOINT_MISMATCH"):
+        with self.assertRaisesRegex(WatchIngressError, "CHECKPOINT_NUMBER_INVALID"):
             _master_gate_context(bad, checkpoint)
 
     def test_broker_context_digest_and_secret_fields_fail_closed(self):
@@ -387,7 +387,8 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(result["assignment"]["fencing_token"], 9)
         self.assertEqual(result["assignment"]["recovery_attempts"], 0)
         self.assertEqual(result["assignment"]["stop_reason"], "RUNNING")
-        self.assertEqual(runtime.handoffs, [])
+        self.assertEqual(len(runtime.handoffs), 1)
+        self.assertIn("master-gate:G03:", runtime.handoffs[0][1]["handoff_id"])
         self.assertEqual(store.stops, [])
 
     def test_post_handoff_new_success_terminal_uses_canonical_terminal_policy(self):
@@ -426,12 +427,15 @@ class WatchIngressPolicyTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["github_broker"], "WORKER_TERMINAL_ADVANCED")
-        self.assertEqual(result["decision"]["action"], "STOP_WATCH")
-        self.assertEqual(result["assignment"]["stop_reason"], "COMPLETED")
-        self.assertTrue(result["assignment"]["completed"])
+        self.assertEqual(result["decision"]["action"], "HOLD")
+        self.assertEqual(result["decision"]["reason"], "MASTER_GATE_RESULT_READY")
+        self.assertEqual(result["assignment"]["stop_reason"], "WAITING_FOR_DEPENDENCY")
+        self.assertFalse(result["assignment"]["completed"])
         self.assertEqual(result["assignment"]["worker_id"], "worker-existing")
         self.assertEqual(result["assignment"]["fencing_token"], 9)
-        self.assertEqual(runtime.handoffs, [])
+        self.assertEqual(len(runtime.handoffs), 1)
+        self.assertIn("master-gate:G03:", runtime.handoffs[0][1]["handoff_id"])
+        self.assertEqual(result["gate_result"]["status"], "SUCCESS")
 
 
 
