@@ -90,6 +90,25 @@ def master_gate_payload():
     }
 
 
+def expected_gate_receipt(fence=9):
+    return (
+        FORGE_TASK_ID
+        + f":fence:{fence}:master-gate:G03:"
+        + ("c" * 16)
+    )
+
+
+def gate_receipt_evidence(fence=9):
+    return {
+        "kind": "jaytec_master_gate_result",
+        "source": "JAYTEC_MASTER_GATE_HANDOFF",
+        "reference": expected_gate_receipt(fence),
+        "observed_at": "2026-09-21T05:45:00Z",
+        "claim": "Result was produced after the exact G03 handoff.",
+        "supports": ["instruction_match_verified"],
+    }
+
+
 def cycle_payload(refs, *, include_broker=True):
     checkpoint = broker_checkpoint().to_dict()
     if checkpoint["branch"] not in refs:
@@ -229,7 +248,17 @@ class FakeSuccessBrokerRuntime(FakeBrokerRuntime):
             "result": {
                 "status": "SUCCESS",
                 "summary": "Handoff work completed.",
+                "evidence": [gate_receipt_evidence()],
+                "changes_made": [],
+                "unresolved_items": [],
                 "specialist_requests": [],
+                "verification": {
+                    "instruction_match_verified": True,
+                    "scope_verified": True,
+                    "evidence_verified": True,
+                    "no_unauthorized_side_effects": True,
+                    "duplicate_work_check_passed": True,
+                },
             },
         }
 
@@ -390,6 +419,59 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(runtime.handoffs, [])
         self.assertEqual(result["gate_handoff"], "NOT_NEEDED")
         self.assertEqual(store.stops, [])
+
+    def test_stale_success_without_exact_gate_receipt_cannot_complete_gate(self):
+        class StaleSuccessRuntime(FakeSuccessBrokerRuntime):
+            def task_status_readonly(self, worker_id):
+                value = super().task_status_readonly(worker_id)
+                value["result"]["evidence"] = []
+                return value
+
+            def task_status(self, worker_id):
+                return self.task_status_readonly(worker_id)
+
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        store = FakeBrokerStore()
+        store.state = AssignmentState(
+            **{
+                **store.state.__dict__,
+                "stop_reason": StopReason.RUNNING,
+                "last_error": None,
+                "progress_marker": "MANUS_PENDING",
+            }
+        )
+        runtime = StaleSuccessRuntime()
+        active = SimpleNamespace(
+            active=True,
+            callable_worker_routes=("jaytec-manus-lite-v1",),
+            to_dict=lambda: {},
+        )
+        with (
+            patch(
+                "autorecovery_watch_ingress.prepare_schema_if_authorized",
+                return_value={"status": "PASS", "schema_present": True},
+            ),
+            patch("autorecovery_watch_ingress.runtime_status", return_value=active),
+            patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
+        ):
+            result = execute_watch_cycle(
+                cycle_payload(refs),
+                database_url="postgresql://unused",
+                manus_runtime=runtime,
+                registry=object(),
+                runtime_components_registered=True,
+                env={},
+            )
+        self.assertEqual(result["status"], "PASS")
+        self.assertNotEqual(
+            result["decision"].get("reason"),
+            "MASTER_GATE_RESULT_READY",
+        )
+        self.assertFalse(result["assignment"]["completed"])
+        self.assertIn(
+            result["assignment"]["progress_marker"],
+            {"MANUS_PENDING_GATE_RECEIPT", "MANUS_PENDING"},
+        )
 
     def test_post_handoff_new_success_terminal_uses_canonical_terminal_policy(self):
         refs = {"security/root-owner-control-v1": "b" * 40}
