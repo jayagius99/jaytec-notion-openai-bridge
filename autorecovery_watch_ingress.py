@@ -68,6 +68,17 @@ ASSIGNMENT_OWNER_DIRECTIVE_FIELDS = frozenset({
 # provider-status failure cannot consume a recovery fence/attempt.
 WATCH_HEARTBEAT_TIMEOUT_SECONDS = 35 * 60
 WATCH_HEALTH_REFRESH_TIMEOUT_SECONDS = 30
+
+# One-time compatibility bridge from the original canonical Forge assignment
+# checkpoint namespace into the evidence-gated master-gate namespace. This is
+# deliberately exact-state scoped; every other checkpoint gap still fails closed.
+LEGACY_FORGE_CHECKPOINT_NUMBER = 1
+LEGACY_FORGE_PHASE = "pre-activation software convergence and evidence hardening"
+LEGACY_FORGE_OBJECTIVE_PREFIX = (
+    "Continue Forge/Genesis preparation from the exact saved state."
+)
+FIRST_MASTER_GATE_ID = "G03"
+FIRST_MASTER_GATE_CHECKPOINT = 103
 BROKER_READ_OPERATIONS = frozenset({
     "read_file",
     "list_path",
@@ -188,6 +199,55 @@ def _master_gate_context(
         "checkpoint_number": number,
         "instruction": checkpoint.next_intended_action,
     }
+
+
+def _legacy_master_gate_namespace_migration_allowed(
+    state: Any,
+    incoming_checkpoint: AssignmentCheckpoint,
+    master_gate: Mapping[str, Any],
+) -> bool:
+    """Allow exactly the historical checkpoint-1 -> G03/103 namespace migration."""
+
+    current = state.checkpoint
+    if current.checkpoint_number != LEGACY_FORGE_CHECKPOINT_NUMBER:
+        return False
+    if incoming_checkpoint.checkpoint_number != FIRST_MASTER_GATE_CHECKPOINT:
+        return False
+    if str(master_gate.get("gate_id") or "") != FIRST_MASTER_GATE_ID:
+        return False
+    if int(master_gate.get("checkpoint_number") or 0) != FIRST_MASTER_GATE_CHECKPOINT:
+        return False
+    if tuple(master_gate.get("depends_on") or ()) != ("G02",):
+        return False
+    if current.current_phase != LEGACY_FORGE_PHASE:
+        return False
+    if not current.objective.startswith(LEGACY_FORGE_OBJECTIVE_PREFIX):
+        return False
+    if incoming_checkpoint.repo != current.repo:
+        return False
+    if incoming_checkpoint.branch != current.branch:
+        return False
+    if incoming_checkpoint.open_pr != current.open_pr:
+        return False
+    if state.worker_kind is not WorkerKind.JAYTEC_CALLABLE:
+        return False
+    if state.worker_route not in {None, CALLABLE_ROUTE_ID}:
+        return False
+    if not str(state.worker_id or "").strip():
+        return False
+    if type(state.fencing_token) is not int or state.fencing_token < 1:
+        return False
+    if state.recovery_attempts != 0:
+        return False
+    if state.completed:
+        return False
+    if state.stop_reason is not StopReason.RUNNING:
+        return False
+    if str(state.progress_marker or "") != "MANUS_PENDING":
+        return False
+    if state.lease_owner is not None:
+        return False
+    return True
 
 
 def _assignment_owner_directive(
@@ -742,13 +802,21 @@ def execute_watch_cycle(
             "reason": "MASTER_GATE_CHECKPOINT_ROLLBACK_FORBIDDEN",
         }
     if incoming_checkpoint_number > current_checkpoint_number:
-        if incoming_checkpoint_number != current_checkpoint_number + 1:
+        namespace_migration = _legacy_master_gate_namespace_migration_allowed(
+            state,
+            incoming_checkpoint,
+            master_gate,
+        )
+        if (
+            incoming_checkpoint_number != current_checkpoint_number + 1
+            and not namespace_migration
+        ):
             return {
                 "status": "BLOCKED_FAIL_CLOSED",
                 "task_id": task_id,
                 "reason": "MASTER_GATE_CHECKPOINT_GAP_FORBIDDEN",
             }
-        if not _gate_result_ready_state(state):
+        if not namespace_migration and not _gate_result_ready_state(state):
             return {
                 "status": "BLOCKED_FAIL_CLOSED",
                 "task_id": task_id,
@@ -761,12 +829,17 @@ def execute_watch_cycle(
         state = store.get(task_id)
         assert state is not None
         if state.worker_id:
+            progress_marker = (
+                "MASTER_GATE_NAMESPACE_MIGRATED:"
+                if namespace_migration
+                else "MASTER_GATE_ADVANCED:"
+            )
             store.heartbeat(
                 task_id,
                 fencing_token=state.fencing_token,
                 worker_id=state.worker_id,
                 progress_marker=(
-                    "MASTER_GATE_ADVANCED:"
+                    progress_marker
                     + str(master_gate.get("gate_id") or "UNKNOWN")
                     + ":"
                     + str(incoming_checkpoint_number)
