@@ -62,8 +62,9 @@ The default WATCH/Manus model-assistance trio is:
 - Nemo — secondary engineering/reasoning.
 
 DeepSeek and Nemo are configured for exact free-only routes in the no-spend
-WATCH lane. Global/legacy OpenRouter routing remains separately locked unless
-explicitly authorized.
+WATCH lane. Their explicit provider mode is ACTIVE_FREE_ONLY, which is valid
+only when the exact model identifier ends in `:free`. Global/legacy OpenRouter
+routing remains separately locked unless explicitly authorized.
 
 SOL uses the exact gpt-5.6-sol route and remains subject to current provider-door
 and spend policy. If the provider door is not authorized, WATCH must fail closed
