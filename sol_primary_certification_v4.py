@@ -6,6 +6,7 @@ from pathlib import Path
 
 import orchestration
 import specialist_adapters
+import watch_specialist_broker
 
 
 def require(ok: bool, name: str) -> None:
@@ -106,8 +107,17 @@ def main() -> None:
     require("SOL_MEMORY_MANIFEST_PATH" in source, "github_memory_loader")
     require("ALLOWED_MANUS_MODEL_SPECIALISTS" in broker, "manus_specialist_broker")
     require(
-        '"sol"' in broker and '"deepseek"' in broker and '"nemo"' in broker,
-        "watch_trio",
+        watch_specialist_broker.ALLOWED_MANUS_MODEL_SPECIALISTS
+        == frozenset({"deepseek", "nemo"}),
+        "manus_routine_pair",
+    )
+    require(
+        watch_specialist_broker.CORE_TRIAD_EMERGENCY_TARGET == "core_triad",
+        "core_triad_emergency_target",
+    )
+    require(
+        "sol" not in watch_specialist_broker.ALLOWED_MANUS_MODEL_SPECIALISTS,
+        "sol_not_routine_manus_specialist",
     )
 
     digest = hashlib.sha256(context.encode("utf-8")).hexdigest()

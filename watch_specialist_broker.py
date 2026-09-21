@@ -17,7 +17,9 @@ from manus_governance import validate_specialist_request
 
 SCHEMA_VERSION = "JAYTEC_MANUS_SPECIALIST_BROKER_V1"
 RESULT_SCHEMA_VERSION = "JAYTEC_MANUS_SPECIALIST_RESULTS_V1"
-ALLOWED_MANUS_MODEL_SPECIALISTS = frozenset({"sol", "deepseek", "nemo"})
+ALLOWED_MANUS_MODEL_SPECIALISTS = frozenset({"deepseek", "nemo"})
+CORE_TRIAD_EMERGENCY_TARGET = "core_triad"
+ALLOWED_MANUS_HELP_TARGETS = ALLOWED_MANUS_MODEL_SPECIALISTS | frozenset({CORE_TRIAD_EMERGENCY_TARGET})
 MAX_MODEL_REQUESTS = 3
 MAX_RAW_RESULT_BYTES = 64_000
 MAX_COMPACT_RESULT_BYTES = 1400
@@ -98,8 +100,17 @@ def normalize_manus_model_request(
     """Validate one Manus SPECIALIST_REQUEST without granting dispatch authority."""
     validate_specialist_request(value)
     specialist = str(value.get("specialist") or "").strip().casefold()
-    if specialist not in ALLOWED_MANUS_MODEL_SPECIALISTS:
+    if specialist not in ALLOWED_MANUS_HELP_TARGETS:
         raise SpecialistBrokerError("SPECIALIST_NOT_ALLOWLISTED:" + specialist)
+
+    context = value.get("required_context")
+    if not isinstance(context, Mapping):
+        raise SpecialistBrokerError("SPECIALIST_REQUEST_CONTEXT_INVALID")
+    if (
+        specialist == CORE_TRIAD_EMERGENCY_TARGET
+        and context.get("emergency") is not True
+    ):
+        raise SpecialistBrokerError("CORE_TRIAD_EMERGENCY_FLAG_REQUIRED")
 
     parent_task_id = str(value.get("parent_task_id") or "").strip()
     if not parent_task_id.startswith(parent_task_prefix):
@@ -119,6 +130,11 @@ def normalize_manus_model_request(
         "reason": str(value["reason"]).strip(),
         "required_context": dict(value.get("required_context") or {}),
         "packet_sha256": str(value["packet_sha256"]).lower(),
+        "request_kind": (
+            "core_triad_emergency"
+            if specialist == CORE_TRIAD_EMERGENCY_TARGET
+            else "model_specialist"
+        ),
     }
 
 
@@ -216,8 +232,46 @@ def dispatch_manus_model_requests(
     results: list[dict[str, Any]] = []
     for request in requests:
         specialist = str(request.get("specialist") or "").casefold()
-        if specialist not in ALLOWED_MANUS_MODEL_SPECIALISTS:
+        if specialist not in ALLOWED_MANUS_HELP_TARGETS:
             raise SpecialistBrokerError("SPECIALIST_NOT_ALLOWLISTED:" + specialist)
+
+        if specialist == CORE_TRIAD_EMERGENCY_TARGET:
+            context = request.get("required_context")
+            if (
+                request.get("request_kind") != "core_triad_emergency"
+                or not isinstance(context, Mapping)
+                or context.get("emergency") is not True
+            ):
+                raise SpecialistBrokerError("CORE_TRIAD_EMERGENCY_FLAG_REQUIRED")
+            emergency_result = {
+                "status": "NEEDS_JAYTEC_CORE_TRIAD",
+                "model": None,
+                "findings": [],
+                "evidence": [],
+                "unresolved_items": [
+                    "Emergency request must be handled by JAYTEC/Core Triad; "
+                    "Manus has no direct Core Triad access."
+                ],
+                "confidence": "n/a",
+                "conclusion": "JAYTEC Core Triad emergency escalation required.",
+                "side_effects_attempted": [],
+                "requested_operations": [],
+            }
+            raw_encoded = _canonical(emergency_result)
+            raw_digest = hashlib.sha256(raw_encoded).hexdigest()
+            compact = _compact_result(emergency_result, raw_digest)
+            results.append(
+                {
+                    "request_id": str(request["request_id"]),
+                    "specialist": specialist,
+                    "status": "NEEDS_JAYTEC_CORE_TRIAD",
+                    "model": None,
+                    "result": compact,
+                    "result_sha256": raw_digest,
+                }
+            )
+            continue
+
         dispatcher = dispatchers.get(specialist)
         if dispatcher is None:
             raise SpecialistBrokerError("SPECIALIST_DISPATCHER_UNAVAILABLE:" + specialist)

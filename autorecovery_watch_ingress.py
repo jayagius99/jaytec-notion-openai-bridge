@@ -22,6 +22,7 @@ from autorecovery_runtime import runtime_status, schema_probe
 from manus_governance import validate_specialist_request
 from watch_specialist_broker import (
     ALLOWED_MANUS_MODEL_SPECIALISTS,
+    CORE_TRIAD_EMERGENCY_TARGET,
     SpecialistBrokerError,
     normalize_manus_model_request,
     safe_result_summary,
@@ -754,7 +755,10 @@ def _split_help_requests(
             )
             github_requests.append(normalized)
             rid = str(normalized["request_id"])
-        elif specialist in ALLOWED_MANUS_MODEL_SPECIALISTS:
+        elif (
+            specialist in ALLOWED_MANUS_MODEL_SPECIALISTS
+            or specialist == CORE_TRIAD_EMERGENCY_TARGET
+        ):
             try:
                 normalized_model = normalize_manus_model_request(
                     decoded,
@@ -1487,6 +1491,57 @@ def execute_watch_cycle(
                 "request_results": [],
                 "sha256": hashlib.sha256(b"{}").hexdigest(),
             }
+
+            # Core Triad is an emergency escalation, not another model specialist.
+            # Surface it immediately through JAYTEC and do not spend time/provider
+            # calls on routine specialists in the same cycle.
+            emergency_requests = [
+                req
+                for req in model_requests
+                if str(req.get("request_kind") or "") == "core_triad_emergency"
+            ]
+            if emergency_requests:
+                final = store.get(task_id)
+                return {
+                    "status": "PASS",
+                    "task_id": task_id,
+                    "bootstrapped": bootstrapped,
+                    "health_refreshed": False,
+                    "github_broker": "NONE",
+                    "core_triad_emergency_requests": [
+                        {
+                            "request_id": str(req.get("request_id") or ""),
+                            "objective": str(req.get("objective") or ""),
+                            "reason": str(req.get("reason") or ""),
+                        }
+                        for req in emergency_requests
+                    ],
+                    "decision": {
+                        "action": "HOLD",
+                        "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
+                        "reason": "JAYTEC_CORE_TRIAD_EMERGENCY_REQUIRED",
+                        "recovery_route": None,
+                    },
+                    "assignment": {
+                        "stop_reason": final.stop_reason.value if final else None,
+                        "worker_kind": final.worker_kind.value if final else None,
+                        "worker_id": final.worker_id if final else None,
+                        "worker_route": final.worker_route if final else None,
+                        "checkpoint_number": (
+                            final.checkpoint.checkpoint_number if final else None
+                        ),
+                        "repo": final.checkpoint.repo if final else None,
+                        "branch": final.checkpoint.branch if final else None,
+                        "verified_head": (
+                            final.checkpoint.commit_head if final else None
+                        ),
+                        "recovery_attempts": final.recovery_attempts if final else None,
+                        "fencing_token": final.fencing_token if final else None,
+                        "progress_marker": final.progress_marker if final else None,
+                        "completed": final.completed if final else None,
+                    },
+                }
+
             if model_requests:
                 if specialist_runner is None:
                     return {

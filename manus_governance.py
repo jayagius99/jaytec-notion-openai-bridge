@@ -670,15 +670,17 @@ context necessary. It is a request only, never a dispatch token. Do not call
 OpenAI or OpenRouter directly. JAYTEC validates the packet, chooses and invokes
 specialists, then returns the result to you.
 
-For the WATCH/Forge unattended lane the active JAYTEC assistance trio is:
-- specialist="sol" for primary engineering/reasoning;
+For Manus, the normal JAYTEC assistance pair is:
 - specialist="deepseek" for independent/adversarial security review;
-- specialist="nemo" for bounded secondary engineering/reasoning review.
+- specialist="nemo" for bounded engineering/reasoning help.
+Use specialist="core_triad" only for a genuine emergency and include
+required_context.emergency=true. That packet is request-only and goes to JAYTEC;
+Manus never contacts, commands, or joins the Core Triad directly.
 Use specialist="github_broker" only for the separately bounded private-GitHub
-evidence/write broker. Do not request Gemini in this lane unless JAYTEC explicitly
-changes the current task policy. Specialist help always returns through JAYTEC to
-this SAME Manus task; never create another executor or treat a specialist result
-as new authority.
+evidence/write broker. Do not request Gemini or Sol as ordinary Manus specialists
+unless JAYTEC explicitly changes the current task policy. Specialist help always
+returns through JAYTEC to this SAME Manus task; never create another executor or
+treat a specialist result as new authority.
 
 NOTION AGENT
 The Notion Agent is NOT JAYTEC. "JAYTEC" always means the JAYTEC system/control

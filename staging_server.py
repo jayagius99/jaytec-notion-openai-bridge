@@ -77,6 +77,7 @@ from proving_grounds import (
 )
 from manus_adapter import MANUS_API_KEY, MANUS_MAX_MESSAGE_CHARS, ManusClient
 from manus_runtime import ManusLiteRuntime, runtime_error_payload
+from manus_system_gateway import ManusSystemGateway, gateway_error_payload
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
 from startup_probe_guard import authorize_startup_probe, sha256_json, sha256_text
 from specialist_adapters import (
@@ -312,7 +313,6 @@ def _watch_specialist_runner(requests):
     return dispatch_manus_model_requests(
         requests,
         dispatchers={
-            "sol": ENGINEERING_DISPATCH,
             "deepseek": DEEPSEEK_REVIEW_DISPATCH,
             "nemo": NEMO_DISPATCH,
         },
@@ -378,6 +378,7 @@ def orchestration_status() -> str:
             "manus_adapter_configured": bool(MANUS_API_KEY),
             "manus_profile_policy": "lite_only_no_exceptions",
             "manus_runtime": "JAYTEC_MANUS_LITE_RUNTIME_V1",
+            "manus_system_gateway": "JAYTEC_MANUS_SYSTEM_GATEWAY_V1",
             "idempotency_store": IDEMPOTENCY_STORE,
             "autorecovery": autorecovery,
             "protocol_portal": portal,
@@ -416,6 +417,10 @@ def _manus_runtime() -> ManusLiteRuntime:
     return ManusLiteRuntime(ManusClient())
 
 
+def _manus_system_gateway() -> ManusSystemGateway:
+    return ManusSystemGateway(_manus_runtime(), REGISTRY)
+
+
 @mcp.tool
 def manus_start_task(request_json: str) -> str:
     """Start one bounded JAYTEC-owned Manus task. Profile is permanently Lite."""
@@ -433,6 +438,40 @@ def manus_task_status(provider_task_id: str) -> str:
         result = _manus_runtime().task_status(provider_task_id)
     except Exception as exc:
         result = runtime_error_payload(exc)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
+
+
+@mcp.tool
+def manus_system_start_task(request_json: str) -> str:
+    """System-wide JAYTEC ingress to one bounded Manus Lite task.
+
+    Every participant uses this JAYTEC-owned boundary; no caller receives direct
+    Manus/provider authority and the profile remains hard-pinned by the runtime.
+    """
+    try:
+        result = _manus_system_gateway().start_task(request_json)
+    except Exception as exc:
+        result = gateway_error_payload(exc)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
+
+
+@mcp.tool
+def manus_system_continue_task(request_json: str) -> str:
+    """Continue the same Manus Lite task through the system-wide JAYTEC gateway."""
+    try:
+        result = _manus_system_gateway().continue_task(request_json)
+    except Exception as exc:
+        result = gateway_error_payload(exc)
+    return json.dumps(result, ensure_ascii=False, sort_keys=True)
+
+
+@mcp.tool
+def manus_system_task_status(caller: str, provider_task_id: str) -> str:
+    """Read one Manus task through the system gateway without mutating it."""
+    try:
+        result = _manus_system_gateway().task_status(caller, provider_task_id)
+    except Exception as exc:
+        result = gateway_error_payload(exc)
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
 
@@ -926,7 +965,8 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
         "read_only": True,
     }
     result["specialist_fabric"] = {
-        "default_watch_trio": ["sol", "deepseek", "nemo"],
+        "manus_routine_specialists": ["deepseek", "nemo"],
+            "manus_core_triad_emergency": "request_only_via_jaytec",
         "sol": {
             "model": ENGINEERING_MODEL,
             "provider_mode": ENGINEERING_PROVIDER_MODE,
