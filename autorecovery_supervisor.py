@@ -848,6 +848,109 @@ class PostgresAssignmentStore:
                     ),
                 )
 
+    def mark_local_preflight_rejection(
+        self,
+        lease: RecoveryLease,
+        *,
+        detail: str,
+        now: Optional[datetime] = None,
+    ) -> None:
+        """Record a deterministic local rejection without spending recovery budget.
+
+        The fence remains monotonic. Only the attempt counter is refunded, because
+        no provider worker was created or contacted by this preflight failure.
+        """
+        if detail != "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE":
+            raise AutoRecoveryError("LOCAL_PREFLIGHT_REFUND_DETAIL_INVALID")
+        current = _aware(now or utcnow())
+        assert current is not None
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_lock_id(lease.task_id),))
+                row = self._require_token(cur, lease.task_id, lease.fencing_token)
+                if row.get("lease_owner") != lease.lease_owner:
+                    raise AutoRecoveryError("LEASE_OWNER_MISMATCH")
+                attempts = int(row.get("recovery_attempts") or 0)
+                if attempts != lease.attempt_number or attempts < 1:
+                    raise AutoRecoveryError("LOCAL_PREFLIGHT_REFUND_ATTEMPT_MISMATCH")
+                cur.execute(
+                    """
+                    UPDATE jaytec_assignment_state
+                    SET recovery_attempts = %s,
+                        stop_reason = %s,
+                        completed = FALSE,
+                        last_error = %s,
+                        updated_at = %s
+                    WHERE task_id = %s
+                    """,
+                    (
+                        attempts - 1,
+                        StopReason.TRANSIENT_PROVIDER_FAILURE.value,
+                        (
+                            "RECOVERY_INVOCATION_REJECTED:"
+                            + detail
+                            + ":ATTEMPT_NOT_CONSUMED"
+                        )[:2000],
+                        current,
+                        lease.task_id,
+                    ),
+                )
+
+    def reconcile_exhausted_local_preflight(
+        self,
+        task_id: str,
+        *,
+        expected_fencing_token: int,
+        expected_recovery_attempts: int,
+        expected_error: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """One-way exact-state repair for a previously miscounted local preflight."""
+        if expected_recovery_attempts < 1:
+            raise AutoRecoveryError("LOCAL_PREFLIGHT_RECONCILE_ATTEMPTS_INVALID")
+        current = _aware(now or utcnow())
+        assert current is not None
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(%s)", (_lock_id(task_id),))
+                cur.execute(
+                    "SELECT * FROM jaytec_assignment_state WHERE task_id = %s FOR UPDATE",
+                    (task_id,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return False
+                if (
+                    int(row.get("fencing_token") or 0) != expected_fencing_token
+                    or int(row.get("recovery_attempts") or 0) != expected_recovery_attempts
+                    or str(row.get("stop_reason") or "") != StopReason.RECOVERY_EXHAUSTED.value
+                    or str(row.get("last_error") or "") != expected_error
+                    or row.get("lease_owner") is not None
+                ):
+                    return False
+                cur.execute(
+                    """
+                    UPDATE jaytec_assignment_state
+                    SET recovery_attempts = %s,
+                        stop_reason = %s,
+                        completed = FALSE,
+                        last_error = %s,
+                        updated_at = %s
+                    WHERE task_id = %s
+                    """,
+                    (
+                        expected_recovery_attempts - 1,
+                        StopReason.TRANSIENT_PROVIDER_FAILURE.value,
+                        (
+                            "LOCAL_PREFLIGHT_ATTEMPT_REFUNDED:"
+                            + expected_error
+                        )[:2000],
+                        current,
+                        task_id,
+                    ),
+                )
+                return True
+
     def release_lease(
         self,
         lease: RecoveryLease,
@@ -1008,6 +1111,79 @@ class MemoryAssignmentStore:
                 "updated_at": current,
             }
         )
+
+    def mark_local_preflight_rejection(
+        self,
+        lease: RecoveryLease,
+        *,
+        detail: str,
+        now: Optional[datetime] = None,
+    ) -> None:
+        if detail != "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE":
+            raise AutoRecoveryError("LOCAL_PREFLIGHT_REFUND_DETAIL_INVALID")
+        current = _aware(now or utcnow())
+        assert current is not None
+        state = self.state
+        if lease.fencing_token != state.fencing_token:
+            raise AutoRecoveryError("STALE_FENCING_TOKEN")
+        if lease.lease_owner != state.lease_owner:
+            raise AutoRecoveryError("LEASE_OWNER_MISMATCH")
+        if state.recovery_attempts != lease.attempt_number or state.recovery_attempts < 1:
+            raise AutoRecoveryError("LOCAL_PREFLIGHT_REFUND_ATTEMPT_MISMATCH")
+        self.state = AssignmentState(
+            **{
+                **asdict(state),
+                "checkpoint": state.checkpoint,
+                "stop_reason": StopReason.TRANSIENT_PROVIDER_FAILURE,
+                "worker_kind": state.worker_kind,
+                "recovery_attempts": state.recovery_attempts - 1,
+                "completed": False,
+                "last_error": (
+                    "RECOVERY_INVOCATION_REJECTED:"
+                    + detail
+                    + ":ATTEMPT_NOT_CONSUMED"
+                ),
+                "updated_at": current,
+            }
+        )
+
+    def reconcile_exhausted_local_preflight(
+        self,
+        task_id: str,
+        *,
+        expected_fencing_token: int,
+        expected_recovery_attempts: int,
+        expected_error: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        if expected_recovery_attempts < 1:
+            raise AutoRecoveryError("LOCAL_PREFLIGHT_RECONCILE_ATTEMPTS_INVALID")
+        current = _aware(now or utcnow())
+        assert current is not None
+        state = self.state
+        if state.task_id != task_id:
+            return False
+        if (
+            state.fencing_token != expected_fencing_token
+            or state.recovery_attempts != expected_recovery_attempts
+            or state.stop_reason is not StopReason.RECOVERY_EXHAUSTED
+            or str(state.last_error or "") != expected_error
+            or state.lease_owner is not None
+        ):
+            return False
+        self.state = AssignmentState(
+            **{
+                **asdict(state),
+                "checkpoint": state.checkpoint,
+                "stop_reason": StopReason.TRANSIENT_PROVIDER_FAILURE,
+                "worker_kind": state.worker_kind,
+                "recovery_attempts": expected_recovery_attempts - 1,
+                "completed": False,
+                "last_error": "LOCAL_PREFLIGHT_ATTEMPT_REFUNDED:" + expected_error,
+                "updated_at": current,
+            }
+        )
+        return True
 
     def release_lease(self, lease: RecoveryLease, *, now: Optional[datetime] = None) -> None:
         current = _aware(now or utcnow())
@@ -1323,6 +1499,22 @@ class AutoRecoverySupervisor:
                     detail="INVOKER_EXCEPTION:" + type(exc).__name__,
                 )
             if not invocation.accepted:
+                if invocation.detail == "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE":
+                    # This is a deterministic local size gate. No provider task was
+                    # created, so spending one of the bounded provider-recovery
+                    # attempts is incorrect. Keep the new fence (monotonic stale-
+                    # worker protection) but refund the attempt counter.
+                    self.store.mark_local_preflight_rejection(
+                        lease,
+                        detail=invocation.detail,
+                        now=current,
+                    )
+                    return RecoveryDecision(
+                        SupervisorAction.RECOVERY_FAILED,
+                        StopReason.TRANSIENT_PROVIDER_FAILURE,
+                        "RECOVERY_LOCAL_PREFLIGHT_REJECTED_ATTEMPT_NOT_CONSUMED",
+                        recovery_route=route,
+                    )
                 stop_reason = (
                     StopReason.RECOVERY_EXHAUSTED
                     if lease.attempt_number >= self.max_recovery_attempts

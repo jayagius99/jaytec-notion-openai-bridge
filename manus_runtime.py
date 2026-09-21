@@ -518,14 +518,16 @@ def _compact_watch_recovery_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
         if key in context
     }
     for key, limit in (
-        ("current_phase", 180),
-        ("last_safe_checkpoint", 220),
-        ("next_intended_action", 240),
+        ("current_phase", 160),
+        ("last_safe_checkpoint", 160),
+        ("next_intended_action", 180),
     ):
         if key in compact_context:
             compact_context[key] = str(compact_context[key])[:limit]
 
-    compact_context.setdefault("canonical_objective_excerpt", objective[:220])
+    compact_context["canonical_objective_excerpt"] = str(
+        compact_context.get("canonical_objective_excerpt") or objective
+    )[:160]
     broker = compact_context.get("jaytec_private_github_broker")
     if isinstance(broker, Mapping):
         compact_context["jaytec_private_github_broker"] = {
@@ -546,13 +548,18 @@ def _compact_watch_recovery_packet(packet: Mapping[str, Any]) -> dict[str, Any]:
 
     compact = dict(packet)
     compact["objective"] = (
-        "Continue FORGE-GENESIS-ACTIVATION-001 from the exact durable JAYTEC "
-        "checkpoint identified in required_context. Preserve completed work and "
-        "work only within the supplied allowed_actions, constraints, fencing "
-        "token, current phase and next intended action. Do not infer omitted "
-        "checkpoint prose; return NEEDS_JAYTEC if exact omitted detail is required."
+        "Continue FORGE-GENESIS-ACTIVATION-001 from the exact durable checkpoint. "
+        "Preserve completed work. Obey allowed_actions, constraints, fence, phase "
+        "and next action. If omitted detail is required, return NEEDS_JAYTEC; "
+        "never guess or expand scope."
     )
     compact["required_context"] = compact_context
+
+    # reference_ids only repeat repo/head and issue pointers already present in
+    # required_context + hard constraints. They are optional packet metadata, not
+    # authority. Removing them buys deterministic headroom without weakening any
+    # control or evidence requirement.
+    compact.pop("reference_ids", None)
 
     # The provider already enforces MANUS_RESULT_JSON_SCHEMA out-of-band on
     # create_task(). Repeating the full human-readable schema inside the prompt

@@ -79,6 +79,19 @@ LEGACY_FORGE_OBJECTIVE_PREFIX = (
 )
 FIRST_MASTER_GATE_ID = "G03"
 FIRST_MASTER_GATE_CHECKPOINT = 103
+
+# One-time exact-state repair for the live G03 recovery-budget accounting defect.
+# Attempts 1-3 all failed before a replacement provider worker was accepted; the
+# final failure was the deterministic local preflight ceiling. Keep fence 11
+# monotonic, refund exactly one miscounted attempt, then let the fixed runtime use
+# the legitimate third provider-recovery slot at fence 12.
+LOCAL_PREFLIGHT_REFUND_CHECKPOINT = 103
+LOCAL_PREFLIGHT_REFUND_FENCE = 11
+LOCAL_PREFLIGHT_REFUND_ATTEMPTS = 3
+LOCAL_PREFLIGHT_REFUND_ERROR = (
+    "RECOVERY_INVOCATION_REJECTED:MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE"
+)
+
 BROKER_READ_OPERATIONS = frozenset({
     "read_file",
     "list_path",
@@ -248,6 +261,54 @@ def _legacy_master_gate_namespace_migration_allowed(
     if state.lease_owner is not None:
         return False
     return True
+
+
+def _reconcile_known_local_preflight_exhaustion(
+    store: PostgresAssignmentStore,
+    state: Any,
+    incoming_checkpoint: AssignmentCheckpoint,
+    master_gate: Mapping[str, Any],
+) -> tuple[Any, bool]:
+    """Refund only the exact known G03 local-preflight miscount.
+
+    This is intentionally narrower than a generic retry reset: it cannot alter
+    the fence, worker, checkpoint, lease, authority, or any other task.
+    """
+    if (
+        state.checkpoint.checkpoint_number != LOCAL_PREFLIGHT_REFUND_CHECKPOINT
+        or incoming_checkpoint.checkpoint_number != LOCAL_PREFLIGHT_REFUND_CHECKPOINT
+        or str(master_gate.get("gate_id") or "") != FIRST_MASTER_GATE_ID
+        or state.fencing_token != LOCAL_PREFLIGHT_REFUND_FENCE
+        or state.recovery_attempts != LOCAL_PREFLIGHT_REFUND_ATTEMPTS
+        or state.stop_reason is not StopReason.RECOVERY_EXHAUSTED
+        or str(state.last_error or "") != LOCAL_PREFLIGHT_REFUND_ERROR
+        or state.lease_owner is not None
+        or state.worker_kind is not WorkerKind.JAYTEC_CALLABLE
+        or state.worker_route not in {None, CALLABLE_ROUTE_ID}
+        or not str(state.worker_id or "").strip()
+    ):
+        return state, False
+
+    repaired = store.reconcile_exhausted_local_preflight(
+        state.task_id,
+        expected_fencing_token=LOCAL_PREFLIGHT_REFUND_FENCE,
+        expected_recovery_attempts=LOCAL_PREFLIGHT_REFUND_ATTEMPTS,
+        expected_error=LOCAL_PREFLIGHT_REFUND_ERROR,
+    )
+    if not repaired:
+        return state, False
+    refreshed = store.get(state.task_id)
+    if refreshed is None:
+        raise WatchIngressError("LOCAL_PREFLIGHT_REFUND_STATE_MISSING")
+    if (
+        refreshed.fencing_token != LOCAL_PREFLIGHT_REFUND_FENCE
+        or refreshed.recovery_attempts != LOCAL_PREFLIGHT_REFUND_ATTEMPTS - 1
+        or refreshed.stop_reason is not StopReason.TRANSIENT_PROVIDER_FAILURE
+        or str(refreshed.worker_id or "") != str(state.worker_id or "")
+        or refreshed.checkpoint.checkpoint_number != state.checkpoint.checkpoint_number
+    ):
+        raise WatchIngressError("LOCAL_PREFLIGHT_REFUND_POSTCONDITION_FAILED")
+    return refreshed, True
 
 
 def _assignment_owner_directive(
@@ -871,6 +932,13 @@ def execute_watch_cycle(
             "detail": verified_detail,
         }
 
+    state, local_preflight_refunded = _reconcile_known_local_preflight_exhaustion(
+        store,
+        state,
+        incoming_checkpoint,
+        master_gate,
+    )
+
     invoker = ManusLiteRecoveryInvoker(
         manus_runtime,
         registry,
@@ -1363,6 +1431,7 @@ def execute_watch_cycle(
         "gate_handoff": gate_handoff,
         "health_refreshed": refreshed,
         "github_broker": github_broker,
+        "local_preflight_refunded": local_preflight_refunded,
         "decision": _decision_dict(decision),
         "assignment": {
             "stop_reason": final.stop_reason.value if final else None,

@@ -12,12 +12,14 @@ from autorecovery_watch_ingress import (
     _broker_context,
     _master_gate_context,
     _observed_refs,
+    _reconcile_known_local_preflight_exhaustion,
     execute_watch_cycle,
 )
 from manus_governance import specialist_request
 from autorecovery_supervisor import (
     AssignmentCheckpoint,
     AssignmentState,
+    MemoryAssignmentStore,
     StopReason,
     WorkerKind,
 )
@@ -432,6 +434,97 @@ class WatchIngressPolicyTests(unittest.TestCase):
         ).hexdigest()
         with self.assertRaisesRegex(WatchIngressError, "SECRET_FIELD_FORBIDDEN"):
             _broker_context(secret_value, refs)
+
+    def test_exact_g03_exhausted_local_preflight_is_refunded_once(self):
+        cp = broker_checkpoint()
+        st = AssignmentState(
+            task_id=FORGE_TASK_ID,
+            checkpoint=cp,
+            stop_reason=StopReason.RECOVERY_EXHAUSTED,
+            worker_kind=WorkerKind.JAYTEC_CALLABLE,
+            worker_id="HtTFgzhr8sXKbJmQWn2PEA",
+            worker_route="jaytec-manus-lite-v1",
+            last_heartbeat_at=None,
+            last_progress_at=None,
+            progress_marker="MANUS_PENDING",
+            recovery_attempts=3,
+            fencing_token=11,
+            lease_owner=None,
+            lease_expires_at=None,
+            completed=False,
+            last_error=(
+                "RECOVERY_INVOCATION_REJECTED:"
+                "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE"
+            ),
+            updated_at=datetime(2026, 9, 21, 10, 6, tzinfo=timezone.utc),
+        )
+        store = MemoryAssignmentStore(st)
+        repaired, refunded = _reconcile_known_local_preflight_exhaustion(
+            store,
+            store.get(FORGE_TASK_ID),
+            cp,
+            master_gate_payload(),
+        )
+        self.assertTrue(refunded)
+        self.assertEqual(repaired.recovery_attempts, 2)
+        self.assertEqual(repaired.fencing_token, 11)
+        self.assertEqual(repaired.stop_reason, StopReason.TRANSIENT_PROVIDER_FAILURE)
+        self.assertEqual(repaired.worker_id, "HtTFgzhr8sXKbJmQWn2PEA")
+        self.assertEqual(repaired.checkpoint.checkpoint_number, 103)
+
+        replayed, refunded_again = _reconcile_known_local_preflight_exhaustion(
+            store,
+            store.get(FORGE_TASK_ID),
+            cp,
+            master_gate_payload(),
+        )
+        self.assertFalse(refunded_again)
+        self.assertEqual(replayed.recovery_attempts, 2)
+        self.assertEqual(replayed.fencing_token, 11)
+
+    def test_local_preflight_refund_refuses_any_state_drift(self):
+        cp = broker_checkpoint()
+        base = AssignmentState(
+            task_id=FORGE_TASK_ID,
+            checkpoint=cp,
+            stop_reason=StopReason.RECOVERY_EXHAUSTED,
+            worker_kind=WorkerKind.JAYTEC_CALLABLE,
+            worker_id="HtTFgzhr8sXKbJmQWn2PEA",
+            worker_route="jaytec-manus-lite-v1",
+            last_heartbeat_at=None,
+            last_progress_at=None,
+            progress_marker="MANUS_PENDING",
+            recovery_attempts=3,
+            fencing_token=11,
+            lease_owner=None,
+            lease_expires_at=None,
+            completed=False,
+            last_error=(
+                "RECOVERY_INVOCATION_REJECTED:"
+                "MANUS_RECOVERY_PREFLIGHT_MESSAGE_TOO_LARGE"
+            ),
+            updated_at=datetime(2026, 9, 21, 10, 6, tzinfo=timezone.utc),
+        )
+        for field, value in (
+            ("fencing_token", 12),
+            ("recovery_attempts", 2),
+            ("last_error", "RECOVERY_INVOCATION_REJECTED:OTHER"),
+            ("worker_id", ""),
+            ("stop_reason", StopReason.TRANSIENT_PROVIDER_FAILURE),
+        ):
+            with self.subTest(field=field):
+                drifted = AssignmentState(**{**base.__dict__, field: value})
+                store = MemoryAssignmentStore(drifted)
+                observed, refunded = _reconcile_known_local_preflight_exhaustion(
+                    store,
+                    store.get(FORGE_TASK_ID),
+                    cp,
+                    master_gate_payload(),
+                )
+                self.assertFalse(refunded)
+                self.assertEqual(observed.fencing_token, drifted.fencing_token)
+                self.assertEqual(observed.recovery_attempts, drifted.recovery_attempts)
+                self.assertEqual(observed.stop_reason, drifted.stop_reason)
 
     def test_needs_jaytec_broker_handoff_keeps_same_worker_and_fence(self):
         refs = {"security/root-owner-control-v1": "b" * 40}
