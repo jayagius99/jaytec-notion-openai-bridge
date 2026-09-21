@@ -63,8 +63,8 @@ class StartupProviderSafetyTests(unittest.TestCase):
         self.assertIn('"ACTIVE_FREE_ONLY"', source)
         self.assertIn("WATCH_FREE_SPECIALISTS_CLIENT", source)
         self.assertIn(
-            'OPENROUTER_PROVIDER_MODE\n        value: LOCKED_RESERVE',
-            blueprint.replace("      - key: ", "").replace("      ", ""),
+            "- key: OPENROUTER_PROVIDER_MODE\n        value: LOCKED_RESERVE",
+            blueprint,
         )
         self.assertIn("value: deepseek/deepseek-v4-flash-0731:free", blueprint)
         self.assertIn("value: nvidia/nemotron-3-ultra-550b-a55b:free", blueprint)
