@@ -62,7 +62,12 @@ from deepseek_reviewer import (
 )
 from nemo_specialist import EXPECTED_NEMO_MODEL, build_nemo_dispatch
 from watch_specialist_broker import dispatch_manus_model_requests
-from watch_controller_advisor import WatchControllerAdvisorError, advise as watch_controller_advise, validate_request as validate_watch_controller_advice_request
+from watch_controller_advisor import (
+    FREE_CONTROLLER_MODE,
+    WatchControllerAdvisorError,
+    advise_free_quorum as watch_controller_advise_free_quorum,
+    validate_request as validate_watch_controller_advice_request,
+)
 from jaytec_read import build_jaytec_read_packet, enforce_orchestrated_read_report, enforce_read_report
 from jaytec_protocol_portal import PortalStore, safe_error as portal_safe_error
 from forge_cognition import ForgeMindStore, safe_error as forge_cognition_safe_error
@@ -368,6 +373,8 @@ def orchestration_status() -> str:
                 and NEMO_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
             ),
             "watch_free_specialists_client_configured": bool(WATCH_FREE_SPECIALISTS_CLIENT),
+            "watch_controller_advice_mode": FREE_CONTROLLER_MODE,
+            "watch_controller_advice_requires_paid_sol": False,
             "manus_adapter_configured": bool(MANUS_API_KEY),
             "manus_profile_policy": "lite_only_no_exceptions",
             "manus_runtime": "JAYTEC_MANUS_LITE_RUNTIME_V1",
@@ -617,7 +624,7 @@ async def jaytec_watch_cycle(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/jaytec/watch-controller-advice", methods=["POST"])
 async def jaytec_watch_controller_advice(request: Request) -> JSONResponse:
-    """OIDC-authenticated WATCH-only door for bounded SOL controller advice."""
+    """OIDC-authenticated WATCH-only door for bounded free-only controller advice."""
 
     auth_header = str(request.headers.get("authorization") or "")
     if not auth_header.startswith("Bearer "):
@@ -671,13 +678,19 @@ async def jaytec_watch_controller_advice(request: Request) -> JSONResponse:
 
     try:
         normalized = validate_watch_controller_advice_request(payload)
-        cache_key = "watch-controller-advice:" + normalized["request_sha256"]
+        cache_key = (
+            "watch-controller-advice:"
+            + FREE_CONTROLLER_MODE.lower()
+            + ":"
+            + normalized["request_sha256"]
+        )
         cached = REGISTRY.lookup(cache_key, normalized["request_sha256"])
         if cached is not None:
             return JSONResponse(cached, status_code=200)
-        result = watch_controller_advise(
+        result = watch_controller_advise_free_quorum(
             normalized,
-            engineering_dispatch=ENGINEERING_DISPATCH,
+            deepseek_dispatch=DEEPSEEK_REVIEW_DISPATCH,
+            nemo_dispatch=NEMO_DISPATCH,
         )
         if result.get("status") == "PASS":
             REGISTRY.store(

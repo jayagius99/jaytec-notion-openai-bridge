@@ -1,7 +1,8 @@
-"""Bounded SOL advisory path for JAYTEC WATCH controller decisions.
+"""Bounded JAYTEC advisory paths for WATCH controller decisions.
 
-SOL is consulted as a subordinate engineering/reasoning specialist. The result
-is advisory evidence only: it cannot grant assignment-owner, ROOT, spend,
+The preferred no-spend path is an explicit DeepSeek + Nemo free-only quorum.
+SOL remains a separately bounded reserve advisor. All outputs are advisory
+evidence only: no specialist can grant assignment-owner, ROOT, spend,
 credential, merge, deployment, or activation authority.
 """
 from __future__ import annotations
@@ -15,6 +16,9 @@ REQUEST_SCHEMA = "JAYTEC_WATCH_CONTROLLER_ADVICE_REQUEST_V1"
 RESULT_SCHEMA = "JAYTEC_WATCH_CONTROLLER_ADVICE_RESULT_V1"
 TASK_ID = "FORGE-GENESIS-ACTIVATION-001"
 EXPECTED_SOL_MODEL = "gpt-5.6-sol"
+EXPECTED_DEEPSEEK_MODEL = "deepseek/deepseek-v4-flash-0731:free"
+EXPECTED_NEMO_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+FREE_CONTROLLER_MODE = "FREE_QUORUM_V1"
 ALLOWED_DECISIONS = frozenset(
     {"APPROVE_CONTINUE", "REDIRECT", "REJECT_EVIDENCE", "ESCALATE_JAY"}
 )
@@ -232,6 +236,322 @@ def build_sol_packet(request: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+
+def build_free_packet(
+    request: Mapping[str, Any],
+    *,
+    specialist: str,
+) -> dict[str, Any]:
+    req = validate_request(request)
+    name = str(specialist or "").strip().casefold()
+    expected = {
+        "deepseek": EXPECTED_DEEPSEEK_MODEL,
+        "nemo": EXPECTED_NEMO_MODEL,
+    }
+    if name not in expected:
+        raise WatchControllerAdvisorError("FREE_SPECIALIST_INVALID")
+    return {
+        "task_id": req["task_id"],
+        "subtask_id": (
+            "watch-controller-" + name + ":" + req["request_sha256"][:16]
+        ),
+        "workflow_id": "JAYTEC_WATCH_FREE_CONTROLLER_ADVICE_V1",
+        "request": (
+            "Independently review the supplied JAYTEC gate evidence/controller "
+            "state. Preserve the exact worker/fence and return advisory evidence "
+            "only. Do not perform side effects or claim owner authority. "
+            "conclusion MUST be exactly an object with decision, direction, and "
+            "rationale. decision MUST be one of APPROVE_CONTINUE, REDIRECT, "
+            "REJECT_EVIDENCE, ESCALATE_JAY. APPROVE_CONTINUE is allowed only "
+            "when the supplied evidence is complete and internally consistent."
+        ),
+        "objective": (
+            "Provide bounded zero-spend " + name
+            + " controller advice for the current WATCH gate."
+        ),
+        "allowed_operations": [],
+        "max_retries": 0,
+        "required_context": {
+            "authority_controller": "CHATGPT_OPENAI_LEAD",
+            "specialist_authority": "SUBORDINATE",
+            "source": "JAYTEC_WATCH_CONTROLLER_ADVISOR_FREE",
+            "return_to": "WATCH_CONTROLLER",
+            "controller_review_mode": FREE_CONTROLLER_MODE,
+            "expected_model": expected[name],
+            "controller_request": req,
+        },
+    }
+
+
+def _validate_free_result(
+    raw: Mapping[str, Any],
+    req: Mapping[str, Any],
+    *,
+    expected_model: str,
+    label: str,
+) -> dict[str, Any]:
+    prefix = label.upper()
+    if raw.get("model") != expected_model:
+        raise WatchControllerAdvisorError(prefix + "_MODEL_MISMATCH")
+    if raw.get("side_effects_attempted") not in (None, []):
+        raise WatchControllerAdvisorError(prefix + "_SIDE_EFFECT_ATTEMPT")
+    if raw.get("requested_operations") not in (None, []):
+        raise WatchControllerAdvisorError(prefix + "_OPERATION_REQUEST_FORBIDDEN")
+    if raw.get("status") not in {"SUCCESS", "PARTIAL_SUCCESS", "NEEDS_VALIDATION"}:
+        raise WatchControllerAdvisorError(
+            prefix + "_STATUS_NOT_ACCEPTABLE:" + str(raw.get("status") or "")
+        )
+
+    conclusion = raw.get("conclusion")
+    if not isinstance(conclusion, Mapping):
+        raise WatchControllerAdvisorError(prefix + "_CONCLUSION_INVALID")
+    decision = str(conclusion.get("decision") or "").strip()
+    if decision not in ALLOWED_DECISIONS:
+        raise WatchControllerAdvisorError(prefix + "_DECISION_INVALID")
+    direction = _text(
+        conclusion.get("direction"),
+        prefix + "_DIRECTION",
+        maximum=1600,
+        required=(decision != "APPROVE_CONTINUE"),
+    )
+    rationale = _text(
+        conclusion.get("rationale"),
+        prefix + "_RATIONALE",
+        maximum=2200,
+    )
+
+    if (
+        req["jaytec_review_decision"] == "REPLAN_REQUIRED"
+        and decision == "APPROVE_CONTINUE"
+    ):
+        raise WatchControllerAdvisorError(prefix + "_CANNOT_BYPASS_REPLAN")
+    if req["unresolved_items"] and decision == "APPROVE_CONTINUE":
+        raise WatchControllerAdvisorError(prefix + "_CANNOT_APPROVE_UNRESOLVED")
+    candidate = req.get("candidate_next_gate") or {}
+    if (
+        isinstance(candidate, Mapping)
+        and candidate.get("owner_boundary") is True
+        and decision == "APPROVE_CONTINUE"
+    ):
+        raise WatchControllerAdvisorError(prefix + "_OWNER_BOUNDARY_BYPASS")
+
+    unresolved = (
+        raw.get("unresolved_items")
+        if isinstance(raw.get("unresolved_items"), list)
+        else []
+    )
+    diagnostics = raw.get("bridge_diagnostics")
+    if not isinstance(diagnostics, Mapping):
+        raise WatchControllerAdvisorError(prefix + "_PROVIDER_DIAGNOSTICS_REQUIRED")
+    if diagnostics.get("provider_model") != expected_model:
+        raise WatchControllerAdvisorError(prefix + "_PROVIDER_MODEL_MISMATCH")
+    if diagnostics.get("provider_fallbacks") is not False:
+        raise WatchControllerAdvisorError(prefix + "_PROVIDER_FALLBACK_FORBIDDEN")
+    if diagnostics.get("model_fallbacks") not in (None, False):
+        raise WatchControllerAdvisorError(prefix + "_MODEL_FALLBACK_FORBIDDEN")
+    if decision == "APPROVE_CONTINUE" and (
+        raw.get("status") != "SUCCESS" or unresolved
+    ):
+        raise WatchControllerAdvisorError(prefix + "_APPROVAL_REQUIRES_CLEAN_SUCCESS")
+
+    return {
+        "specialist": label,
+        "model": expected_model,
+        "status": raw.get("status"),
+        "decision": decision,
+        "direction": direction,
+        "rationale": rationale,
+        "findings": [
+            str(x)[:900]
+            for x in (
+                raw.get("findings")
+                if isinstance(raw.get("findings"), list)
+                else []
+            )[:MAX_LIST]
+        ],
+        "evidence": [
+            str(x)[:900]
+            for x in (
+                raw.get("evidence")
+                if isinstance(raw.get("evidence"), list)
+                else []
+            )[:MAX_LIST]
+        ],
+        "unresolved_items": [str(x)[:900] for x in unresolved[:MAX_LIST]],
+        "confidence": raw.get("confidence"),
+        "provider_diagnostics": dict(diagnostics),
+    }
+
+
+def _deterministic_free_advice(
+    req: Mapping[str, Any],
+    *,
+    decision: str,
+    direction: str,
+    rationale: str,
+) -> dict[str, Any]:
+    result = {
+        "schema_version": RESULT_SCHEMA,
+        "status": "PASS",
+        "task_id": TASK_ID,
+        "request_sha256": req["request_sha256"],
+        "gate_id": req["gate_id"],
+        "checkpoint_number": req["checkpoint_number"],
+        "worker_id": req["worker_id"],
+        "fencing_token": req["fencing_token"],
+        "authority": "ADVISORY_ONLY_NO_ASSIGNMENT_OWNER_AUTHORITY",
+        "advisory_mode": "DETERMINISTIC_EVIDENCE_GATE_V1",
+        "decision": decision,
+        "direction": direction,
+        "rationale": rationale,
+        "reviewers": [],
+        "provider_invoked": False,
+        "findings": [],
+        "evidence": list(req["evidence_reviewed"]),
+        "unresolved_items": list(req["unresolved_items"]),
+    }
+    unsigned = dict(result)
+    result["result_sha256"] = _digest(unsigned)
+    return result
+
+
+def advise_free_quorum(
+    request: Mapping[str, Any],
+    *,
+    deepseek_dispatch: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    nemo_dispatch: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+) -> dict[str, Any]:
+    req = validate_request(request)
+
+    if req["jaytec_review_decision"] == "REPLAN_REQUIRED":
+        return _deterministic_free_advice(
+            req,
+            decision="REJECT_EVIDENCE",
+            direction="Complete the required JAYTEC replan and return new evidence.",
+            rationale="JAYTEC marked the evidence as requiring replanning.",
+        )
+    if req["unresolved_items"]:
+        return _deterministic_free_advice(
+            req,
+            decision="REJECT_EVIDENCE",
+            direction="Resolve every listed unresolved item before continuing.",
+            rationale="WATCH cannot advance while unresolved evidence remains.",
+        )
+    candidate = req.get("candidate_next_gate") or {}
+    if isinstance(candidate, Mapping) and candidate.get("owner_boundary") is True:
+        return _deterministic_free_advice(
+            req,
+            decision="ESCALATE_JAY",
+            direction="Stop at the owner boundary and request explicit Jay approval.",
+            rationale="A specialist quorum cannot grant owner-boundary authority.",
+        )
+
+    reviewers: list[dict[str, Any]] = []
+    for label, expected_model, dispatch in (
+        ("deepseek", EXPECTED_DEEPSEEK_MODEL, deepseek_dispatch),
+        ("nemo", EXPECTED_NEMO_MODEL, nemo_dispatch),
+    ):
+        packet = build_free_packet(req, specialist=label)
+        try:
+            raw = dispatch(packet)
+        except Exception as exc:
+            return {
+                "schema_version": RESULT_SCHEMA,
+                "status": "FAILED_CLOSED",
+                "task_id": TASK_ID,
+                "request_sha256": req["request_sha256"],
+                "gate_id": req["gate_id"],
+                "worker_id": req["worker_id"],
+                "fencing_token": req["fencing_token"],
+                "authority": "ADVISORY_ONLY_NO_ASSIGNMENT_OWNER_AUTHORITY",
+                "advisory_mode": FREE_CONTROLLER_MODE,
+                "reason": (
+                    "FREE_CONTROLLER_" + label.upper()
+                    + "_UNAVAILABLE:" + type(exc).__name__
+                ),
+                "provider_invoked": True,
+            }
+        if not isinstance(raw, Mapping):
+            raise WatchControllerAdvisorError(
+                "FREE_CONTROLLER_" + label.upper() + "_RESULT_INVALID"
+            )
+        reviewers.append(
+            _validate_free_result(
+                raw,
+                req,
+                expected_model=expected_model,
+                label=label,
+            )
+        )
+
+    decisions = [row["decision"] for row in reviewers]
+    if decisions == ["APPROVE_CONTINUE", "APPROVE_CONTINUE"]:
+        decision = "APPROVE_CONTINUE"
+        direction = ""
+        rationale = (
+            "Both exact free-only reviewers independently approved the same "
+            "clean evidence packet."
+        )
+    elif "ESCALATE_JAY" in decisions:
+        decision = "ESCALATE_JAY"
+        direction = "Stop and return the bounded disagreement/evidence to Jay."
+        rationale = "At least one independent free reviewer required owner escalation."
+    elif "REJECT_EVIDENCE" in decisions:
+        decision = "REJECT_EVIDENCE"
+        direction = "Repair or replace the rejected evidence before continuing."
+        rationale = "At least one independent free reviewer rejected the evidence."
+    elif decisions == ["REDIRECT", "REDIRECT"]:
+        directions = [row["direction"] for row in reviewers]
+        if directions[0] == directions[1]:
+            decision = "REDIRECT"
+            direction = directions[0]
+            rationale = "Both independent free reviewers requested the same redirect."
+        else:
+            decision = "REJECT_EVIDENCE"
+            direction = "Resolve the reviewer redirect disagreement before continuing."
+            rationale = "Independent free reviewers disagreed on the redirect."
+    else:
+        decision = "REJECT_EVIDENCE"
+        direction = "Resolve the independent reviewer disagreement before continuing."
+        rationale = (
+            "Approval requires explicit agreement from both exact free-only reviewers."
+        )
+
+    findings: list[str] = []
+    evidence: list[str] = []
+    unresolved: list[str] = []
+    for row in reviewers:
+        findings.extend(row["findings"])
+        evidence.extend(row["evidence"])
+        unresolved.extend(row["unresolved_items"])
+
+    result = {
+        "schema_version": RESULT_SCHEMA,
+        "status": "PASS",
+        "task_id": TASK_ID,
+        "request_sha256": req["request_sha256"],
+        "gate_id": req["gate_id"],
+        "checkpoint_number": req["checkpoint_number"],
+        "worker_id": req["worker_id"],
+        "fencing_token": req["fencing_token"],
+        "authority": "ADVISORY_ONLY_NO_ASSIGNMENT_OWNER_AUTHORITY",
+        "advisory_mode": FREE_CONTROLLER_MODE,
+        "decision": decision,
+        "direction": direction,
+        "rationale": rationale,
+        "reviewers": reviewers,
+        "provider_invoked": True,
+        "findings": findings[:MAX_LIST],
+        "evidence": evidence[:MAX_LIST],
+        "unresolved_items": unresolved[:MAX_LIST],
+    }
+    unsigned = dict(result)
+    result["result_sha256"] = _digest(unsigned)
+    if len(_canonical(result)) > MAX_RESULT_BYTES:
+        raise WatchControllerAdvisorError("RESULT_TOO_LARGE")
+    return result
+
+
 def _validate_sol_result(raw: Mapping[str, Any], req: Mapping[str, Any]) -> dict[str, Any]:
     if raw.get("model") != EXPECTED_SOL_MODEL:
         raise WatchControllerAdvisorError("SOL_MODEL_MISMATCH")
@@ -348,11 +668,16 @@ def advise(
 __all__ = [
     "ALLOWED_DECISIONS",
     "EXPECTED_SOL_MODEL",
+    "EXPECTED_DEEPSEEK_MODEL",
+    "EXPECTED_NEMO_MODEL",
+    "FREE_CONTROLLER_MODE",
     "REQUEST_SCHEMA",
     "RESULT_SCHEMA",
     "TASK_ID",
     "WatchControllerAdvisorError",
     "advise",
+    "advise_free_quorum",
+    "build_free_packet",
     "build_sol_packet",
     "make_request",
     "validate_request",
