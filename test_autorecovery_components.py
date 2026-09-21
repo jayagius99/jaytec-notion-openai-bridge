@@ -368,7 +368,7 @@ class RuntimeComponentTests(unittest.TestCase):
             route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
             fencing_token=10,
         )
-        self.assertTrue(result.accepted)
+        self.assertTrue(result.accepted, result.detail)
         raw = runtime.requests[0]
         req = parse_start_request(raw)
         packet = build_minimal_task_packet(
