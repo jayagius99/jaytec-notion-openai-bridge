@@ -56,19 +56,19 @@ rules, canonical checkpoints or owner controls.
 
 ## Specialist requests
 
-The default WATCH/Manus model-assistance trio is:
-- SOL — engineering/reasoning;
+The normal Manus assistance pair is:
 - DeepSeek — adversarial/security review;
-- Nemo — secondary engineering/reasoning.
+- Nemo — engineering/reasoning.
 
 DeepSeek and Nemo are configured for exact free-only routes in the no-spend
-WATCH lane. Their explicit provider mode is ACTIVE_FREE_ONLY, which is valid
-only when the exact model identifier ends in `:free`. Global/legacy OpenRouter
+lane. Their explicit provider mode is ACTIVE_FREE_ONLY, which is valid only
+when the exact model identifier ends in `:free`. Global/legacy OpenRouter
 routing remains separately locked unless explicitly authorized.
 
-SOL uses the exact gpt-5.6-sol route and remains subject to current provider-door
-and spend policy. If the provider door is not authorized, WATCH must fail closed
-or escalate rather than silently substituting another model for SOL.
+For a genuine emergency Manus may emit a request-only `core_triad` escalation
+through JAYTEC. This does not give Manus direct Core Triad access, membership,
+credentials or authority. JAYTEC decides how the emergency is handled and any
+result returns through the same Manus task/fence.
 
 ## Provider failures
 
