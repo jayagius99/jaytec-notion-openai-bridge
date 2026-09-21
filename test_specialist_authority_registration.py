@@ -30,7 +30,7 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
         # has been explicitly reviewed.
         self.assertEqual(
             dispatchers,
-            {"build_codex_dispatch", "build_gemini_dispatch"},
+            {"build_codex_dispatch", "build_gemini_dispatch", "build_sol_reserve_dispatch"},
         )
 
     def test_new_meeting_participant_requires_explicit_registration_review(self):
