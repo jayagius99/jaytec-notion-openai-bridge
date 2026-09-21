@@ -105,7 +105,7 @@ def master_gate_handoff_id(
     graph_sha = str(gate_context.get("graph_sha256") or "").strip().lower()
     checkpoint_number = int(gate_context.get("checkpoint_number") or 0)
     if (
-        not re.fullmatch(r"G[0-9]{2}", gate_id)
+        not re.fullmatch(r"G[0-9]{2,4}", gate_id)
         or not re.fullmatch(r"[0-9a-f]{64}", graph_sha)
         or checkpoint_number != checkpoint.checkpoint_number
         or fencing_token < 0
