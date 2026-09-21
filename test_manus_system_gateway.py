@@ -108,6 +108,41 @@ class ManusSystemGatewayTests(unittest.TestCase):
                 ):
                     self.gateway.start_task(start_packet(caller, mutation=True))
 
+    def test_non_control_caller_cannot_self_authorize_unsafe_actions(self):
+        packet = json.loads(start_packet("nemo"))
+        packet["task"]["allowed_actions"] = ["inspect", "deploy"]
+        with self.assertRaisesRegex(
+            ManusSystemGatewayError,
+            "MANUS_GATEWAY_NON_CONTROL_ACTION_BLOCKED",
+        ):
+            self.gateway.start_task(json.dumps(packet))
+
+    def test_non_control_caller_cannot_request_write_connector_purpose(self):
+        packet = json.loads(start_packet("deepseek"))
+        packet["task"]["connector_purposes"] = {"github": "write"}
+        with self.assertRaisesRegex(
+            ManusSystemGatewayError,
+            "MANUS_GATEWAY_NON_CONTROL_CONNECTOR_PURPOSE_BLOCKED",
+        ):
+            self.gateway.start_task(json.dumps(packet))
+
+    def test_non_control_continue_cannot_expand_connector_scope_to_write(self):
+        raw = json.dumps(
+            {
+                "caller": "nemo",
+                "provider_task_id": "provider-task-1",
+                "handoff_id": "handoff-write-blocked",
+                "handoff_context": {"finding": "bounded"},
+                "connector_purposes": {"github": "write"},
+                "connector_mutation_authorized": False,
+            }
+        )
+        with self.assertRaisesRegex(
+            ManusSystemGatewayError,
+            "MANUS_GATEWAY_NON_CONTROL_CONNECTOR_PURPOSE_BLOCKED",
+        ):
+            self.gateway.continue_task(raw)
+
     def test_supervising_control_plane_can_carry_existing_mutation_grant(self):
         for caller in ("chatgpt", "jaytec"):
             out = self.gateway.start_task(start_packet(caller, mutation=True))
