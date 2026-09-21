@@ -46,6 +46,32 @@ class StartupProviderSafetyTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, blueprint)
 
+    def test_watch_model_specialists_are_free_only_without_unlocking_legacy_openrouter(self):
+        source = (ROOT / "staging_server.py").read_text(encoding="utf-8")
+        blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
+        deepseek = (ROOT / "deepseek_reviewer.py").read_text(encoding="utf-8")
+        nemo = (ROOT / "nemo_specialist.py").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'EXPECTED_DEEPSEEK_REVIEWER_MODEL = "deepseek/deepseek-v4-flash-0731:free"',
+            deepseek,
+        )
+        self.assertIn(
+            'EXPECTED_NEMO_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"',
+            nemo,
+        )
+        self.assertIn('"ACTIVE_FREE_ONLY"', source)
+        self.assertIn("WATCH_FREE_SPECIALISTS_CLIENT", source)
+        self.assertIn(
+            "- key: OPENROUTER_PROVIDER_MODE\n        value: LOCKED_RESERVE",
+            blueprint,
+        )
+        self.assertIn("value: deepseek/deepseek-v4-flash-0731:free", blueprint)
+        self.assertIn("value: nvidia/nemotron-3-ultra-550b-a55b:free", blueprint)
+        self.assertEqual(blueprint.count("value: ACTIVE_FREE_ONLY"), 2)
+        self.assertIn('if DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY" and not DEEPSEEK_REVIEWER_MODEL.endswith(":free")', source)
+        self.assertIn('if NEMO_PROVIDER_MODE == "ACTIVE_FREE_ONLY" and not NEMO_MODEL.endswith(":free")', source)
+
     def test_all_server_start_provider_probes_default_disabled(self):
         blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
         for flag in (

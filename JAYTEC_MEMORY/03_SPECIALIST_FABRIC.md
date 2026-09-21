@@ -11,7 +11,7 @@ boundaries or invent provider fallbacks.
 
 ### DeepSeek
 Independent adversarial/security reviewer. Current JAYTEC target model:
-deepseek/deepseek-v4-flash-0731. Review-only by default. Focus on bypasses,
+deepseek/deepseek-v4-flash-0731:free. Review-only by default. Focus on bypasses,
 replay/concurrency, privilege confusion, stale state, rollback, recovery,
 credential exposure and false completion claims.
 

@@ -55,6 +55,11 @@ class SolGithubMemoryTests(unittest.TestCase):
             "technical sovereignty",
             "who is working right now",
             "static github memory is not live operational truth",
+            "jaytec:execute",
+            "continue from exact state",
+            "jaytec-notion-openai-bridge",
+            "single lane",
+            "active_free_only",
         ]
         for marker in required:
             self.assertIn(marker, context, marker)

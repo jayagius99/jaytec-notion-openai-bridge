@@ -111,17 +111,21 @@ DEEPSEEK_REVIEWER_TIMEOUT_S = float(
     os.environ.get("DEEPSEEK_REVIEWER_TIMEOUT_S", "120")
 )
 DEEPSEEK_PROVIDER_MODE = os.environ.get(
-    "DEEPSEEK_PROVIDER_MODE", "LOCKED_RESERVE"
+    "DEEPSEEK_PROVIDER_MODE", "ACTIVE_FREE_ONLY"
 ).strip().upper()
 NEMO_MODEL = os.environ.get("NEMO_MODEL", EXPECTED_NEMO_MODEL).strip()
 NEMO_TIMEOUT_S = float(os.environ.get("NEMO_TIMEOUT_S", "90"))
 NEMO_PROVIDER_MODE = os.environ.get(
-    "NEMO_PROVIDER_MODE", "LOCKED_RESERVE"
+    "NEMO_PROVIDER_MODE", "ACTIVE_FREE_ONLY"
 ).strip().upper()
-if DEEPSEEK_PROVIDER_MODE not in {"ACTIVE", "LOCKED_RESERVE"}:
+if DEEPSEEK_PROVIDER_MODE not in {"ACTIVE_FREE_ONLY", "LOCKED_RESERVE"}:
     raise RuntimeError("invalid DEEPSEEK_PROVIDER_MODE")
-if NEMO_PROVIDER_MODE not in {"ACTIVE", "LOCKED_RESERVE"}:
+if NEMO_PROVIDER_MODE not in {"ACTIVE_FREE_ONLY", "LOCKED_RESERVE"}:
     raise RuntimeError("invalid NEMO_PROVIDER_MODE")
+if DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY" and not DEEPSEEK_REVIEWER_MODEL.endswith(":free"):
+    raise RuntimeError("deepseek_free_only_model_required")
+if NEMO_PROVIDER_MODE == "ACTIVE_FREE_ONLY" and not NEMO_MODEL.endswith(":free"):
+    raise RuntimeError("nemo_free_only_model_required")
 CIRCUIT_FAILURE_THRESHOLD = int(os.environ.get("CIRCUIT_FAILURE_THRESHOLD", "3"))
 CIRCUIT_RESET_SECONDS = int(os.environ.get("CIRCUIT_RESET_SECONDS", "60"))
 DATABASE_URL = (
@@ -215,6 +219,19 @@ OPENROUTER_CLIENT = (
     else None
 )
 
+# Dedicated no-spend WATCH specialist lane. This deliberately does not unlock
+# legacy/global OpenRouter routing (including Gemini). It can call only adapters
+# whose exact model IDs are pinned to ":free".
+WATCH_FREE_SPECIALISTS_CLIENT = (
+    OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+    if OPENROUTER_API_KEY
+    and (
+        DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+        or NEMO_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+    )
+    else None
+)
+
 # Build dispatchers ONCE to avoid runtime drift and repeated guards.
 ENGINEERING_DISPATCH = (
     build_engineering_dispatch(openai_client=OPENAI_CLIENT, engineering_model=ENGINEERING_MODEL, circuit=CODEX_CIRCUIT)
@@ -246,30 +263,40 @@ GEMINI_DISPATCH = (
 
 DEEPSEEK_REVIEW_DISPATCH = (
     build_deepseek_security_review_dispatch(
-        openrouter_client=OPENROUTER_CLIENT,
+        openrouter_client=WATCH_FREE_SPECIALISTS_CLIENT,
         model=DEEPSEEK_REVIEWER_MODEL,
         timeout_s=DEEPSEEK_REVIEWER_TIMEOUT_S,
         circuit=DEEPSEEK_REVIEWER_CIRCUIT,
     )
-    if OPENROUTER_CLIENT and DEEPSEEK_PROVIDER_MODE == "ACTIVE"
+    if WATCH_FREE_SPECIALISTS_CLIENT
+    and DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
     else DEEPSEEK_REVIEWER_CIRCUIT.guard(
         lambda _packet: (_ for _ in ()).throw(
-            RuntimeError("DEEPSEEK_PROVIDER_DOOR_LOCKED_RESERVE")
+            RuntimeError(
+                "DEEPSEEK_FREE_SPECIALIST_UNAVAILABLE"
+                if DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+                else "DEEPSEEK_PROVIDER_DOOR_LOCKED_RESERVE"
+            )
         )
     )
 )
 
 NEMO_DISPATCH = (
     build_nemo_dispatch(
-        openrouter_client=OPENROUTER_CLIENT,
+        openrouter_client=WATCH_FREE_SPECIALISTS_CLIENT,
         model=NEMO_MODEL,
         timeout_s=NEMO_TIMEOUT_S,
         circuit=NEMO_CIRCUIT,
     )
-    if OPENROUTER_CLIENT and NEMO_PROVIDER_MODE == "ACTIVE"
+    if WATCH_FREE_SPECIALISTS_CLIENT
+    and NEMO_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
     else NEMO_CIRCUIT.guard(
         lambda _packet: (_ for _ in ()).throw(
-            RuntimeError("NEMO_PROVIDER_DOOR_LOCKED_RESERVE")
+            RuntimeError(
+                "NEMO_FREE_SPECIALIST_UNAVAILABLE"
+                if NEMO_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+                else "NEMO_PROVIDER_DOOR_LOCKED_RESERVE"
+            )
         )
     )
 )
@@ -327,9 +354,20 @@ def orchestration_status() -> str:
             "gemini_provider_routing": "price",
             "gemini_circuit": GEMINI_CIRCUIT.snapshot(),
             "deepseek_reviewer_model": DEEPSEEK_REVIEWER_MODEL,
-            "deepseek_reviewer_configured": bool(OPENROUTER_CLIENT),
+            "deepseek_provider_mode": DEEPSEEK_PROVIDER_MODE,
+            "deepseek_reviewer_configured": bool(
+                WATCH_FREE_SPECIALISTS_CLIENT
+                and DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+            ),
             "deepseek_reviewer_circuit": DEEPSEEK_REVIEWER_CIRCUIT.snapshot(),
-            "deepseek_reviewer_route_policy": "exact_model_bounded_same_model_provider_retry",
+            "deepseek_reviewer_route_policy": "exact_free_model_no_provider_fallback",
+            "nemo_model": NEMO_MODEL,
+            "nemo_provider_mode": NEMO_PROVIDER_MODE,
+            "nemo_configured": bool(
+                WATCH_FREE_SPECIALISTS_CLIENT
+                and NEMO_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+            ),
+            "watch_free_specialists_client_configured": bool(WATCH_FREE_SPECIALISTS_CLIENT),
             "manus_adapter_configured": bool(MANUS_API_KEY),
             "manus_profile_policy": "lite_only_no_exceptions",
             "manus_runtime": "JAYTEC_MANUS_LITE_RUNTIME_V1",
@@ -866,6 +904,36 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
                     }
                 result["current_worker_result"] = safe_worker
 
+    result["specialist_fabric"] = {
+        "default_watch_trio": ["sol", "deepseek", "nemo"],
+        "sol": {
+            "model": ENGINEERING_MODEL,
+            "provider_mode": ENGINEERING_PROVIDER_MODE,
+            "configured": bool(OPENAI_CLIENT),
+            "requires_explicit_spend_authority": True,
+        },
+        "deepseek": {
+            "model": DEEPSEEK_REVIEWER_MODEL,
+            "provider_mode": DEEPSEEK_PROVIDER_MODE,
+            "configured": bool(
+                WATCH_FREE_SPECIALISTS_CLIENT
+                and DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+            ),
+            "cost_policy": "EXACT_FREE_ONLY",
+        },
+        "nemo": {
+            "model": NEMO_MODEL,
+            "provider_mode": NEMO_PROVIDER_MODE,
+            "configured": bool(
+                WATCH_FREE_SPECIALISTS_CLIENT
+                and NEMO_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+            ),
+            "cost_policy": "EXACT_FREE_ONLY",
+        },
+        "legacy_openrouter_provider_mode": OPENROUTER_PROVIDER_MODE,
+        "manus_direct_provider_access": False,
+        "read_only": True,
+    }
     result["read_only"] = True
     result["lease_acquired"] = False
     result["worker_invoked"] = False

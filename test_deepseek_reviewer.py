@@ -76,6 +76,12 @@ def _dispatch(responses):
 
 
 class TestDeepSeekSecurityReviewer(unittest.TestCase):
+    def test_expected_model_is_exact_free_endpoint(self):
+        self.assertEqual(
+            EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+            "deepseek/deepseek-v4-flash-0731:free",
+        )
+
     def test_exact_model_and_strict_schema_are_forced(self):
         client, dispatch = _dispatch([
             {"content": json.dumps(_valid_result())}

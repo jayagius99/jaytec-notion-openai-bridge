@@ -38,6 +38,11 @@ def test_watch_status_route_is_oidc_only_and_read_only():
     assert "acquire_recovery_lease" not in route
     assert "MCP_AUTH_TOKEN" not in route
     assert "static_auth" not in route
+    assert '"specialist_fabric"' in route
+    assert '"default_watch_trio": ["sol", "deepseek", "nemo"]' in route
+    assert '"manus_direct_provider_access": False' in route
+    assert "chat.completions.create" not in route
+    assert "responses.create" not in route
 
 
 def test_watch_status_only_peeks_existing_invocation_record():
