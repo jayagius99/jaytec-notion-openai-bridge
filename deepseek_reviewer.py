@@ -7,6 +7,14 @@ from typing import Any, Callable, Mapping
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from jaytec_read import (
+    JAYTEC_READ_FETCH_ENGINES,
+    JAYTEC_READ_PROMPT,
+    build_openrouter_web_fetch_tool,
+    enforce_read_report,
+    is_jaytec_read_packet,
+    source_url_from_packet,
+)
 from worker_json import WorkerJsonError, json_object_with_diagnostics
 
 
@@ -167,8 +175,18 @@ def build_deepseek_security_review_dispatch(
     ):
         raise ValueError("deepseek_reviewer_max_output_tokens_invalid")
 
-    def _prompt(packet: Mapping[str, Any], *, retry_format: bool) -> str:
+    def _prompt(
+        packet: Mapping[str, Any],
+        *,
+        retry_format: bool,
+        fetch_engine: str | None = None,
+    ) -> str:
         prefix = DEEPSEEK_REVIEWER_CONTRACT
+        if is_jaytec_read_packet(packet):
+            prefix += "\n" + JAYTEC_READ_PROMPT
+            prefix += "\nSOURCE_URL: " + source_url_from_packet(packet)
+            if fetch_engine:
+                prefix += "\nFETCH_ENGINE: " + fetch_engine
         if retry_format:
             prefix += "\n" + DEEPSEEK_FORMAT_RETRY
         return (
@@ -182,13 +200,18 @@ def build_deepseek_security_review_dispatch(
         *,
         retry_format: bool,
         attempt: int,
+        fetch_engine: str | None = None,
     ) -> Mapping[str, Any]:
         request_kwargs: dict[str, Any] = {
             "model": model,
             "messages": [
                 {
                     "role": "user",
-                    "content": _prompt(packet, retry_format=retry_format),
+                    "content": _prompt(
+                        packet,
+                        retry_format=retry_format,
+                        fetch_engine=fetch_engine,
+                    ),
                 }
             ],
             "temperature": 0,
@@ -210,6 +233,14 @@ def build_deepseek_security_review_dispatch(
                 },
             },
         }
+
+        if is_jaytec_read_packet(packet):
+            read_source_url = source_url_from_packet(packet)
+            engine = fetch_engine or JAYTEC_READ_FETCH_ENGINES[0]
+            request_kwargs["tools"] = [
+                build_openrouter_web_fetch_tool(read_source_url, engine=engine)
+            ]
+            request_kwargs["tool_choice"] = "required"
 
         response = openrouter_client.chat.completions.create(**request_kwargs)
         if not response.choices:
@@ -258,6 +289,18 @@ def build_deepseek_security_review_dispatch(
             extracted_object=diagnostics.extracted_object,
             provider_fallbacks=False,
         )
+        if is_jaytec_read_packet(packet):
+            read_source_url = source_url_from_packet(packet)
+            engine = fetch_engine or JAYTEC_READ_FETCH_ENGINES[0]
+            result = enforce_read_report(result, read_source_url)
+            read_diag = dict(result.get("bridge_diagnostics") or {})
+            read_diag["web_retrieval"] = {
+                "enabled": True,
+                "engine": engine,
+                "source_url_sha256": hashlib.sha256(read_source_url.encode("utf-8")).hexdigest(),
+                "notion_fallback": False,
+            }
+            result["bridge_diagnostics"] = read_diag
         return result
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -270,23 +313,62 @@ def build_deepseek_security_review_dispatch(
         ):
             raise RuntimeError("deepseek_reviewer_retry_budget_invalid")
 
-        try:
-            return _single(
-                packet,
-                retry_format=False,
-                attempt=1,
+        def _single_with_format_retry(fetch_engine: str | None = None) -> Mapping[str, Any]:
+            try:
+                return _single(
+                    packet,
+                    retry_format=False,
+                    attempt=1,
+                    fetch_engine=fetch_engine,
+                )
+            except Exception as exc:
+                # One transport-format retry is permitted, but JAYTEC never enables
+                # OpenRouter provider fallback here. A provider-route failure is a
+                # real dependency failure, not permission to silently switch routes.
+                retryable = isinstance(exc, WorkerJsonError)
+                if max_retries < 1 or not retryable:
+                    raise
+                return _single(
+                    packet,
+                    retry_format=True,
+                    attempt=2,
+                    fetch_engine=fetch_engine,
+                )
+
+        if not is_jaytec_read_packet(packet):
+            return _single_with_format_retry()
+
+        attempts: list[dict[str, Any]] = []
+        last_result: Mapping[str, Any] | None = None
+        for engine in JAYTEC_READ_FETCH_ENGINES:
+            result = _single_with_format_retry(engine)
+            last_result = result
+            conclusion = result.get("conclusion")
+            report = conclusion.get("READ_REPORT") if isinstance(conclusion, Mapping) else None
+            verified = isinstance(report, Mapping) and report.get("VERIFIED") is True
+            attempts.append(
+                {
+                    "engine": engine,
+                    "status": result.get("status"),
+                    "verified": verified,
+                }
             )
-        except Exception as exc:
-            # One transport-format retry is permitted, but JAYTEC never enables
-            # OpenRouter provider fallback here. A provider-route failure is a
-            # real dependency failure, not permission to silently switch routes.
-            retryable = isinstance(exc, WorkerJsonError)
-            if max_retries < 1 or not retryable:
-                raise
-            return _single(
-                packet,
-                retry_format=True,
-                attempt=2,
-            )
+            if result.get("status") == "SUCCESS" and verified:
+                out = dict(result)
+                diagnostics = dict(out.get("bridge_diagnostics") or {})
+                diagnostics["web_retrieval_attempts"] = attempts
+                out["bridge_diagnostics"] = diagnostics
+                return out
+            if result.get("status") in {"POLICY_BLOCKED", "INVALID_PACKET"}:
+                break
+
+        if last_result is None:
+            raise RuntimeError("jaytec_read_no_fetch_attempts")
+        out = dict(last_result)
+        diagnostics = dict(out.get("bridge_diagnostics") or {})
+        diagnostics["web_retrieval_attempts"] = attempts
+        diagnostics["notion_fallback"] = False
+        out["bridge_diagnostics"] = diagnostics
+        return out
 
     return circuit.guard(_dispatch)
