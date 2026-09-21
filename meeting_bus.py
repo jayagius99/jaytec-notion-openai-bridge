@@ -634,6 +634,16 @@ class MeetingBusMiddleware:
             return await self._json_response(
                 send, 400, {"ok": False, "error": "invalid_json"}
             )
+        except MeetingBusError as exc:
+            # MeetingBusError messages are deliberately constructed only from
+            # bounded internal error codes and exception class names. Preserve
+            # that category for diagnosis without exposing upstream provider
+            # messages, credentials, request bodies, or secrets.
+            return await self._json_response(
+                send,
+                502,
+                {"ok": False, "error": str(exc)},
+            )
         except Exception as exc:
             return await self._json_response(
                 send,
