@@ -14,13 +14,21 @@ from test_autorecovery_watch_ingress import (
 from watch_specialist_broker import dispatch_manus_model_requests
 
 
-def model_request(name: str, objective: str = "Provide bounded help."):
+def model_request(
+    name: str,
+    objective: str = "Provide bounded help.",
+    *,
+    emergency: bool = False,
+):
+    context = {"gate_id": "G03", "artifact_sha256": "a" * 64}
+    if emergency:
+        context["emergency"] = True
     return specialist_request(
         parent_task_id="FORGE-GENESIS-ACTIVATION-001:recovery:14:test",
         specialist=name,
         objective=objective,
         reason="Manus needs a JAYTEC specialist.",
-        required_context={"gate_id": "G03", "artifact_sha256": "a" * 64},
+        required_context=context,
     )
 
 
@@ -57,7 +65,13 @@ class FakeModelRequestRuntime(FakeBrokerRuntime):
                 "changes_made": [],
                 "unresolved_items": ["specialist help required"],
                 "specialist_requests": [
-                    __import__("json").dumps(model_request(name), sort_keys=True)
+                    __import__("json").dumps(
+                        model_request(
+                            name,
+                            emergency=(name == "core_triad"),
+                        ),
+                        sort_keys=True,
+                    )
                     for name in self.names
                 ],
                 "verification": {
@@ -100,34 +114,48 @@ class WatchSpecialistIngressTests(unittest.TestCase):
             )
         return out, store, runtime
 
-    def test_sol_result_returns_to_same_manus_worker_and_fence(self):
+    def test_deepseek_result_returns_to_same_manus_worker_and_fence(self):
         def runner(requests):
-            self.assertEqual([r["specialist"] for r in requests], ["sol"])
+            self.assertEqual([r["specialist"] for r in requests], ["deepseek"])
             return dispatch_manus_model_requests(
                 requests,
-                dispatchers={"sol": lambda _packet: result("gpt-5.6-sol")},
+                dispatchers={
+                    "deepseek": lambda _packet: result(
+                        "deepseek/deepseek-v4-flash-0731:free"
+                    )
+                },
             )
 
-        out, store, runtime = self.run_cycle(["sol"], runner)
+        out, store, runtime = self.run_cycle(["deepseek"], runner)
         self.assertEqual(out["status"], "PASS")
-        self.assertEqual(out["decision"]["reason"], "JAYTEC_INTERNAL_ASSISTANCE_CONTINUED")
+        self.assertEqual(
+            out["decision"]["reason"],
+            "JAYTEC_INTERNAL_ASSISTANCE_CONTINUED",
+        )
         self.assertEqual(out["assignment"]["worker_id"], "worker-existing")
         self.assertEqual(out["assignment"]["fencing_token"], 9)
         self.assertEqual(len(runtime.handoffs), 1)
         worker_id, kwargs = runtime.handoffs[0]
         self.assertEqual(worker_id, "worker-existing")
-        self.assertEqual(kwargs["handoff_context"]["kind"], "SPECIALIST_REQUEST_RESULTS")
+        self.assertEqual(
+            kwargs["handoff_context"]["kind"],
+            "SPECIALIST_REQUEST_RESULTS",
+        )
         row = kwargs["handoff_context"]["request_results"][0]
-        self.assertEqual(row["specialist"], "sol")
-        self.assertEqual(row["model"], "gpt-5.6-sol")
+        self.assertEqual(row["specialist"], "deepseek")
+        self.assertEqual(
+            row["model"],
+            "deepseek/deepseek-v4-flash-0731:free",
+        )
         self.assertTrue(
-            str(store.state.progress_marker).startswith("JAYTEC_ASSISTANCE_HANDOFF:")
+            str(store.state.progress_marker).startswith(
+                "JAYTEC_ASSISTANCE_HANDOFF:"
+            )
         )
 
-    def test_three_model_specialists_return_as_one_handoff(self):
+    def test_two_routine_specialists_return_as_one_handoff(self):
         models = {
-            "sol": "gpt-5.6-sol",
-            "deepseek": "deepseek/deepseek-v4-flash-0731",
+            "deepseek": "deepseek/deepseek-v4-flash-0731:free",
             "nemo": "nvidia/nemotron-3-ultra-550b-a55b:free",
         }
 
@@ -140,18 +168,44 @@ class WatchSpecialistIngressTests(unittest.TestCase):
                 },
             )
 
-        out, _, runtime = self.run_cycle(["sol", "deepseek", "nemo"], runner)
+        out, _, runtime = self.run_cycle(["deepseek", "nemo"], runner)
         self.assertEqual(out["status"], "PASS")
         self.assertEqual(len(runtime.handoffs), 1)
         rows = runtime.handoffs[0][1]["handoff_context"]["request_results"]
-        self.assertEqual([row["specialist"] for row in rows], ["sol", "deepseek", "nemo"])
+        self.assertEqual(
+            [row["specialist"] for row in rows],
+            ["deepseek", "nemo"],
+        )
         self.assertEqual(out["assignment"]["worker_id"], "worker-existing")
         self.assertEqual(out["assignment"]["fencing_token"], 9)
 
     def test_model_help_fails_closed_when_jaytec_runner_missing(self):
-        out, _, runtime = self.run_cycle(["sol"], None)
+        out, _, runtime = self.run_cycle(["deepseek"], None)
         self.assertEqual(out["status"], "BLOCKED_FAIL_CLOSED")
-        self.assertEqual(out["reason"], "MODEL_SPECIALIST_RUNNER_UNAVAILABLE")
+        self.assertEqual(
+            out["reason"],
+            "MODEL_SPECIALIST_RUNNER_UNAVAILABLE",
+        )
+        self.assertEqual(runtime.handoffs, [])
+
+    def test_core_triad_emergency_holds_without_direct_manus_handoff(self):
+        def runner(requests):
+            return dispatch_manus_model_requests(
+                requests,
+                dispatchers={},
+            )
+
+        out, _, runtime = self.run_cycle(["core_triad"], runner)
+        self.assertEqual(out["status"], "PASS")
+        self.assertEqual(out["decision"]["action"], "HOLD")
+        self.assertEqual(
+            out["decision"]["reason"],
+            "JAYTEC_CORE_TRIAD_EMERGENCY_REQUIRED",
+        )
+        self.assertEqual(
+            [r["request_id"] for r in out["core_triad_emergency_requests"]],
+            [model_request("core_triad", emergency=True)["request_id"]],
+        )
         self.assertEqual(runtime.handoffs, [])
 
     def test_gemini_request_is_rejected_in_watch_lane(self):
