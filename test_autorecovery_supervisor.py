@@ -144,6 +144,34 @@ class FakeNotifier:
 
 
 class AutoRecoveryPolicyTests(unittest.TestCase):
+    def test_master_gate_success_does_not_complete_whole_assignment(self):
+        cp = AssignmentCheckpoint(
+            **{
+                **checkpoint().__dict__,
+                "current_phase": "G03/SECURITY: Security Audit #47",
+                "objective": "Advance G03.",
+                "checkpoint_number": 103,
+            }
+        ).validate()
+        st = state()
+        st = AssignmentState(**{**st.__dict__, "checkpoint": cp})
+        store = MemoryAssignmentStore(st)
+        supervisor = AutoRecoverySupervisor(
+            store=store,
+            verifier=FakeVerifier(),
+            invoker=FakeInvoker(),
+            health_probe=FakeHealth(
+                healthy=True,
+                progress_marker="MANUS_TERMINAL:SUCCESS:deadbeef",
+            ),
+            heartbeat_timeout_seconds=600,
+        )
+        self.assertTrue(supervisor.refresh_worker_health("GOD-PREP-0017", now=NOW))
+        final = store.get("GOD-PREP-0017")
+        self.assertEqual(final.stop_reason, StopReason.WAITING_FOR_DEPENDENCY)
+        self.assertFalse(final.completed)
+        self.assertTrue(final.last_error.startswith("MANUS_TERMINAL:SUCCESS:"))
+
     def test_complete_stops_watching(self):
         decision = classify_assignment(
             state(stop_reason=StopReason.COMPLETED, completed=True),
@@ -230,6 +258,30 @@ class AutoRecoveryPolicyTests(unittest.TestCase):
         )
         self.assertEqual(decision.action, SupervisorAction.NOTIFY_JAY)
         self.assertEqual(decision.effective_stop_reason, StopReason.RECOVERY_EXHAUSTED)
+
+    def test_checkpoint_advance_preserves_worker_fence_and_attempts(self):
+        store = MemoryAssignmentStore(state())
+        before = store.get("GOD-PREP-0017")
+        newer = AssignmentCheckpoint(
+            **{
+                **checkpoint().__dict__,
+                "current_phase": "G43/SECURITY: next gate",
+                "objective": "Advance G43.",
+                "checkpoint_number": 43,
+            }
+        ).validate()
+        changed = store.advance_checkpoint_preserving_runtime(
+            newer,
+            expected_current_checkpoint_number=42,
+            now=NOW + dt.timedelta(seconds=1),
+        )
+        self.assertTrue(changed)
+        after = store.get("GOD-PREP-0017")
+        self.assertEqual(after.checkpoint.checkpoint_number, 43)
+        self.assertEqual(after.worker_id, before.worker_id)
+        self.assertEqual(after.fencing_token, before.fencing_token)
+        self.assertEqual(after.recovery_attempts, before.recovery_attempts)
+        self.assertEqual(after.stop_reason, before.stop_reason)
 
     def test_continuation_packet_contains_resurrection_state(self):
         packet = build_continuation_packet(

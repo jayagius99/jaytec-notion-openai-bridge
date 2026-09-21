@@ -14,6 +14,8 @@ from autorecovery_components import (
     ManusLiteHealthProbe,
     ManusLiteRecoveryInvoker,
     ObservedRefsCheckpointVerifier,
+    master_gate_handoff_id,
+    master_gate_result_has_receipt,
 )
 from autorecovery_runtime import runtime_status, schema_probe
 from manus_governance import validate_specialist_request
@@ -29,6 +31,18 @@ FORGE_TASK_ID = "FORGE-GENESIS-ACTIVATION-001"
 MAX_REQUEST_REFS = 128
 MAX_BROKER_CONTEXT_BYTES = 4500
 MAX_BROKER_REQUESTS = 2
+MASTER_GATE_SCHEMA = "FORGE_MASTER_GATE_DIRECTIVE_V1"
+MASTER_GATE_FIELDS = frozenset({
+    "schema_version",
+    "gate_id",
+    "phase",
+    "title",
+    "status",
+    "depends_on",
+    "evidence",
+    "graph_sha256",
+    "checkpoint_number",
+})
 # WATCH cadence is 15 minutes. Require more than two missed cadence windows
 # before classifying a RUNNING callable worker as lost, so one transient
 # provider-status failure cannot consume a recovery fence/attempt.
@@ -91,6 +105,69 @@ def _observed_refs(value: Any) -> dict[str, str]:
         refs[ref] = sha
     return refs
 
+
+
+def _master_gate_context(
+    value: Any,
+    checkpoint: AssignmentCheckpoint,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise WatchIngressError("MASTER_GATE_REQUIRED")
+    gate = dict(value)
+    if set(gate) != MASTER_GATE_FIELDS:
+        raise WatchIngressError("MASTER_GATE_FIELDS_INVALID")
+    if gate.get("schema_version") != MASTER_GATE_SCHEMA:
+        raise WatchIngressError("MASTER_GATE_SCHEMA_INVALID")
+    gate_id = str(gate.get("gate_id") or "").strip()
+    if not re.fullmatch(r"G[0-9]{2,4}", gate_id):
+        raise WatchIngressError("MASTER_GATE_ID_INVALID")
+    number = int(gate.get("checkpoint_number") or 0)
+    if number < 1 or number > 1000000:
+        raise WatchIngressError("MASTER_GATE_CHECKPOINT_NUMBER_INVALID")
+    if number != checkpoint.checkpoint_number:
+        raise WatchIngressError("MASTER_GATE_CHECKPOINT_MISMATCH")
+    phase = str(gate.get("phase") or "").strip()
+    title = str(gate.get("title") or "").strip()
+    status = str(gate.get("status") or "").strip()
+    if not phase or len(phase) > 80:
+        raise WatchIngressError("MASTER_GATE_PHASE_INVALID")
+    if not title or len(title) > 240:
+        raise WatchIngressError("MASTER_GATE_TITLE_INVALID")
+    if status not in {"IN_PROGRESS", "NOT_STARTED"}:
+        raise WatchIngressError("MASTER_GATE_STATUS_INVALID")
+    deps = gate.get("depends_on")
+    evidence = gate.get("evidence")
+    if not isinstance(deps, list) or not all(
+        isinstance(x, str) and re.fullmatch(r"G[0-9]{2,4}", x) for x in deps
+    ):
+        raise WatchIngressError("MASTER_GATE_DEPENDENCIES_INVALID")
+    if (
+        not isinstance(evidence, list)
+        or not evidence
+        or len(evidence) > 32
+        or not all(isinstance(x, str) and 0 < len(x.strip()) <= 500 for x in evidence)
+    ):
+        raise WatchIngressError("MASTER_GATE_EVIDENCE_INVALID")
+    graph_sha = str(gate.get("graph_sha256") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", graph_sha):
+        raise WatchIngressError("MASTER_GATE_GRAPH_DIGEST_INVALID")
+    if not checkpoint.current_phase.startswith(gate_id + "/"):
+        raise WatchIngressError("MASTER_GATE_PHASE_CHECKPOINT_MISMATCH")
+    if gate_id not in checkpoint.objective:
+        raise WatchIngressError("MASTER_GATE_OBJECTIVE_CHECKPOINT_MISMATCH")
+    return {
+        "schema_version": MASTER_GATE_SCHEMA,
+        "kind": "MASTER_GATE_DIRECTIVE",
+        "gate_id": gate_id,
+        "phase": phase,
+        "title": title,
+        "status": status,
+        "depends_on": list(deps),
+        "evidence": [str(x).strip() for x in evidence],
+        "graph_sha256": graph_sha,
+        "checkpoint_number": number,
+        "instruction": checkpoint.next_intended_action,
+    }
 
 
 def _broker_has_secret_key(value: Any) -> bool:
@@ -166,6 +243,18 @@ def _broker_context(value: Any, refs: Mapping[str, str]) -> dict[str, Any]:
     if hashlib.sha256(encoded).hexdigest() != supplied_digest:
         raise WatchIngressError("GITHUB_BROKER_CONTEXT_DIGEST_MISMATCH")
     return context
+
+
+def _gate_result_ready_state(state: Any) -> bool:
+    if state is None or not getattr(state, "worker_id", None):
+        return False
+    marker = str(getattr(state, "last_error", "") or "")
+    phase = str(getattr(getattr(state, "checkpoint", None), "current_phase", "") or "")
+    return (
+        getattr(state, "stop_reason", None) is StopReason.WAITING_FOR_DEPENDENCY
+        and marker.startswith("MANUS_TERMINAL:SUCCESS:")
+        and re.match(r"^G[0-9]{2,4}/", phase) is not None
+    )
 
 
 def _needs_jaytec_state(state: Any) -> bool:
@@ -436,6 +525,17 @@ def execute_watch_cycle(
     broker_context = _broker_context(payload.get("github_broker_context"), refs)
     verifier = ObservedRefsCheckpointVerifier(refs)
 
+    raw_checkpoint = payload.get("bootstrap_checkpoint")
+    if not isinstance(raw_checkpoint, Mapping):
+        raise WatchIngressError("BOOTSTRAP_CHECKPOINT_REQUIRED")
+    incoming_checkpoint = AssignmentCheckpoint.from_mapping(raw_checkpoint)
+    if incoming_checkpoint.task_id != task_id:
+        raise WatchIngressError("BOOTSTRAP_TASK_ID_MISMATCH")
+    master_gate = _master_gate_context(
+        payload.get("master_gate"),
+        incoming_checkpoint,
+    )
+
     schema = prepare_schema_if_authorized(database_url, env=source)
     if schema.get("status") != "PASS" or schema.get("schema_present") is not True:
         return {
@@ -474,27 +574,28 @@ def execute_watch_cycle(
     store = PostgresAssignmentStore(database_url)
     state = store.get(task_id)
     bootstrapped = False
+    if state is not None:
+        verified_current, current_detail = verifier.verify(state.checkpoint)
+        if not verified_current:
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "CURRENT_CHECKPOINT_NOT_ATTESTED",
+                "detail": current_detail,
+            }
+
+    verified_incoming, incoming_detail = verifier.verify(incoming_checkpoint)
+    if not verified_incoming:
+        return {
+            "status": "BLOCKED_FAIL_CLOSED",
+            "task_id": task_id,
+            "reason": "BOOTSTRAP_CHECKPOINT_NOT_ATTESTED",
+            "detail": incoming_detail,
+        }
+
     if state is None:
-        raw_checkpoint = payload.get("bootstrap_checkpoint")
-        if not isinstance(raw_checkpoint, Mapping):
-            return {
-                "status": "BLOCKED_FAIL_CLOSED",
-                "task_id": task_id,
-                "reason": "BOOTSTRAP_CHECKPOINT_REQUIRED",
-            }
-        checkpoint = AssignmentCheckpoint.from_mapping(raw_checkpoint)
-        if checkpoint.task_id != task_id:
-            raise WatchIngressError("BOOTSTRAP_TASK_ID_MISMATCH")
-        verified, detail = verifier.verify(checkpoint)
-        if not verified:
-            return {
-                "status": "BLOCKED_FAIL_CLOSED",
-                "task_id": task_id,
-                "reason": "BOOTSTRAP_CHECKPOINT_NOT_ATTESTED",
-                "detail": detail,
-            }
         store.upsert_checkpoint(
-            checkpoint,
+            incoming_checkpoint,
             stop_reason=StopReason.RUNNING,
             worker_kind=WorkerKind.JAYTEC_CALLABLE,
             worker_id=None,
@@ -507,6 +608,58 @@ def execute_watch_cycle(
         bootstrapped = True
 
     assert state is not None
+
+    verified_current, current_detail = verifier.verify(state.checkpoint)
+    if not verified_current:
+        return {
+            "status": "BLOCKED_FAIL_CLOSED",
+            "task_id": task_id,
+            "reason": "CURRENT_CHECKPOINT_NOT_ATTESTED",
+            "detail": current_detail,
+        }
+
+    checkpoint_advanced = False
+    current_checkpoint_number = state.checkpoint.checkpoint_number
+    incoming_checkpoint_number = incoming_checkpoint.checkpoint_number
+    if incoming_checkpoint_number < current_checkpoint_number:
+        return {
+            "status": "BLOCKED_FAIL_CLOSED",
+            "task_id": task_id,
+            "reason": "MASTER_GATE_CHECKPOINT_ROLLBACK_FORBIDDEN",
+        }
+    if incoming_checkpoint_number > current_checkpoint_number:
+        if incoming_checkpoint_number != current_checkpoint_number + 1:
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "MASTER_GATE_CHECKPOINT_GAP_FORBIDDEN",
+            }
+        if not _gate_result_ready_state(state):
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "MASTER_GATE_ADVANCE_REQUIRES_VERIFIED_PRIOR_SUCCESS",
+            }
+        checkpoint_advanced = store.advance_checkpoint_preserving_runtime(
+            incoming_checkpoint,
+            expected_current_checkpoint_number=current_checkpoint_number,
+        )
+        state = store.get(task_id)
+        assert state is not None
+        if state.worker_id:
+            store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                progress_marker=(
+                    "MASTER_GATE_ADVANCED:"
+                    + str(master_gate.get("gate_id") or "UNKNOWN")
+                    + ":"
+                    + str(incoming_checkpoint_number)
+                ),
+            )
+            state = store.get(task_id)
+            assert state is not None
     if state.worker_kind is not WorkerKind.JAYTEC_CALLABLE:
         return {
             "status": "BLOCKED_FAIL_CLOSED",
@@ -537,10 +690,91 @@ def execute_watch_cycle(
         broker_context=broker_context,
     )
     github_broker = "AVAILABLE" if broker_context else "NONE"
+    required_gate_receipt = (
+        master_gate_handoff_id(
+            state.checkpoint,
+            state.fencing_token,
+            master_gate,
+        )
+        if state.worker_id
+        else None
+    )
+
+    if _gate_result_ready_state(state):
+        readonly = manus_runtime.task_status_readonly(state.worker_id)
+        terminal = (
+            readonly.get("result")
+            if isinstance(readonly, Mapping)
+            and isinstance(readonly.get("result"), Mapping)
+            else {}
+        )
+        readonly_ok = str(readonly.get("status") or "") == "VERIFIED_COMPLETE"
+        terminal_success = str(terminal.get("status") or "") == "SUCCESS"
+        receipt_matches = bool(
+            required_gate_receipt
+            and master_gate_result_has_receipt(
+                terminal,
+                required_gate_receipt,
+            )
+        )
+        if readonly_ok and terminal_success and receipt_matches:
+            final = store.get(task_id)
+            return {
+                "status": "PASS",
+                "task_id": task_id,
+                "bootstrapped": bootstrapped,
+                "checkpoint_advanced": checkpoint_advanced,
+                "master_gate": master_gate,
+                "gate_handoff": "RESULT_READY",
+                "health_refreshed": False,
+                "github_broker": github_broker,
+                "gate_result": terminal,
+                "decision": {
+                    "action": "HOLD",
+                    "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
+                    "reason": "MASTER_GATE_RESULT_READY",
+                    "recovery_route": None,
+                },
+                "assignment": {
+                    "stop_reason": final.stop_reason.value if final else None,
+                    "worker_kind": final.worker_kind.value if final else None,
+                    "worker_id": final.worker_id if final else None,
+                    "worker_route": final.worker_route if final else None,
+                    "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
+                    "repo": final.checkpoint.repo if final else None,
+                    "branch": final.checkpoint.branch if final else None,
+                    "verified_head": final.checkpoint.commit_head if final else None,
+                    "recovery_attempts": final.recovery_attempts if final else None,
+                    "fencing_token": final.fencing_token if final else None,
+                    "progress_marker": final.progress_marker if final else None,
+                    "completed": final.completed if final else None,
+                    "last_error": final.last_error if final else None,
+                },
+            }
+        if readonly_ok and terminal_success and not receipt_matches:
+            # A completed result from the prior master gate is valid evidence
+            # for that prior gate, but it has no authority over the newly
+            # selected gate. Re-open the SAME fenced worker and continue below.
+            store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                progress_marker="MASTER_GATE_STALE_RESULT_IGNORED",
+            )
+            state = store.get(task_id)
+        else:
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "MASTER_GATE_RESULT_NOT_VERIFIED",
+            }
 
     # NEEDS_JAYTEC is an internal orchestration handoff, not an owner boundary.
     # Continue the SAME fenced worker with evidence supplied by GitHub Actions.
-    if _needs_jaytec_state(state):
+    # A cycle that is already resolving this transition must not also inject a
+    # new master-gate directive; the terminal/broker transition owns the cycle.
+    had_internal_dependency = _needs_jaytec_state(state)
+    if had_internal_dependency:
         if not broker_context:
             github_broker = "CONTEXT_REQUIRED"
         else:
@@ -741,11 +975,50 @@ def execute_watch_cycle(
                         github_broker = "HANDOFF_FAILED_CLOSED"
                     state = store.get(task_id)
 
+    gate_handoff = "NOT_NEEDED"
+    if (
+        not had_internal_dependency
+        and state.worker_id
+        and state.stop_reason is StopReason.RUNNING
+    ):
+        handoff = invoker.continue_gate_directive(
+            checkpoint=state.checkpoint,
+            worker_id=state.worker_id,
+            fencing_token=state.fencing_token,
+            gate_context=master_gate,
+        )
+        if not handoff.accepted:
+            store.mark_stop(
+                task_id,
+                fencing_token=state.fencing_token,
+                stop_reason=StopReason.WAITING_FOR_DEPENDENCY,
+                error="MASTER_GATE_HANDOFF_FAILED:" + str(handoff.detail or "unknown")[:400],
+            )
+            state = store.get(task_id)
+            gate_handoff = "FAILED_CLOSED"
+        elif handoff.detail == "MANUS_GATE_HANDOFF_REPLAY":
+            gate_handoff = "IDEMPOTENT_REPLAY"
+        else:
+            gate_handoff = "CONTINUED"
+            store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                progress_marker=(
+                    "MASTER_GATE:" + str(master_gate.get("gate_id"))
+                    + ":" + str(master_gate.get("graph_sha256"))[:12]
+                ),
+            )
+            state = store.get(task_id)
+
     supervisor = AutoRecoverySupervisor(
         store=store,
         verifier=verifier,
         invoker=invoker,
-        health_probe=ManusLiteHealthProbe(manus_runtime),
+        health_probe=ManusLiteHealthProbe(
+            manus_runtime,
+            required_result_receipt=required_gate_receipt,
+        ),
         notifier=JsonLogRecoveryNotifier(),
         instance_id="github-watch-cycle",
         heartbeat_timeout_seconds=WATCH_HEARTBEAT_TIMEOUT_SECONDS,
@@ -753,12 +1026,72 @@ def execute_watch_cycle(
     )
 
     refreshed = supervisor.refresh_worker_health(task_id)
+    refreshed_state = store.get(task_id)
+    if _gate_result_ready_state(refreshed_state):
+        readonly = manus_runtime.task_status_readonly(refreshed_state.worker_id)
+        terminal = (
+            readonly.get("result")
+            if isinstance(readonly, Mapping)
+            and isinstance(readonly.get("result"), Mapping)
+            else {}
+        )
+        if (
+            str(readonly.get("status") or "") != "VERIFIED_COMPLETE"
+            or str(terminal.get("status") or "") != "SUCCESS"
+            or not required_gate_receipt
+            or not master_gate_result_has_receipt(
+                terminal,
+                required_gate_receipt,
+            )
+        ):
+            return {
+                "status": "BLOCKED_FAIL_CLOSED",
+                "task_id": task_id,
+                "reason": "MASTER_GATE_RESULT_NOT_VERIFIED",
+            }
+        final = refreshed_state
+        return {
+            "status": "PASS",
+            "task_id": task_id,
+            "bootstrapped": bootstrapped,
+            "checkpoint_advanced": checkpoint_advanced,
+            "master_gate": master_gate,
+            "gate_handoff": gate_handoff,
+            "health_refreshed": refreshed,
+            "github_broker": github_broker,
+            "gate_result": terminal,
+            "decision": {
+                "action": "HOLD",
+                "effective_stop_reason": StopReason.WAITING_FOR_DEPENDENCY.value,
+                "reason": "MASTER_GATE_RESULT_READY",
+                "recovery_route": None,
+            },
+            "assignment": {
+                "stop_reason": final.stop_reason.value,
+                "worker_kind": final.worker_kind.value,
+                "worker_id": final.worker_id,
+                "worker_route": final.worker_route,
+                "checkpoint_number": final.checkpoint.checkpoint_number,
+                "repo": final.checkpoint.repo,
+                "branch": final.checkpoint.branch,
+                "verified_head": final.checkpoint.commit_head,
+                "recovery_attempts": final.recovery_attempts,
+                "fencing_token": final.fencing_token,
+                "progress_marker": final.progress_marker,
+                "completed": final.completed,
+                "last_error": final.last_error,
+            },
+        }
+
     decision = supervisor.tick(task_id)
     final = store.get(task_id)
     return {
         "status": "PASS",
         "task_id": task_id,
         "bootstrapped": bootstrapped,
+        "checkpoint_advanced": checkpoint_advanced,
+        "master_gate": master_gate,
+        "gate_handoff": gate_handoff,
         "health_refreshed": refreshed,
         "github_broker": github_broker,
         "decision": _decision_dict(decision),

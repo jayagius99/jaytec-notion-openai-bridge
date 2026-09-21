@@ -5,6 +5,9 @@ from autorecovery_components import (
     HARD_RECOVERY_CONSTRAINTS,
     ManusLiteHealthProbe,
     ManusLiteRecoveryInvoker,
+    ManusLiteHealthProbe,
+    master_gate_handoff_id,
+    master_gate_result_has_receipt,
     ObservedRefsCheckpointVerifier,
 )
 from manus_adapter import MANUS_MAX_MESSAGE_CHARS
@@ -163,6 +166,94 @@ class RuntimeComponentTests(unittest.TestCase):
         )
         rendered = _prompt(packet)
         self.assertLessEqual(len(rendered), MANUS_MAX_MESSAGE_CHARS)
+
+    def test_gate_directive_handoff_keeps_same_worker_and_lite_identity(self):
+        runtime = FakeRuntime()
+        cp = checkpoint()
+        invoker = ManusLiteRecoveryInvoker(runtime, FakeRegistry())
+        result = invoker.continue_gate_directive(
+            checkpoint=cp,
+            worker_id="manus-existing",
+            fencing_token=4,
+            gate_context={
+                "schema_version": "FORGE_MASTER_GATE_DIRECTIVE_V1",
+                "kind": "MASTER_GATE_DIRECTIVE",
+                "gate_id": "G03",
+                "phase": "SECURITY",
+                "title": "Security Audit #47",
+                "status": "IN_PROGRESS",
+                "depends_on": ["G02"],
+                "evidence": ["enforcement map"],
+                "graph_sha256": "a" * 64,
+                "checkpoint_number": cp.checkpoint_number,
+                "instruction": "Work only on G03.",
+            },
+        )
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.worker_id, "manus-existing")
+        self.assertEqual(len(runtime.handoffs), 1)
+        args, kwargs = runtime.handoffs[0]
+        self.assertEqual(args[0], "manus-existing")
+        self.assertIn("master-gate:G03:", kwargs["handoff_id"])
+        self.assertEqual(
+            kwargs["handoff_context"]["kind"],
+            "MASTER_GATE_DIRECTIVE",
+        )
+
+    def test_gate_handoff_injects_exact_result_receipt_requirement(self):
+        runtime = FakeRuntime()
+        cp = checkpoint()
+        context = {
+            "schema_version": "FORGE_MASTER_GATE_DIRECTIVE_V1",
+            "kind": "MASTER_GATE_DIRECTIVE",
+            "gate_id": "G03",
+            "phase": "SECURITY",
+            "title": "Security Audit #47",
+            "status": "IN_PROGRESS",
+            "depends_on": ["G02"],
+            "evidence": ["enforcement map"],
+            "graph_sha256": "a" * 64,
+            "checkpoint_number": cp.checkpoint_number,
+            "instruction": "Work only on G03.",
+        }
+        receipt = master_gate_handoff_id(cp, 4, context)
+        result = ManusLiteRecoveryInvoker(runtime, FakeRegistry()).continue_gate_directive(
+            checkpoint=cp,
+            worker_id="manus-existing",
+            fencing_token=4,
+            gate_context=context,
+        )
+        self.assertTrue(result.accepted)
+        _, kwargs = runtime.handoffs[0]
+        requirement = kwargs["handoff_context"]["result_receipt_requirement"]
+        self.assertEqual(requirement["reference"], receipt)
+        self.assertEqual(requirement["kind"], "audit_record")
+        self.assertEqual(requirement["source"], "JAYTEC_MASTER_GATE_HANDOFF")
+
+    def test_gate_result_receipt_match_is_exact(self):
+        cp = checkpoint()
+        context = {
+            "gate_id": "G03",
+            "graph_sha256": "a" * 64,
+            "checkpoint_number": cp.checkpoint_number,
+        }
+        receipt = master_gate_handoff_id(cp, 4, context)
+        good = {
+            "evidence": [{
+                "kind": "audit_record",
+                "source": "JAYTEC_MASTER_GATE_HANDOFF",
+                "reference": receipt,
+            }]
+        }
+        stale = {
+            "evidence": [{
+                "kind": "audit_record",
+                "source": "JAYTEC_MASTER_GATE_HANDOFF",
+                "reference": receipt + "-stale",
+            }]
+        }
+        self.assertTrue(master_gate_result_has_receipt(good, receipt))
+        self.assertFalse(master_gate_result_has_receipt(stale, receipt))
 
     def test_invoker_rejects_broad_connector_scope(self):
         cp = checkpoint({
