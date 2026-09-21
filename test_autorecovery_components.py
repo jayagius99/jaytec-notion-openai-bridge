@@ -293,24 +293,42 @@ class RuntimeComponentTests(unittest.TestCase):
         self.assertEqual(runtime.requests, [])
         self.assertEqual(runtime.handoffs, [])
 
-    def test_live_g03_recovery_shape_fits_after_safe_compaction(self):
+    def test_live_g03_attempt3_recovery_shape_has_real_safety_margin(self):
         runtime = FakeRuntime()
         cp = replace(
             checkpoint(),
             objective=(
-                "Close G03 Security Audit #47 with a rule-to-enforcement-to-bypass "
-                "map, confirmed weakness register, regression/adversarial tests, "
-                "and no unresolved CRITICAL/HIGH bypass."
+                "Advance canonical Forge master gate G03: Security Audit #47 closed "
+                "with enforcement map and hostile review. Do not work ahead of this "
+                "gate unless a directly required dependency is needed to complete it."
             ),
             current_phase=(
-                "SECURITY / G03 — Security Audit #47 closed with enforcement map "
-                "and hostile review"
+                "G03/SECURITY: Security Audit #47 closed with enforcement map and "
+                "hostile review"
+            ),
+            completed_work=(
+                "ROOT owner-control branch remains the authority root and is unmerged.",
+                "Genesis two-console branch remains draft/unmerged.",
+                "WATCH observer and canonical recovery cadence are hardened to 15 minutes.",
+                "Callable-worker certification and OIDC runtime-registration gates exist.",
+            ),
+            remaining_work=(
+                "G03 evidence: rule->enforcement->bypass map",
+                "G03 evidence: confirmed weakness register",
+                "G03 evidence: regression/adversarial tests",
+                "G03 evidence: no unresolved CRITICAL/HIGH bypass",
             ),
             last_safe_checkpoint=(
                 "ROOT=06c00355d2b13f03ebb870c7c13f0eeb7eb2026d; "
                 "Genesis=6f886ec3c32300085b5ad79a27cfa9824fe3092c; "
                 "main=0339acb8f2822ed4b3c4e58ef319599c6905933e; "
                 "15-minute callable recovery driver enabled only after live proof."
+            ),
+            tests_completed=(
+                "root-owner-security-validation",
+                "15-minute cadence 100-cycle no-drift soak",
+                "100-attempt lease/fencing stress",
+                "callable-worker certification suite",
             ),
             active_constraints=(
                 "NO FORGE ACTIVATION",
@@ -336,14 +354,28 @@ class RuntimeComponentTests(unittest.TestCase):
                 "connector_purposes": {"github": "write"},
                 "connector_mutation_authorized": True,
             },
+            cost_envelope={
+                "new_spend_authorized": False,
+                "paid_fallback": False,
+                "manus_profile": "lite_only",
+            },
             dependencies=(
-                "G02",
+                "master gate dependency G02 must remain VERIFIED_COMPLETE",
                 "owner physical-key enrollment and final activation remain external",
             ),
             next_intended_action=(
-                "Complete Security Audit #47 with rule-to-enforcement-to-bypass map, "
-                "confirmed weakness register, regression/adversarial tests and no "
-                "unresolved CRITICAL/HIGH bypass."
+                "Work only on G03. Inspect existing evidence first; do not recreate "
+                "completed work. Close executable enforcement/evidence gaps using "
+                "isolated branches and exact-head validation. Before SUCCESS, create "
+                "gate_evidence/G03.json using the FORGE_GATE_EVIDENCE_V1 schema, "
+                "covering every listed evidence requirement with concrete references "
+                "and the exact JAYTEC gate result receipt. If new blocking prerequisites "
+                "are found, record them as discovered_gates in that manifest instead of "
+                "working around them. Use NEEDS_JAYTEC for bounded GitHub broker "
+                "operations needed to create/update the fenced branch, manifest, or PR. "
+                "Return SUCCESS only when the manifest is complete and unresolved_items "
+                "is empty; otherwise return NEEDS_JAYTEC, NEEDS_OWNER, PARTIAL_SUCCESS, "
+                "or FAILED_CLOSED with exact unresolved items."
             ),
             checkpoint_number=103,
             commit_head="06c00355d2b13f03ebb870c7c13f0eeb7eb2026d",
@@ -362,11 +394,11 @@ class RuntimeComponentTests(unittest.TestCase):
             checkpoint=cp,
             continuation_packet={
                 "instruction": "Resume — do not recreate completed work",
-                "fencing_token": 10,
-                "recovery_route": "FRESH_WORKER_SAME_CHECKPOINT",
+                "fencing_token": 12,
+                "recovery_route": "ALTERNATE_APPROVED_ROUTE",
             },
-            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
-            fencing_token=10,
+            route=RecoveryRoute.ALTERNATE_APPROVED_ROUTE,
+            fencing_token=12,
         )
         self.assertTrue(result.accepted, result.detail)
         raw = runtime.requests[0]
@@ -383,11 +415,9 @@ class RuntimeComponentTests(unittest.TestCase):
         )
         compact = _compact_watch_recovery_packet(packet)
         rendered = _prompt(compact)
-        self.assertLessEqual(len(rendered), MANUS_MAX_MESSAGE_CHARS)
-        self.assertLessEqual(
-            len(rendered.encode("utf-8")),
-            MANUS_MAX_MESSAGE_CHARS,
-        )
+        self.assertLessEqual(len(rendered), 5700)
+        self.assertLessEqual(len(rendered.encode("utf-8")), 5700)
+        self.assertNotIn("reference_ids", compact)
         self.assertEqual(
             compact["return_schema"]["provider_enforced"],
             "MANUS_RESULT_JSON_SCHEMA",
@@ -398,6 +428,7 @@ class RuntimeComponentTests(unittest.TestCase):
         self.assertIn("Do not spend money", rendered)
         self.assertIn("Do not weaken security gates", rendered)
         self.assertIn("fencing_token", rendered)
+        self.assertIn("ALTERNATE_APPROVED_ROUTE", rendered)
 
     def test_gate_directive_handoff_keeps_same_worker_and_lite_identity(self):
         runtime = FakeRuntime()
