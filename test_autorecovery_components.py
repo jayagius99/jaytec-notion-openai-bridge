@@ -227,7 +227,7 @@ class RuntimeComponentTests(unittest.TestCase):
         _, kwargs = runtime.handoffs[0]
         requirement = kwargs["handoff_context"]["result_receipt_requirement"]
         self.assertEqual(requirement["reference"], receipt)
-        self.assertEqual(requirement["kind"], "jaytec_master_gate_result")
+        self.assertEqual(requirement["kind"], "audit_record")
         self.assertEqual(requirement["source"], "JAYTEC_MASTER_GATE_HANDOFF")
 
     def test_gate_result_receipt_match_is_exact(self):
@@ -240,14 +240,14 @@ class RuntimeComponentTests(unittest.TestCase):
         receipt = master_gate_handoff_id(cp, 4, context)
         good = {
             "evidence": [{
-                "kind": "jaytec_master_gate_result",
+                "kind": "audit_record",
                 "source": "JAYTEC_MASTER_GATE_HANDOFF",
                 "reference": receipt,
             }]
         }
         stale = {
             "evidence": [{
-                "kind": "jaytec_master_gate_result",
+                "kind": "audit_record",
                 "source": "JAYTEC_MASTER_GATE_HANDOFF",
                 "reference": receipt + "-stale",
             }]
