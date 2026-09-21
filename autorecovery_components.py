@@ -317,6 +317,96 @@ class ManusLiteRecoveryInvoker:
         )
 
 
+    def continue_gate_directive(
+        self,
+        *,
+        checkpoint: AssignmentCheckpoint,
+        worker_id: str,
+        fencing_token: int,
+        gate_context: Mapping[str, Any],
+    ) -> WorkerInvocation:
+        """Steer the same fenced worker onto one canonical master gate.
+
+        The handoff is deterministic/idempotent and consumes no recovery
+        attempt. An idempotent replay is healthy: the provider must not receive
+        the same directive twice.
+        """
+        try:
+            _actions, connectors, mutation = _authority(checkpoint)
+            gate_id = str(gate_context.get("gate_id") or "").strip()
+            graph_sha = str(gate_context.get("graph_sha256") or "").strip()
+            checkpoint_number = int(gate_context.get("checkpoint_number") or 0)
+            if (
+                not re.fullmatch(r"G[0-9]{2}", gate_id)
+                or not re.fullmatch(r"[0-9a-f]{64}", graph_sha)
+                or checkpoint_number != checkpoint.checkpoint_number
+            ):
+                raise ValueError("MASTER_GATE_CONTEXT_INVALID")
+            digest = hashlib.sha256(
+                json.dumps(
+                    dict(gate_context),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            result = self.runtime.continue_task_handoff(
+                worker_id,
+                scope="jaytec_delegated_task",
+                authority_source="chatgpt",
+                current_task_authorized=True,
+                connector_purposes=connectors,
+                connector_mutation_authorized=mutation,
+                handoff_id=(
+                    f"{checkpoint.task_id}:fence:{fencing_token}:"
+                    f"master-gate:{gate_id}:{digest[:16]}"
+                ),
+                handoff_context=dict(gate_context),
+            )
+        except Exception as exc:
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_GATE_HANDOFF_FAILED:" + type(exc).__name__,
+            )
+
+        if result.get("status") != "CONTINUED":
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_GATE_HANDOFF_NOT_CONTINUED",
+            )
+        if result.get("provider_task_id") != worker_id:
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_GATE_HANDOFF_WORKER_MISMATCH",
+            )
+        if (
+            result.get("requested_profile") != "lite"
+            or result.get("observed_profile_verified") is not True
+        ):
+            return WorkerInvocation(
+                accepted=False,
+                worker_id=worker_id,
+                route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                detail="MANUS_GATE_HANDOFF_LITE_IDENTITY_UNVERIFIED",
+            )
+        return WorkerInvocation(
+            accepted=True,
+            worker_id=worker_id,
+            route=RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+            detail=(
+                "MANUS_GATE_HANDOFF_REPLAY"
+                if result.get("idempotent_replay") is True
+                else "MANUS_GATE_HANDOFF_CONTINUED"
+            ),
+        )
+
+
 class ManusLiteHealthProbe:
     """Translate Manus task state into JAYTEC fenced-worker health."""
 
