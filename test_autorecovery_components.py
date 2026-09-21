@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from autorecovery_components import (
     HARD_RECOVERY_CONSTRAINTS,
+    assignment_owner_redirect_handoff_id,
     ManusLiteHealthProbe,
     ManusLiteRecoveryInvoker,
     ManusLiteHealthProbe,
@@ -198,6 +199,51 @@ class RuntimeComponentTests(unittest.TestCase):
         self.assertEqual(
             kwargs["handoff_context"]["kind"],
             "MASTER_GATE_DIRECTIVE",
+        )
+
+    def test_assignment_owner_redirect_keeps_same_worker_and_is_idempotent(self):
+        runtime = FakeRuntime()
+        cp = checkpoint()
+        directive = {
+            "schema_version": "JAYTEC_ASSIGNMENT_CONTROLLER_DIRECTIVE_V1",
+            "task_id": cp.task_id,
+            "assignment_owner": "CHATGPT_ASSIGNMENT_OWNER",
+            "gate_id": "G03",
+            "checkpoint_number": cp.checkpoint_number,
+            "review_id": "a" * 64,
+            "request_id": "b" * 64,
+            "jaytec_review_id": "c" * 64,
+            "decision": "REDIRECT",
+            "direction": "Close the missing alternate-route denial proof.",
+            "result_receipt": "receipt",
+            "result_sha256": "d" * 64,
+            "manifest_sha256": "e" * 64,
+            "worker_id": "manus-existing",
+            "fencing_token": 4,
+        }
+        hid = assignment_owner_redirect_handoff_id(cp, 4, directive)
+        result = ManusLiteRecoveryInvoker(
+            runtime, FakeRegistry()
+        ).continue_assignment_owner_directive(
+            checkpoint=cp,
+            worker_id="manus-existing",
+            fencing_token=4,
+            directive=directive,
+        )
+        self.assertTrue(result.accepted)
+        self.assertEqual(result.worker_id, "manus-existing")
+        self.assertEqual(len(runtime.handoffs), 1)
+        args, kwargs = runtime.handoffs[0]
+        self.assertEqual(args[0], "manus-existing")
+        self.assertEqual(kwargs["handoff_id"], hid)
+        self.assertIn("owner-redirect:G03:", hid)
+        self.assertEqual(
+            kwargs["handoff_context"]["kind"],
+            "ASSIGNMENT_OWNER_REDIRECT",
+        )
+        self.assertEqual(
+            kwargs["handoff_context"]["direction"],
+            directive["direction"],
         )
 
     def test_gate_handoff_injects_exact_result_receipt_requirement(self):
