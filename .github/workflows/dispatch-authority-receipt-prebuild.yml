@@ -1,4 +1,4 @@
-name: Dispatch Authority Receipt Prebuild
+# Revalidate synthetic PR merge against current staging base after PR #162.\nname: Dispatch Authority Receipt Prebuild
 
 on:
   pull_request:
