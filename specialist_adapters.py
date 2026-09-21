@@ -42,16 +42,40 @@ from worker_json import WorkerJsonError, json_object, json_object_with_diagnosti
 EXPECTED_ENGINEERING_MODEL = "gpt-5.6-sol"
 SOL_KNOWLEDGE_SCOPE = "JAYTEC_SANITIZED_CORE_V3"
 SOL_CONTEXT_PATH = Path(__file__).with_name("SOL_PRIMARY_SANITIZED_CONTEXT_V3.md")
+# The owner asked for broad JAYTEC/Forge knowledge transfer to SOL with one
+# narrow exclusion: the sealed provenance/creation history of Uren. Ordinary
+# Forge, Genesis, pre-Genesis and historical system terminology is NOT secret
+# merely because it relates to activation. Block only origin/provenance material.
 SOL_PROVENANCE_MARKERS = (
-    "genesis_event_0001", "pre-genesis", "pre genesis", "/jaytec/uren/pre-genesis",
-    "uren_identity_genesis", "uren identity genesis", "god mode", "owner manual source index",
-    "how uren was born", "how uren will be born", "uren birth", "uren origin",
-    "uren construction", "uren activation sequence", "uren genesis",
+    "/jaytec/uren/pre-genesis",
+    "uren_identity_genesis",
+    "uren identity genesis",
+    "owner manual source index",
+    "how uren was born",
+    "how uren will be born",
+    "uren birth",
+    "uren origin",
+    "origin of uren",
+    "uren construction history",
+    "uren creation history",
+    "uren creation story",
+    "uren provenance",
+    "uren source lineage",
 )
 SOL_PROVENANCE_COMPACT_MARKERS = (
-    "genesisevent0001", "pregenesis", "jaytecurenpregenesis", "urenidentitygenesis",
-    "godmode", "ownermanualsourceindex", "howurenwasborn", "howurenwillbeborn",
-    "urenbirth", "urenorigin", "urenconstruction", "urenactivationsequence", "urengenesis",
+    "jaytecurenpregenesis",
+    "urenidentitygenesis",
+    "ownermanualsourceindex",
+    "howurenwasborn",
+    "howurenwillbeborn",
+    "urenbirth",
+    "urenorigin",
+    "originofuren",
+    "urenconstructionhistory",
+    "urencreationhistory",
+    "urencreationstory",
+    "urenprovenance",
+    "urensourcelineage",
 )
 # TaskPacket v1 keeps the historical "codex" specialist key for wire compatibility.
 # Semantically it now means the JAYTEC engineering specialist role.
