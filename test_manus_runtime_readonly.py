@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -95,6 +96,13 @@ class ReadOnlyStatusTests(unittest.TestCase):
             result["reason"],
             "MANUS_RUNTIME_GOVERNANCE_REJECTED:MANUS_SPECIALIST_REQUEST_FIELDS_INVALID",
         )
+        shape = result["specialist_request_shape_diagnostics"]
+        self.assertFalse(shape["values_included"])
+        self.assertEqual(shape["request_count"], 1)
+        self.assertEqual(shape["requests"][0]["present_fields"], ["type"])
+        self.assertIn("packet_sha256", shape["requests"][0]["missing_fields"])
+        self.assertEqual(shape["requests"][0]["extra_fields"], [])
+        self.assertNotIn("SPECIALIST_REQUEST", json.dumps(shape))
         self.assertEqual(client.stop_calls, [])
 
 

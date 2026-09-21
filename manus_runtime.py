@@ -896,10 +896,47 @@ class ManusLiteRuntime:
             # Read-only diagnostics need the exact fail-closed governance code
             # without mutating/stopping the provider task or leaking provider text.
             out["status"] = "FAILED_CLOSED"
-            out["reason"] = (
-                "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
-                + str(exc)[:180]
-            )
+            code = str(exc)[:180]
+            out["reason"] = "MANUS_RUNTIME_GOVERNANCE_REJECTED:" + code
+            if code == "MANUS_SPECIALIST_REQUEST_FIELDS_INVALID":
+                expected = {
+                    "type",
+                    "request_id",
+                    "parent_task_id",
+                    "directive_version",
+                    "specialist",
+                    "objective",
+                    "reason",
+                    "required_context",
+                    "authority",
+                    "packet_sha256",
+                }
+                shapes = []
+                raw_requests = result.get("specialist_requests")
+                if isinstance(raw_requests, list):
+                    for index, raw_request in enumerate(raw_requests[:8]):
+                        row = {"index": index, "kind": type(raw_request).__name__}
+                        if isinstance(raw_request, str):
+                            try:
+                                decoded = json.loads(raw_request)
+                            except Exception:
+                                row["json_object"] = False
+                            else:
+                                row["json_object"] = isinstance(decoded, Mapping)
+                                if isinstance(decoded, Mapping):
+                                    present = set(str(key) for key in decoded.keys())
+                                    row["present_fields"] = sorted(present)
+                                    row["missing_fields"] = sorted(expected - present)
+                                    row["extra_fields"] = sorted(present - expected)
+                        shapes.append(row)
+                out["specialist_request_shape_diagnostics"] = {
+                    "expected_fields": sorted(expected),
+                    "request_count": (
+                        len(raw_requests) if isinstance(raw_requests, list) else None
+                    ),
+                    "requests": shapes,
+                    "values_included": False,
+                }
             return out
 
         out["status"] = "VERIFIED_COMPLETE"

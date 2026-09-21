@@ -906,6 +906,10 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
                 }
                 if worker_status.get("reason") is not None:
                     safe_worker["reason"] = worker_status.get("reason")
+                if isinstance(worker_status.get("specialist_request_shape_diagnostics"), Mapping):
+                    safe_worker["specialist_request_shape_diagnostics"] = dict(
+                        worker_status["specialist_request_shape_diagnostics"]
+                    )
                 terminal = worker_status.get("result")
                 if isinstance(terminal, Mapping):
                     safe_worker["result"] = {
