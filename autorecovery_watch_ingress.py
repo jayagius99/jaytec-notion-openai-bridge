@@ -498,6 +498,49 @@ def _gate_result_ready_state(state: Any) -> bool:
     )
 
 
+def _specialist_protocol_repair_context() -> dict[str, Any]:
+    """Content-minimized instruction for one same-worker specialist reissue."""
+    return {
+        "schema_version": "JAYTEC_SPECIALIST_PROTOCOL_REPAIR_V1",
+        "kind": "SPECIALIST_PROTOCOL_REPAIR",
+        "reason_code": "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE",
+        "authority": "NO_AUTHORITY_EXPANSION_SAME_TASK_ONLY",
+        "target_intent": {
+            "type": "SPECIALIST_INTENT_V1",
+            "exact_fields": [
+                "type",
+                "specialist",
+                "objective",
+                "reason",
+                "required_context",
+            ],
+            "allowed_specialists": ["sol", "deepseek", "nemo", "github_broker"],
+            "instruction": (
+                "Reissue only the same bounded help request from your existing task "
+                "context. Do not invent request_id, parent_task_id, directive_version, "
+                "authority, or packet_sha256; JAYTEC creates them."
+            ),
+        },
+        "github_broker": {
+            "allowed_operations": [
+                "read_file",
+                "list_path",
+                "read_issue",
+                "read_pr",
+                "read_workflow_runs",
+                "create_branch",
+                "write_file",
+                "create_pr",
+            ],
+            "instruction": (
+                "If the intended specialist is github_broker, required_context must "
+                "contain one exact operation and only its required bounded arguments. "
+                "Do not include credentials, secrets, sealed provenance, or unrelated context."
+            ),
+        },
+    }
+
+
 def _needs_jaytec_state(state: Any) -> bool:
     if state is None or not getattr(state, "worker_id", None):
         return False
@@ -1110,6 +1153,94 @@ def execute_watch_cycle(
         if state.worker_id
         else None
     )
+
+    # Protocol repair is not worker recovery. If a historical Lite result
+    # uses the observed non-canonical six-field specialist intent, give the SAME
+    # worker/fence one deterministic correction turn before health/recovery logic.
+    # No old request values are copied into the handoff.
+    if (
+        state.worker_id
+        and state.stop_reason is StopReason.RUNNING
+        and str(state.progress_marker or "") in {
+            "MANUS_PENDING",
+            "SPECIALIST_PROTOCOL_REPAIR_PENDING",
+        }
+    ):
+        protocol_probe = manus_runtime.task_status_readonly(
+            state.worker_id,
+            parent_task_id=task_id,
+        )
+        if (
+            isinstance(protocol_probe, Mapping)
+            and str(protocol_probe.get("status") or "") == "FAILED_CLOSED"
+            and str(protocol_probe.get("reason") or "")
+            == "MANUS_RUNTIME_GOVERNANCE_REJECTED:"
+               "MANUS_LEGACY_SPECIALIST_INTENT_REQUIRES_REISSUE"
+        ):
+            repair_context = _specialist_protocol_repair_context()
+            handoff = invoker.continue_existing(
+                checkpoint=state.checkpoint,
+                worker_id=state.worker_id,
+                fencing_token=state.fencing_token,
+                broker_context=repair_context,
+            )
+            if not handoff.accepted:
+                return {
+                    "status": "BLOCKED_FAIL_CLOSED",
+                    "task_id": task_id,
+                    "reason": "SPECIALIST_PROTOCOL_REPAIR_HANDOFF_FAILED:"
+                    + str(handoff.detail or "unknown")[:220],
+                }
+
+            marker = "SPECIALIST_PROTOCOL_REPAIR_PENDING"
+            store.heartbeat(
+                task_id,
+                fencing_token=state.fencing_token,
+                worker_id=state.worker_id,
+                progress_marker=marker,
+            )
+            final = store.get(task_id)
+            return {
+                "status": "PASS",
+                "task_id": task_id,
+                "bootstrapped": bootstrapped,
+                "checkpoint_advanced": checkpoint_advanced,
+                "master_gate": master_gate,
+                "gate_handoff": "NOT_NEEDED",
+                "health_refreshed": False,
+                "github_broker": "NONE",
+                "protocol_repair": {
+                    "status": (
+                        "IDEMPOTENT_REPLAY_WAITING"
+                        if handoff.detail == "MANUS_JAYTEC_HANDOFF_REPLAY"
+                        else "SAME_WORKER_CONTINUED"
+                    ),
+                    "schema_version": "JAYTEC_SPECIALIST_PROTOCOL_REPAIR_V1",
+                    "worker_replaced": False,
+                    "recovery_attempt_consumed": False,
+                },
+                "decision": {
+                    "action": "NOOP_HEALTHY",
+                    "effective_stop_reason": StopReason.RUNNING.value,
+                    "reason": "SPECIALIST_PROTOCOL_REPAIR_CONTINUED",
+                    "recovery_route": None,
+                },
+                "assignment": {
+                    "stop_reason": final.stop_reason.value if final else None,
+                    "worker_kind": final.worker_kind.value if final else None,
+                    "worker_id": final.worker_id if final else None,
+                    "worker_route": final.worker_route if final else None,
+                    "checkpoint_number": final.checkpoint.checkpoint_number if final else None,
+                    "repo": final.checkpoint.repo if final else None,
+                    "branch": final.checkpoint.branch if final else None,
+                    "verified_head": final.checkpoint.commit_head if final else None,
+                    "recovery_attempts": final.recovery_attempts if final else None,
+                    "fencing_token": final.fencing_token if final else None,
+                    "progress_marker": final.progress_marker if final else None,
+                    "completed": final.completed if final else None,
+                    "last_error": final.last_error if final else None,
+                },
+            }
 
     if _gate_result_ready_state(state):
         readonly = manus_runtime.task_status_readonly(state.worker_id, parent_task_id=task_id)
