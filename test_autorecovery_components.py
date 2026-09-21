@@ -12,6 +12,7 @@ from autorecovery_components import (
     master_gate_handoff_id,
     master_gate_result_has_receipt,
     ObservedRefsCheckpointVerifier,
+    recovery_preflight_budget,
 )
 from manus_adapter import MANUS_MAX_MESSAGE_CHARS
 from manus_governance import build_minimal_task_packet
@@ -108,6 +109,40 @@ class RuntimeComponentTests(unittest.TestCase):
             verifier.verify(checkpoint()),
             (False, "CHECKPOINT_BRANCH_NOT_ATTESTED"),
         )
+
+    def test_recovery_budget_diagnostic_is_side_effect_free_and_exact(self):
+        cp = checkpoint()
+        budget = recovery_preflight_budget(
+            checkpoint=cp,
+            continuation_packet={
+                "instruction": "Resume — do not recreate completed work",
+                "fencing_token": 3,
+                "recovery_route": "ALTERNATE_APPROVED_ROUTE",
+            },
+            route=RecoveryRoute.ALTERNATE_APPROVED_ROUTE,
+            fencing_token=3,
+            broker_context={
+                "kind": "PRIVATE_REPO_BOOTSTRAP",
+                "repo": cp.repo,
+                "sha256": "f" * 64,
+            },
+        )
+        self.assertEqual(
+            budget["schema_version"],
+            "JAYTEC_RECOVERY_PACKET_BUDGET_DIAGNOSTIC_V1",
+        )
+        self.assertEqual(budget["route"], "ALTERNATE_APPROVED_ROUTE")
+        self.assertEqual(budget["fencing_token"], 3)
+        self.assertGreater(budget["raw_prompt_bytes"], 0)
+        self.assertGreater(budget["compact_prompt_bytes"], 0)
+        self.assertLessEqual(
+            budget["compact_prompt_bytes"],
+            budget["raw_prompt_bytes"],
+        )
+        self.assertIn("compact_prompt_fits", budget)
+        self.assertNotIn("objective", budget)
+        self.assertNotIn("constraints", budget)
+        self.assertNotIn("allowed_actions", budget)
 
     def test_invoker_starts_lite_worker_with_fencing_identity(self):
         runtime = FakeRuntime()

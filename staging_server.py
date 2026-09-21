@@ -35,6 +35,12 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from autorecovery_watch_ingress import WatchIngressError, execute_watch_cycle
+from autorecovery_components import recovery_preflight_budget
+from autorecovery_supervisor import (
+    PostgresAssignmentStore,
+    RecoveryRoute,
+    build_continuation_packet,
+)
 from github_watch_oidc import GitHubActionsWatchOIDCVerifier, validate_watch_claims
 from autorecovery_runtime import (
     assignment_status as read_autorecovery_assignment_status,
@@ -594,6 +600,56 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
     )
     result["autorecovery_active"] = runtime.active
     result["runtime_components_registered"] = runtime.runtime_components_registered
+
+    # Read-only exact recovery-envelope budget diagnosis. This reuses the same
+    # packet builder/preflight code as the real invoker but acquires no lease
+    # and makes no provider call. Only sizes/counts/digests are returned.
+    try:
+        diagnostic_state = PostgresAssignmentStore(DATABASE_URL).get(task_id)
+    except Exception as exc:
+        result["recovery_packet_budget"] = {
+            "status": "DIAGNOSTIC_READ_FAILED",
+            "error": type(exc).__name__,
+        }
+    else:
+        if diagnostic_state is not None:
+            route_by_attempt_number = {
+                1: RecoveryRoute.SAME_WORKER_PROVIDER,
+                2: RecoveryRoute.FRESH_WORKER_SAME_CHECKPOINT,
+                3: RecoveryRoute.ALTERNATE_APPROVED_ROUTE,
+            }
+            attempt_number = int(diagnostic_state.recovery_attempts or 0)
+            diagnostic_route = route_by_attempt_number.get(attempt_number)
+            if diagnostic_route is not None:
+                try:
+                    continuation_packet = build_continuation_packet(
+                        diagnostic_state.checkpoint,
+                        fencing_token=diagnostic_state.fencing_token,
+                        recovery_route=diagnostic_route,
+                    )
+                    result["recovery_packet_budget"] = recovery_preflight_budget(
+                        checkpoint=diagnostic_state.checkpoint,
+                        continuation_packet=continuation_packet,
+                        route=diagnostic_route,
+                        fencing_token=diagnostic_state.fencing_token,
+                        broker_context={
+                            "kind": "PRIVATE_REPO_BOOTSTRAP",
+                            "repo": diagnostic_state.checkpoint.repo,
+                            "sha256": "0" * 64,
+                        },
+                    )
+                    result["recovery_packet_budget"]["status"] = "PASS"
+                    result["recovery_packet_budget"]["read_only"] = True
+                    result["recovery_packet_budget"]["provider_invoked"] = False
+                    result["recovery_packet_budget"]["lease_acquired"] = False
+                except Exception as exc:
+                    result["recovery_packet_budget"] = {
+                        "status": "DIAGNOSTIC_COMPUTE_FAILED",
+                        "error": type(exc).__name__,
+                        "read_only": True,
+                        "provider_invoked": False,
+                        "lease_acquired": False,
+                    }
 
     # If a recovery invocation failed after claiming its fence, the exact
     # fail-closed runtime result is already stored under a deterministic

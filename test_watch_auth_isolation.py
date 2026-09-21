@@ -49,6 +49,18 @@ def test_watch_status_only_peeks_existing_invocation_record():
     assert "execute_watch_cycle(" not in route
 
 
+def test_watch_status_recovery_budget_diagnostic_is_read_only():
+    route = SERVER.split('@mcp.custom_route("/jaytec/watch-status", methods=["POST"])', 1)[1]
+    route = route.split("def _protocol_portal", 1)[0]
+    assert "recovery_preflight_budget(" in route
+    assert "PostgresAssignmentStore(DATABASE_URL).get(task_id)" in route
+    assert '"provider_invoked"] = False' in route
+    assert '"lease_acquired"] = False' in route
+    assert "acquire_recovery_lease" not in route
+    assert "start_task(" not in route
+    assert "start_task_idempotent(" not in route
+
+
 def test_watch_status_terminal_inspection_is_read_only():
     route = SERVER.split('@mcp.custom_route("/jaytec/watch-status", methods=["POST"])', 1)[1]
     route = route.split("def _protocol_portal", 1)[0]

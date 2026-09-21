@@ -164,6 +164,216 @@ def master_gate_result_has_receipt(
     return False
 
 
+
+def _build_recovery_start_request(
+    *,
+    checkpoint: AssignmentCheckpoint,
+    continuation_packet: Mapping[str, Any],
+    route: RecoveryRoute,
+    fencing_token: int,
+    broker_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the exact bounded Manus recovery request without side effects."""
+
+    actions, connectors, mutation = _authority(checkpoint)
+    worker_task_id = (
+        f"{checkpoint.task_id}:recovery:{fencing_token}:"
+        f"{route.value.casefold()}"
+    )[:200]
+    checkpoint_digest = hashlib.sha256(
+        json.dumps(
+            dict(continuation_packet),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    required_context: dict[str, Any] = {
+        "parent_task_id": checkpoint.task_id,
+        "checkpoint_number": checkpoint.checkpoint_number,
+        "repo": checkpoint.repo,
+        "branch": checkpoint.branch,
+        "verified_head": checkpoint.commit_head,
+        "open_pr": checkpoint.open_pr,
+        "current_phase": checkpoint.current_phase[:500],
+        "last_safe_checkpoint": checkpoint.last_safe_checkpoint[:700],
+        "next_intended_action": checkpoint.next_intended_action[:700],
+        "completed_work_count": len(checkpoint.completed_work),
+        "remaining_work_count": len(checkpoint.remaining_work),
+        "known_failures_count": len(checkpoint.known_failures),
+        "dependencies_count": len(checkpoint.dependencies),
+        "continuation_packet_sha256": checkpoint_digest,
+        "canonical_objective_sha256": hashlib.sha256(
+            checkpoint.objective.encode("utf-8")
+        ).hexdigest(),
+        "canonical_objective_excerpt": checkpoint.objective[:320],
+        "active_constraints_sha256": hashlib.sha256(
+            json.dumps(
+                list(checkpoint.active_constraints),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest(),
+        "fencing_token": fencing_token,
+        "recovery_route": route.value,
+    }
+    broker = dict(broker_context or {})
+    if broker:
+        required_context["jaytec_private_github_broker"] = {
+            "available": True,
+            "kind": str(broker.get("kind") or "")[:80],
+            "repo": str(broker.get("repo") or checkpoint.repo)[:200],
+            "sha256": str(broker.get("sha256") or "")[:64],
+            "handoff_policy": (
+                "If direct private GitHub evidence is insufficient, "
+                "return NEEDS_JAYTEC. JAYTEC will provide exact bounded "
+                "broker evidence to this same task."
+            ),
+        }
+    constraints = list(dict.fromkeys(
+        [*checkpoint.active_constraints, *HARD_RECOVERY_CONSTRAINTS]
+    ))
+    return {
+        "task_id": worker_task_id,
+        "objective": (
+            "Continue the canonical Forge assignment from the exact durable "
+            "JAYTEC checkpoint identified in required_context. Preserve all "
+            "completed work; follow current_phase and next_intended_action; "
+            "obey every supplied constraint and authority boundary. If exact "
+            "omitted checkpoint prose is required, return NEEDS_JAYTEC rather "
+            "than guessing or expanding scope."
+        ),
+        "scope": "jaytec_delegated_task",
+        "authority_source": "chatgpt",
+        "current_task_authorized": True,
+        "allowed_actions": actions,
+        "connector_purposes": connectors,
+        "connector_mutation_authorized": mutation,
+        "required_context": required_context,
+        "constraints": constraints,
+        "reference_ids": [
+            f"{checkpoint.repo}@{checkpoint.commit_head}",
+            f"issue:{checkpoint.repo}#59",
+            f"issue:{checkpoint.repo}#66",
+        ],
+        "title": f"JAYTEC recovery {checkpoint.task_id} fence {fencing_token}",
+    }
+
+
+def recovery_preflight_budget(
+    *,
+    checkpoint: AssignmentCheckpoint,
+    continuation_packet: Mapping[str, Any],
+    route: RecoveryRoute,
+    fencing_token: int,
+    broker_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Read-only exact-size diagnosis for the Manus recovery envelope.
+
+    Returns only sizes/counts/digests. It acquires no lease, calls no provider,
+    and exposes no checkpoint prose or credentials.
+    """
+
+    request = _build_recovery_start_request(
+        checkpoint=checkpoint,
+        continuation_packet=continuation_packet,
+        route=route,
+        fencing_token=fencing_token,
+        broker_context=broker_context,
+    )
+    request_json = json.dumps(request, sort_keys=True)
+    parsed = parse_start_request(request_json)
+    packet = build_minimal_task_packet(
+        task_id=parsed.task_id,
+        objective=parsed.objective,
+        scope=parsed.scope,
+        authority_source=parsed.authority_source,
+        allowed_actions=list(parsed.allowed_actions),
+        required_context=parsed.required_context,
+        constraints=list(parsed.constraints),
+        reference_ids=list(parsed.reference_ids),
+    )
+    raw_prompt = _prompt(packet)
+    compact_packet = _compact_watch_recovery_packet(packet)
+    compact_prompt = _prompt(compact_packet)
+
+    def _bytes(value: str) -> int:
+        return len(value.encode("utf-8"))
+
+    def _json_bytes(value: Any) -> int:
+        return len(json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        ).encode("utf-8"))
+
+    authority = dict(checkpoint.authority_envelope or {})
+    allowed_actions = authority.get("allowed_actions")
+    if not isinstance(allowed_actions, list):
+        allowed_actions = []
+
+    return {
+        "schema_version": "JAYTEC_RECOVERY_PACKET_BUDGET_DIAGNOSTIC_V1",
+        "task_id_sha256": hashlib.sha256(
+            checkpoint.task_id.encode("utf-8")
+        ).hexdigest(),
+        "checkpoint_number": checkpoint.checkpoint_number,
+        "route": route.value,
+        "fencing_token": fencing_token,
+        "request_json_bytes": _bytes(request_json),
+        "raw_prompt_chars": len(raw_prompt),
+        "raw_prompt_bytes": _bytes(raw_prompt),
+        "raw_prompt_fits": _fits_manus_raw_message(raw_prompt),
+        "compact_prompt_chars": len(compact_prompt),
+        "compact_prompt_bytes": _bytes(compact_prompt),
+        "compact_prompt_fits": _fits_manus_raw_message(compact_prompt),
+        "required_context_bytes": _json_bytes(request["required_context"]),
+        "constraints_count": len(request["constraints"]),
+        "constraints_bytes": _json_bytes(request["constraints"]),
+        "checkpoint_constraints_count": len(checkpoint.active_constraints),
+        "checkpoint_constraints_bytes": _json_bytes(
+            list(checkpoint.active_constraints)
+        ),
+        "allowed_actions_count": len(allowed_actions),
+        "allowed_actions_bytes": _json_bytes(allowed_actions),
+        "objective_chars": len(checkpoint.objective),
+        "current_phase_chars": len(checkpoint.current_phase),
+        "last_safe_checkpoint_chars": len(checkpoint.last_safe_checkpoint),
+        "next_intended_action_chars": len(checkpoint.next_intended_action),
+        "completed_work_count": len(checkpoint.completed_work),
+        "completed_work_bytes": _json_bytes(list(checkpoint.completed_work)),
+        "remaining_work_count": len(checkpoint.remaining_work),
+        "remaining_work_bytes": _json_bytes(list(checkpoint.remaining_work)),
+        "known_failures_count": len(checkpoint.known_failures),
+        "known_failures_bytes": _json_bytes(list(checkpoint.known_failures)),
+        "dependencies_count": len(checkpoint.dependencies),
+        "dependencies_bytes": _json_bytes(list(checkpoint.dependencies)),
+        "continuation_packet_bytes": _json_bytes(continuation_packet),
+        "packet_sha256": hashlib.sha256(
+            json.dumps(
+                packet,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest(),
+        "compact_packet_sha256": hashlib.sha256(
+            json.dumps(
+                compact_packet,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
 class ManusLiteRecoveryInvoker:
     """Start one idempotent, fenced Manus Lite continuation worker."""
 
@@ -187,94 +397,13 @@ class ManusLiteRecoveryInvoker:
         fencing_token: int,
     ) -> WorkerInvocation:
         try:
-            actions, connectors, mutation = _authority(checkpoint)
-            worker_task_id = (
-                f"{checkpoint.task_id}:recovery:{fencing_token}:"
-                f"{route.value.casefold()}"
-            )[:200]
-            checkpoint_digest = hashlib.sha256(
-                json.dumps(
-                    dict(continuation_packet),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    default=str,
-                ).encode("utf-8")
-            ).hexdigest()
-            required_context = {
-                "parent_task_id": checkpoint.task_id,
-                "checkpoint_number": checkpoint.checkpoint_number,
-                "repo": checkpoint.repo,
-                "branch": checkpoint.branch,
-                "verified_head": checkpoint.commit_head,
-                "open_pr": checkpoint.open_pr,
-                "current_phase": checkpoint.current_phase[:500],
-                "last_safe_checkpoint": checkpoint.last_safe_checkpoint[:700],
-                "next_intended_action": checkpoint.next_intended_action[:700],
-                "completed_work_count": len(checkpoint.completed_work),
-                "remaining_work_count": len(checkpoint.remaining_work),
-                "known_failures_count": len(checkpoint.known_failures),
-                "dependencies_count": len(checkpoint.dependencies),
-                "continuation_packet_sha256": checkpoint_digest,
-                "canonical_objective_sha256": hashlib.sha256(
-                    checkpoint.objective.encode("utf-8")
-                ).hexdigest(),
-                "canonical_objective_excerpt": checkpoint.objective[:320],
-                "active_constraints_sha256": hashlib.sha256(
-                    json.dumps(
-                        list(checkpoint.active_constraints),
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                    ).encode("utf-8")
-                ).hexdigest(),
-                "fencing_token": fencing_token,
-                "recovery_route": route.value,
-            }
-            if self.broker_context:
-                # Do not embed the full private-repository snapshot in a fresh
-                # recovery task. The provider message ceiling is intentionally
-                # small, and the full broker context is delivered later through
-                # the proven NEEDS_JAYTEC same-task handoff path if required.
-                required_context["jaytec_private_github_broker"] = {
-                    "available": True,
-                    "kind": str(self.broker_context.get("kind") or "")[:80],
-                    "repo": str(self.broker_context.get("repo") or checkpoint.repo)[:200],
-                    "sha256": str(self.broker_context.get("sha256") or "")[:64],
-                    "handoff_policy": (
-                        "If direct private GitHub evidence is insufficient, "
-                        "return NEEDS_JAYTEC. JAYTEC will provide exact bounded "
-                        "broker evidence to this same task."
-                    ),
-                }
-            constraints = list(dict.fromkeys(
-                [*checkpoint.active_constraints, *HARD_RECOVERY_CONSTRAINTS]
-            ))
-            request = {
-                "task_id": worker_task_id,
-                "objective": (
-                    "Continue the canonical Forge assignment from the exact durable "
-                    "JAYTEC checkpoint identified in required_context. Preserve all "
-                    "completed work; follow current_phase and next_intended_action; "
-                    "obey every supplied constraint and authority boundary. If exact "
-                    "omitted checkpoint prose is required, return NEEDS_JAYTEC rather "
-                    "than guessing or expanding scope."
-                ),
-                "scope": "jaytec_delegated_task",
-                "authority_source": "chatgpt",
-                "current_task_authorized": True,
-                "allowed_actions": actions,
-                "connector_purposes": connectors,
-                "connector_mutation_authorized": mutation,
-                "required_context": required_context,
-                "constraints": constraints,
-                "reference_ids": [
-                    f"{checkpoint.repo}@{checkpoint.commit_head}",
-                    f"issue:{checkpoint.repo}#59",
-                    f"issue:{checkpoint.repo}#66",
-                ],
-                "title": f"JAYTEC recovery {checkpoint.task_id} fence {fencing_token}",
-            }
+            request = _build_recovery_start_request(
+                checkpoint=checkpoint,
+                continuation_packet=continuation_packet,
+                route=route,
+                fencing_token=fencing_token,
+                broker_context=self.broker_context,
+            )
             request_json = json.dumps(request, sort_keys=True)
             # Deterministic local preflight before any Manus provider call.
             # This mirrors the runtime packet construction without weakening or
@@ -295,8 +424,7 @@ class ManusLiteRecoveryInvoker:
                 # Mirror the runtime's WATCH-only descriptive compaction before
                 # deciding the task is impossible. Authority, forbidden actions,
                 # validation gates, constraints, fencing and anti-activation rules
-                # remain unchanged. This avoids rejecting a packet that the runtime
-                # can safely fit without making any provider call.
+                # remain unchanged.
                 preflight_packet = _compact_watch_recovery_packet(preflight_packet)
                 rendered_preflight = _prompt(preflight_packet)
             if not _fits_manus_raw_message(rendered_preflight):
