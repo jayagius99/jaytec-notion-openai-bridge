@@ -1,3 +1,4 @@
+import asyncio
 import json
 import unittest
 from types import SimpleNamespace
@@ -401,6 +402,67 @@ class MeetingBusTests(unittest.TestCase):
                 meeting_bus.verify_github_oidc(
                     "token", {"commit_sha": "different-sha", "run_id": "1"}
                 )
+
+
+    def test_middleware_preserves_safe_meeting_bus_error_category(self):
+        async def downstream(scope, receive, send):
+            raise AssertionError("meeting route must be intercepted")
+
+        middleware = meeting_bus.MeetingBusMiddleware(downstream)
+
+        async def exercise():
+            sent = []
+            delivered = False
+
+            async def receive():
+                nonlocal delivered
+                if not delivered:
+                    delivered = True
+                    payload = {
+                        "transport": {"commit_sha": "abc", "run_id": "1"},
+                        "request": valid_request("reviewer"),
+                    }
+                    return {
+                        "type": "http.request",
+                        "body": json.dumps(payload).encode("utf-8"),
+                        "more_body": False,
+                    }
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                sent.append(message)
+
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "path": "/meeting-bus/v1/call",
+                "headers": [(b"authorization", b"Bearer token")],
+            }
+            with patch.object(
+                meeting_bus,
+                "verify_github_oidc",
+                return_value={"sha": "abc", "run_id": "1"},
+            ), patch.object(
+                meeting_bus,
+                "dispatch_request",
+                side_effect=meeting_bus.MeetingBusError(
+                    "reviewer_provider_error:BadRequestError"
+                ),
+            ):
+                await middleware(scope, receive, send)
+            return sent
+
+        sent = asyncio.run(exercise())
+        start = next(x for x in sent if x["type"] == "http.response.start")
+        body = next(x for x in sent if x["type"] == "http.response.body")
+        self.assertEqual(start["status"], 502)
+        payload = json.loads(body["body"])
+        self.assertEqual(
+            payload["error"],
+            "reviewer_provider_error:BadRequestError",
+        )
+        self.assertNotIn("token", payload["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
