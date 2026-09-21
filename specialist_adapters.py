@@ -492,14 +492,7 @@ def build_sol_reserve_dispatch(
             "max_completion_tokens": max_output_tokens,
             "reasoning_effort": reasoning_effort,
             "timeout": sol_timeout_s,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "jaytec_sol_reserve_result",
-                    "strict": True,
-                    "schema": _specialist_result_schema(),
-                },
-            },
+            "response_format": {"type": "json_object"},
             "extra_body": {
                 "providerOptions": {
                     "gateway": {
