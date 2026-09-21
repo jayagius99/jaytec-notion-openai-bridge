@@ -6,7 +6,7 @@ import json
 import os
 import re
 from dataclasses import asdict
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from autorecovery_components import (
     CALLABLE_ROUTE_ID,
@@ -20,6 +20,12 @@ from autorecovery_components import (
 )
 from autorecovery_runtime import runtime_status, schema_probe
 from manus_governance import validate_specialist_request
+from watch_specialist_broker import (
+    ALLOWED_MANUS_MODEL_SPECIALISTS,
+    SpecialistBrokerError,
+    normalize_manus_model_request,
+    safe_result_summary,
+)
 from autorecovery_supervisor import (
     AssignmentCheckpoint,
     AutoRecoverySupervisor,
@@ -32,6 +38,7 @@ FORGE_TASK_ID = "FORGE-GENESIS-ACTIVATION-001"
 MAX_REQUEST_REFS = 128
 MAX_BROKER_CONTEXT_BYTES = 4500
 MAX_BROKER_REQUESTS = 2
+MAX_HELP_REQUESTS = 5
 MASTER_GATE_SCHEMA = "FORGE_MASTER_GATE_DIRECTIVE_V1"
 MASTER_GATE_FIELDS = frozenset({
     "schema_version",
@@ -748,6 +755,7 @@ def execute_watch_cycle(
     manus_runtime: Any | None,
     registry: Any,
     runtime_components_registered: bool,
+    specialist_runner: Callable[[list[Mapping[str, Any]]], Mapping[str, Any]] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     source = dict(os.environ if env is None else env)
