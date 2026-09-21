@@ -22,8 +22,10 @@ from orchestration import (
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
     EXPECTED_GEMINI_MODEL,
+    EXPECTED_SOL_MODEL,
     build_codex_dispatch,
     build_gemini_dispatch,
+    build_sol_dispatch,
 )
 
 # --- Runtime configuration (NO secrets in code) ---
@@ -36,6 +38,12 @@ ENGINEERING_PROVIDER_MODE = os.environ.get("ENGINEERING_PROVIDER_MODE", "OPENROU
 ENGINEERING_OUTPUT_TOKEN_CAP = int(os.environ.get("ENGINEERING_OUTPUT_TOKEN_CAP", os.environ.get("ENGINEERING_SOL_OUTPUT_TOKEN_CAP", "2000")))
 ENGINEERING_MAX_PACKET_RETRIES = int(os.environ.get("ENGINEERING_MAX_PACKET_RETRIES", os.environ.get("ENGINEERING_SOL_MAX_PACKET_RETRIES", "1")))
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
+SOL_MODEL = os.environ.get("SOL_MODEL", EXPECTED_SOL_MODEL).strip()
+SOL_PRIMARY_ENABLED = os.environ.get("SOL_PRIMARY_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+SOL_PRIMARY_COST_AUTHORIZED = os.environ.get("SOL_PRIMARY_COST_AUTHORIZED", "0").strip().lower() in {"1", "true", "yes", "on"}
+SOL_TIMEOUT_S = float(os.environ.get("SOL_TIMEOUT_S", "90"))
+SOL_REASONING_EFFORT = os.environ.get("SOL_REASONING_EFFORT", "high").strip().lower()
+SOL_OUTPUT_TOKEN_CAP = int(os.environ.get("SOL_OUTPUT_TOKEN_CAP", "4000"))
 
 # OpenRouter route for Gemini research (optional; disabled unless configured).
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
@@ -223,6 +231,9 @@ def _orchestration_status_json(
             "codex_model": codex_model,
             "engineering_provider_mode": ENGINEERING_PROVIDER_MODE,
             "gemini_model": gemini_model,
+            "sol_model": SOL_MODEL,
+            "sol_primary_enabled": SOL_PRIMARY_ENABLED,
+            "sol_primary_cost_authorized": SOL_PRIMARY_COST_AUTHORIZED,
             "codex_circuit": codex_circuit,
             "gemini_circuit": gemini_circuit,
             "idempotency_store": idempotency_store,
@@ -241,6 +252,7 @@ def _execute_task_packet_json(
     idempotency_store: str,
     codex_dispatch: Any,
     gemini_dispatch: Any,
+    sol_dispatch: Any,
 ) -> str:
     packet, parse_errors = parse_packet_json(packet_json)
     if packet is None:
@@ -286,7 +298,7 @@ def _execute_task_packet_json(
 
     result = execute_task_packet_core(
         packet,
-        {"codex": codex_dispatch, "gemini": gemini_dispatch},
+        {"sol": sol_dispatch, "codex": codex_dispatch, "gemini": gemini_dispatch},
         registry_adapter,
     )
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -416,6 +428,10 @@ def create_mcp_app() -> FastMCP:
         failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
         reset_after_seconds=CIRCUIT_RESET_SECONDS,
     )
+    sol_circuit = CircuitBreaker(
+        failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+        reset_after_seconds=CIRCUIT_RESET_SECONDS,
+    )
 
     if openrouter_client is not None:
         codex_dispatch = build_codex_dispatch(
@@ -427,6 +443,22 @@ def create_mcp_app() -> FastMCP:
     else:
         codex_dispatch = codex_circuit.guard(
             lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
+        )
+
+    if openai_client is not None:
+        sol_dispatch = build_sol_dispatch(
+            openai_client=openai_client,
+            sol_model=SOL_MODEL,
+            circuit=sol_circuit,
+            enabled=SOL_PRIMARY_ENABLED,
+            cost_authorized=SOL_PRIMARY_COST_AUTHORIZED,
+            sol_timeout_s=SOL_TIMEOUT_S,
+            reasoning_effort=SOL_REASONING_EFFORT,
+            max_output_tokens=SOL_OUTPUT_TOKEN_CAP,
+        )
+    else:
+        sol_dispatch = sol_circuit.guard(
+            lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENAI_API_KEY is not configured for Sol primary"))
         )
 
     if openrouter_client is not None:
@@ -459,6 +491,7 @@ def create_mcp_app() -> FastMCP:
             idempotency_store=idempotency_store,
             codex_dispatch=codex_dispatch,
             gemini_dispatch=gemini_dispatch,
+            sol_dispatch=sol_dispatch,
         )
 
     # ---------------- Legacy Notion-agent tools: HARD DISABLED ----------------
