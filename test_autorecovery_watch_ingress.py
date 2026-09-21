@@ -10,6 +10,7 @@ from autorecovery_watch_ingress import (
     WATCH_HEARTBEAT_TIMEOUT_SECONDS,
     WatchIngressError,
     _broker_context,
+    _master_gate_context,
     _observed_refs,
     execute_watch_cycle,
 )
@@ -46,8 +47,8 @@ def broker_payload(refs):
 def broker_checkpoint():
     return AssignmentCheckpoint(
         task_id=FORGE_TASK_ID,
-        objective="Continue Forge preparation.",
-        current_phase="pre-activation",
+        objective="Advance canonical Forge master gate G03: Security Audit #47.",
+        current_phase="G03/SECURITY: Security Audit #47",
         completed_work=("watch",),
         remaining_work=("continue",),
         last_safe_checkpoint="saved",
@@ -66,10 +67,44 @@ def broker_checkpoint():
         },
         cost_envelope={"paid_fallback": False},
         dependencies=(),
-        next_intended_action="Continue safely.",
+        next_intended_action="Work only on G03 and return exact evidence.",
         worker_specialist_preference=("manus-lite",),
-        checkpoint_number=1,
+        checkpoint_number=103,
     ).validate()
+
+
+def master_gate_payload():
+    return {
+        "schema_version": "FORGE_MASTER_GATE_DIRECTIVE_V1",
+        "gate_id": "G03",
+        "phase": "SECURITY",
+        "title": "Security Audit #47",
+        "status": "IN_PROGRESS",
+        "depends_on": ["G02"],
+        "evidence": [
+            "rule->enforcement->bypass map",
+            "alternate-route denial tests",
+        ],
+        "graph_sha256": "c" * 64,
+        "checkpoint_number": 103,
+    }
+
+
+def cycle_payload(refs, *, include_broker=True):
+    checkpoint = broker_checkpoint().to_dict()
+    if checkpoint["branch"] not in refs:
+        branch = next(iter(refs))
+        checkpoint["branch"] = branch
+        checkpoint["commit_head"] = refs[branch]
+    payload = {
+        "task_id": FORGE_TASK_ID,
+        "observed_refs": dict(refs),
+        "bootstrap_checkpoint": checkpoint,
+        "master_gate": master_gate_payload(),
+    }
+    if include_broker:
+        payload["github_broker_context"] = broker_payload(refs)
+    return payload
 
 
 def broker_specialist_request(context, *, specialist="github_broker"):
@@ -223,6 +258,15 @@ class WatchIngressPolicyTests(unittest.TestCase):
             _observed_refs({f"r-{i}": "a" * 40 for i in range(129)})
 
 
+    def test_master_gate_must_match_checkpoint(self):
+        checkpoint = broker_checkpoint()
+        gate = _master_gate_context(master_gate_payload(), checkpoint)
+        self.assertEqual(gate["gate_id"], "G03")
+        bad = master_gate_payload()
+        bad["checkpoint_number"] = 104
+        with self.assertRaisesRegex(WatchIngressError, "CHECKPOINT_MISMATCH"):
+            _master_gate_context(bad, checkpoint)
+
     def test_broker_context_digest_and_secret_fields_fail_closed(self):
         refs = {"security/root-owner-control-v1": "b" * 40}
         good = broker_payload(refs)
@@ -281,11 +325,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
         ):
             result = execute_watch_cycle(
-                {
-                    "task_id": FORGE_TASK_ID,
-                    "observed_refs": refs,
-                    "github_broker_context": broker_payload(refs),
-                },
+                cycle_payload(refs),
                 database_url="postgresql://unused",
                 manus_runtime=runtime,
                 registry=object(),
@@ -332,11 +372,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
         ):
             result = execute_watch_cycle(
-                {
-                    "task_id": FORGE_TASK_ID,
-                    "observed_refs": refs,
-                    "github_broker_context": broker_payload(refs),
-                },
+                cycle_payload(refs),
                 database_url="postgresql://unused",
                 manus_runtime=runtime,
                 registry=object(),
@@ -380,11 +416,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
         ):
             result = execute_watch_cycle(
-                {
-                    "task_id": FORGE_TASK_ID,
-                    "observed_refs": refs,
-                    "github_broker_context": broker_payload(refs),
-                },
+                cycle_payload(refs),
                 database_url="postgresql://unused",
                 manus_runtime=runtime,
                 registry=object(),
@@ -436,11 +468,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
         ):
             result = execute_watch_cycle(
-                {
-                    "task_id": FORGE_TASK_ID,
-                    "observed_refs": refs,
-                    "github_broker_context": broker_payload(refs),
-                },
+                cycle_payload(refs),
                 database_url="postgresql://unused",
                 manus_runtime=runtime,
                 registry=object(),
@@ -588,11 +616,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             patch("autorecovery_watch_ingress.PostgresAssignmentStore", return_value=store),
         ):
             result = execute_watch_cycle(
-                {
-                    "task_id": FORGE_TASK_ID,
-                    "observed_refs": refs,
-                    "github_broker_context": broker_payload(refs),
-                },
+                cycle_payload(refs),
                 database_url="postgresql://unused",
                 manus_runtime=runtime,
                 registry=object(),
@@ -609,10 +633,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             return_value={"status": "PASS", "schema_present": True},
         ):
             result = execute_watch_cycle(
-                {
-                    "task_id": FORGE_TASK_ID,
-                    "observed_refs": {"main": "a" * 40},
-                },
+                cycle_payload({"main": "a" * 40}, include_broker=False),
                 database_url="postgresql://placeholder/not-contacted",
                 manus_runtime=None,
                 registry=object(),
@@ -628,10 +649,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
             return_value={"status": "PASS", "schema_present": True},
         ):
             result = execute_watch_cycle(
-                {
-                    "task_id": FORGE_TASK_ID,
-                    "observed_refs": {"main": "a" * 40},
-                },
+                cycle_payload({"main": "a" * 40}, include_broker=False),
                 database_url="postgresql://placeholder/not-contacted",
                 manus_runtime=None,
                 registry=object(),
