@@ -21,7 +21,11 @@ on:
       - 'test_watch_specialist_broker.py'
       - 'test_watch_specialist_ingress.py'
       - 'SOL_PRIMARY_SANITIZED_CONTEXT_V3.md'
+      - 'SOL_PRIMARY_SANITIZED_CONTEXT_V4.md'
+      - 'JAYTEC_MEMORY/**'
+      - 'test_sol_github_memory.py'
       - 'sol_primary_certification_v3.py'
+      - 'sol_primary_certification_v4.py'
       - 'server.py'
       - 'Dockerfile'
       - '.dockerignore'
@@ -146,7 +150,7 @@ jobs:
             idempotency_postgres.py \
             test_orchestration.py test_circuit_breaker.py test_worker_policy_hardening.py \
             test_worker_output_parsing.py test_idempotency_postgres.py test_dockerfile_packaging.py \
-            test_contract_equivalence.py test_server_candidate_probe.py test_engineering_migration_guard.py test_observed_engineering_model_identity.py \
+            test_contract_equivalence.py test_server_candidate_probe.py test_engineering_migration_guard.py test_observed_engineering_model_identity.py test_sol_github_memory.py sol_primary_certification_v4.py \
             autorecovery_supervisor.py autorecovery_runtime.py autorecovery_loop.py autorecovery_components.py autorecovery_watch_ingress.py github_watch_oidc.py jaytec_protocol_portal.py forge_cognition.py forge_cognition_engine.py forge_cognition_benchmark.py forge_strategic_drives.py forge_strategy_engine.py forge_strategy_benchmark.py forge_genesis_binding.py proving_grounds.py test_proving_grounds.py \
             test_autorecovery_supervisor.py test_autorecovery_runtime.py test_autorecovery_loop.py test_autorecovery_components.py test_autorecovery_watch_ingress.py test_github_watch_oidc.py test_watch_auth_isolation.py test_staging_startup_nonblocking.py test_jaytec_watch_command_policy.py test_jaytec_protocol_portal.py test_forge_cognition.py test_forge_cognition_engine.py test_forge_strategic_drives.py test_forge_strategy_engine.py test_forge_strategic_adversarial.py test_forge_genesis_strategic_policy.py test_forge_genesis_binding.py \
             test_manus_adapter.py test_manus_policy.py test_manus_governance.py test_manus_dispatch_contract.py \
@@ -160,8 +164,8 @@ jobs:
         run: python forge_cognition_benchmark.py
       - name: Benchmark Forge deterministic strategic selection
         run: python forge_strategy_benchmark.py
-      - name: Run Sol-primary JAYTEC certification v3
-        run: python sol_primary_certification_v3.py
+      - name: Run Sol-primary JAYTEC certification v4
+        run: python sol_primary_certification_v4.py
 
       - name: Docker build smoke (production Dockerfile path)
         run: docker build -t jaytec-bridge-ci:smoke .

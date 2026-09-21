@@ -1,8 +1,8 @@
-# JAYTEC SOL PRIMARY — SANITIZED OPERATING CONTEXT V3
+# JAYTEC SOL PRIMARY — SANITIZED OPERATING CONTEXT V4
 
 Status: SANITIZED / OPERATIONAL / OWNER-SEALED BACKSTORY EXCLUDED
 
-This is SOL's durable JAYTEC operating memory. It contains broad architecture,
+This is SOL's baseline JAYTEC operating memory; the ordered GitHub memory pack is appended at runtime. It contains broad architecture,
 protocol, workflow and Forge context so SOL does not have to rediscover JAYTEC
 from scratch on every task. Live gate, worker, branch, deploy and approval state
 must still come from a bounded current task packet; this file is durable system
