@@ -100,7 +100,7 @@ def expected_gate_receipt(fence=9):
 
 def gate_receipt_evidence(fence=9):
     return {
-        "kind": "jaytec_master_gate_result",
+        "kind": "audit_record",
         "source": "JAYTEC_MASTER_GATE_HANDOFF",
         "reference": expected_gate_receipt(fence),
         "observed_at": "2026-09-21T05:45:00Z",
