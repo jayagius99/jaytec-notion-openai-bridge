@@ -8,11 +8,13 @@ from orchestration import ExecutionRegistry
 from manus_governance import specialist_request
 from manus_runtime import (
     MANUS_RESULT_JSON_SCHEMA,
+    MANUS_MASTER_GATE_RESULT_JSON_SCHEMA,
     ManusLiteRuntime,
     ManusRuntimeError,
     parse_start_request,
     start_request_identity,
     validate_manus_structured_output_schema,
+    validate_master_gate_manifest_json,
 )
 
 
@@ -334,6 +336,93 @@ class ManusLiteRuntimeTests(unittest.TestCase):
         self.assertNotIn("Bearer ", sent)
         self.assertNotIn("sk-", sent)
         self.assertEqual(client.prepare_calls[0]["requested_profile"], "lite")
+        self.assertEqual(client.sent_messages[0]["schema"], MANUS_RESULT_JSON_SCHEMA)
+
+    def test_master_gate_handoff_uses_strict_manifest_schema(self):
+        client = FakeClient(observed_profile="lite", task_status="stopped")
+        runtime = ManusLiteRuntime(client)
+        context = {
+            "kind": "MASTER_GATE_DIRECTIVE",
+            "schema_version": "FORGE_MASTER_GATE_DIRECTIVE_V1",
+            "gate_id": "G03",
+            "phase": "SECURITY",
+            "title": "Security Audit #47",
+            "status": "IN_PROGRESS",
+            "depends_on": ["G02"],
+            "evidence": ["enforcement map"],
+            "graph_sha256": "a" * 64,
+            "checkpoint_number": 103,
+            "instruction": "Work only on G03.",
+            "result_receipt_requirement": {
+                "kind": "audit_record",
+                "source": "JAYTEC_MASTER_GATE_HANDOFF",
+                "reference": "receipt-g03",
+            },
+        }
+        result = runtime.continue_task_handoff(
+            "provider-123",
+            scope="jaytec_delegated_task",
+            authority_source="chatgpt",
+            current_task_authorized=True,
+            connector_purposes={"github": "write"},
+            connector_mutation_authorized=True,
+            handoff_id="master-gate-g03",
+            handoff_context=context,
+        )
+        self.assertEqual(result["status"], "CONTINUED")
+        self.assertEqual(len(client.sent_messages), 1)
+        sent = client.sent_messages[0]
+        self.assertEqual(sent["schema"], MANUS_MASTER_GATE_RESULT_JSON_SCHEMA)
+        self.assertIn("gate_manifest_json", sent["schema"]["properties"])
+        self.assertIn("gate_manifest_json", sent["schema"]["required"])
+        self.assertIn("FORGE_GATE_EVIDENCE_V1", sent["content"])
+        self.assertIn("Never use this manifest to grant owner authority", sent["content"])
+
+    def test_generic_handoff_does_not_require_gate_manifest(self):
+        client = FakeClient(observed_profile="lite", task_status="stopped")
+        runtime = ManusLiteRuntime(client)
+        runtime.continue_task_handoff(
+            "provider-123",
+            scope="jaytec_delegated_task",
+            authority_source="chatgpt",
+            current_task_authorized=True,
+            connector_purposes={"github": "inspect"},
+            connector_mutation_authorized=False,
+            handoff_id="broker-handoff",
+            handoff_context={"kind": "PRIVATE_REPO_BOOTSTRAP", "repo": "private"},
+        )
+        self.assertEqual(client.sent_messages[0]["schema"], MANUS_RESULT_JSON_SCHEMA)
+        self.assertNotIn(
+            "gate_manifest_json",
+            client.sent_messages[0]["schema"]["properties"],
+        )
+
+    def test_gate_manifest_envelope_validation_is_strict(self):
+        manifest = {
+            "schema_version": "FORGE_GATE_EVIDENCE_V1",
+            "task_id": "FORGE-GENESIS-ACTIVATION-001",
+            "gate_id": "G03",
+            "graph_sha256": "a" * 64,
+            "result_receipt": "receipt",
+            "evidence_requirements": [],
+            "unresolved_items": [],
+            "discovered_gates": [],
+        }
+        parsed = validate_master_gate_manifest_json(json.dumps(manifest))
+        self.assertEqual(parsed["gate_id"], "G03")
+
+        bad = dict(manifest)
+        bad["extra"] = True
+        with self.assertRaisesRegex(
+            ManusRuntimeError,
+            "MANIFEST_FIELDS_INVALID",
+        ):
+            validate_master_gate_manifest_json(json.dumps(bad))
+        with self.assertRaisesRegex(
+            ManusRuntimeError,
+            "MANIFEST_JSON_INVALID",
+        ):
+            validate_master_gate_manifest_json("{not-json")
 
     def test_internal_handoff_is_idempotent_when_handoff_id_already_in_messages(self):
         class ExistingHandoffClient(FakeClient):
