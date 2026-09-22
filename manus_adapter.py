@@ -28,7 +28,12 @@ from manus_dispatch_contract import (
     authorize_manus_preflight,
     verify_manus_dispatch_result,
 )
-from manus_governance import AuthoritySource, ManusScope, render_directive
+from manus_governance import (
+    AuthoritySource,
+    MANUS_DIRECT_RECIPIENT,
+    ManusScope,
+    render_directive,
+)
 from manus_policy import ManusProfilePolicyError, authorize_manus_route, verify_manus_profile
 from participant_contracts import render_actor_contract
 from provider_endpoints import MANUS_API_BASE, validate_manus_endpoint
@@ -42,7 +47,6 @@ MANUS_TIMEOUT_S = float(os.environ.get("MANUS_TIMEOUT_S", "20"))
 MANUS_MAX_RETRIES = min(max(int(os.environ.get("MANUS_MAX_RETRIES", "1")), 0), 3)
 MANUS_MAX_RESPONSE_BYTES = min(max(int(os.environ.get("MANUS_MAX_RESPONSE_BYTES", "1048576")), 4096), 4 * 1024 * 1024)
 MANUS_MAX_MESSAGE_CHARS = min(max(int(os.environ.get("MANUS_MAX_MESSAGE_CHARS", "6000")), 1), 10000)
-MANUS_DIRECT_RECIPIENT = "lite"
 JAYTEC_MANUS_PROJECT_ID = os.environ.get("JAYTEC_MANUS_PROJECT_ID", "").strip()
 
 APPROVED_CONNECTOR_KEYS = ("github", "neon", "render")
