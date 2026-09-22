@@ -386,6 +386,7 @@ class PostgresConcurrencyScheduler:
                     """
                     SELECT * FROM jaytec_jobs
                     WHERE status IN ('QUEUED','PAUSED')
+                      AND COALESCE(assignment_type,'') <> 'FIVE_SEAT_FABRIC'
                       AND (lease_expires_at IS NULL OR lease_expires_at < now())
                     ORDER BY priority ASC, created_at ASC, job_id ASC
                     FOR UPDATE SKIP LOCKED
@@ -419,6 +420,7 @@ class PostgresConcurrencyScheduler:
                             updated_at=now()
                         WHERE job_id=%s
                           AND status IN ('QUEUED','PAUSED')
+                          AND COALESCE(assignment_type,'') <> 'FIVE_SEAT_FABRIC'
                           AND (lease_expires_at IS NULL OR lease_expires_at < now())
                         RETURNING *
                         """,
