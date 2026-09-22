@@ -1510,9 +1510,14 @@ class WatchIngressPolicyTests(unittest.TestCase):
             refs=refs,
             fencing_token=9,
             mutation_authorized=False,
+            default_ref="security/root-owner-control-v1",
         )
         self.assertEqual(scoped_normalized["operation"], "list_path")
         self.assertEqual(scoped_normalized["args"]["path"], "")
+        self.assertEqual(
+            scoped_normalized["args"]["ref"],
+            "security/root-owner-control-v1",
+        )
         self.assertNotIn("repository", scoped_normalized["args"])
 
         wrong_repo = broker_specialist_request(
@@ -1530,7 +1535,25 @@ class WatchIngressPolicyTests(unittest.TestCase):
                 refs=refs,
                 fencing_token=9,
                 mutation_authorized=False,
+                default_ref="security/root-owner-control-v1",
             )
+
+        explicit_ref_list = broker_specialist_request(
+            {
+                "operation": "list_path",
+                "path": "",
+                "ref": "main",
+                "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            }
+        )
+        explicit_normalized = _normalize_broker_operation(
+            explicit_ref_list,
+            refs=refs,
+            fencing_token=9,
+            mutation_authorized=False,
+            default_ref="security/root-owner-control-v1",
+        )
+        self.assertEqual(explicit_normalized["args"]["ref"], "main")
 
         malformed_read = broker_specialist_request(
             {
