@@ -652,6 +652,15 @@ class PostgresFiveSeatScheduler:
         ]
         if missing:
             raise ValueError("handoff_payload_missing:" + ",".join(sorted(missing)))
+        partial_status = str(payload.get("partial_side_effect_status") or "NONE").upper()
+        if partial_status not in {
+            "NONE",
+            "VERIFIED_COMPLETE",
+            "VERIFIED_NOT_DONE",
+            "UNCERTAIN_PARTIAL",
+        }:
+            raise ValueError("invalid_partial_side_effect_status:" + partial_status)
+        quarantined = partial_status == "UNCERTAIN_PARTIAL"
 
         lineage = {
             "handoff_id": handoff_ref,
@@ -709,7 +718,7 @@ class PostgresFiveSeatScheduler:
                     replay_seat = cur.fetchone()
                     if (
                         replay_job is not None
-                        and replay_job["fabric_state"] == "HANDOFF_PENDING_REVIEW"
+                        and replay_job["fabric_state"] in {"HANDOFF_PENDING_REVIEW", "QUARANTINED"}
                         and replay_job["seat_id"] is None
                         and replay_job["lease_owner"] is None
                         and replay_seat is not None
@@ -789,10 +798,10 @@ class PostgresFiveSeatScheduler:
                 )
                 unresolved = [dict(row) for row in cur.fetchall()]
                 if unresolved:
-                    raise FiveSeatReleaseBlocked(
-                        "unresolved_operations:"
-                        + ",".join(str(row["operation_id"]) for row in unresolved)
-                    )
+                    # Never blind-retry or hold the whole seat hostage. End the
+                    # stale worker authority, free the seat, and quarantine only
+                    # the affected job/resource for reconciliation.
+                    quarantined = True
 
                 cur.execute(
                     """
@@ -823,15 +832,41 @@ class PostgresFiveSeatScheduler:
                 if durable_handoff is None:
                     raise FiveSeatRuntimeError("handoff_insert_failed:" + handoff_ref)
 
+                target_status = "BLOCKED" if quarantined else "PAUSED"
+                target_fabric_state = (
+                    "QUARANTINED" if quarantined else "HANDOFF_PENDING_REVIEW"
+                )
+                blocker_payload = None
+                if quarantined:
+                    blocker_payload = _json(
+                        [
+                            {
+                                "source": "WORKER_HANDOFF",
+                                "reason": "UNCERTAIN_PARTIAL_OR_UNRESOLVED_OPERATION",
+                                "handoff_ref": handoff_ref,
+                                "partial_side_effect_status": partial_status,
+                                "unresolved_operations": [
+                                    str(row["operation_id"]) for row in unresolved
+                                ],
+                            }
+                        ]
+                    )
+
                 cur.execute(
                     """
                     UPDATE jaytec_jobs
-                    SET status='PAUSED',
-                        fabric_state='HANDOFF_PENDING_REVIEW',
+                    SET status=%s,
+                        fabric_state=%s,
+                        blockers=CASE
+                          WHEN %s::jsonb IS NULL THEN blockers
+                          ELSE %s::jsonb
+                        END,
                         seat_id=NULL,
                         lease_owner=NULL,
                         lease_expires_at=NULL,
                         checkpoint_ref=%s,
+                        ownership_epoch=ownership_epoch+1,
+                        fence_token=fence_token+1,
                         version=version+1,
                         updated_at=now()
                     WHERE job_id=%s
@@ -842,6 +877,10 @@ class PostgresFiveSeatScheduler:
                     RETURNING *
                     """,
                     (
+                        target_status,
+                        target_fabric_state,
+                        blocker_payload,
+                        blocker_payload,
                         handoff_ref,
                         token.job_id,
                         token.seat_id,
@@ -891,7 +930,11 @@ class PostgresFiveSeatScheduler:
                       job_id,event_type,source,source_version,payload
                     )
                     SELECT job_id,
-                           'WORKER_HANDOFF_COMMITTED_AND_SEAT_RELEASED',
+                           CASE
+                             WHEN fabric_state='QUARANTINED'
+                             THEN 'WORKER_HANDOFF_QUARANTINED_AND_SEAT_RELEASED'
+                             ELSE 'WORKER_HANDOFF_COMMITTED_AND_SEAT_RELEASED'
+                           END,
                            'FIVE_SEAT_SCHEDULER',
                            source_shared_state_version,
                            %s::jsonb
