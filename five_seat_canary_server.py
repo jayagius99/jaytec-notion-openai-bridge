@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -21,7 +22,6 @@ from five_seat_worker import FiveSeatWorker
 
 
 CANARY_PROJECT_ID = "FIVE_SEAT_CANARY"
-CANARY_WORKER_KIND = "CANARY_TEST"
 CANARY_CAPABILITY = "test.run"
 WATCH_OWNER = "fs08-canary-watch"
 
@@ -40,6 +40,11 @@ def _run_id() -> str:
     if len(value) > 80 or not all(ch.isalnum() or ch in "-_." for ch in value):
         raise RuntimeError("invalid FIVE_SEAT_CANARY_RUN_ID")
     return value
+
+
+def _canary_worker_kind(run_id: str, stage: int) -> str:
+    suffix = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:10].upper()
+    return f"CANARY_{stage}_{suffix}"
 
 
 class CanaryAdapter:
@@ -96,6 +101,7 @@ class CanaryRuntime:
         self.database_url = os.environ["DATABASE_URL"]
         self.worker_count = _worker_count()
         self.run_id = _run_id()
+        self.worker_kind = _canary_worker_kind(self.run_id, self.worker_count)
         self.scheduler = PostgresFiveSeatScheduler(self.database_url)
         self.queue = PostgresFabricQueue(self.database_url)
         self.signal = PostgresFabricSignal(self.database_url)
@@ -104,7 +110,7 @@ class CanaryRuntime:
         self.registry = AdapterRegistry()
         self.adapter = CanaryAdapter(self.worker_count, self.run_id)
         self.registry.register(
-            CANARY_WORKER_KIND,
+            self.worker_kind,
             capabilities={CANARY_CAPABILITY},
             execute=self.adapter.execute,
         )
@@ -156,7 +162,7 @@ class CanaryRuntime:
             self.queue.submit(
                 task_id=f"{self.run_id}-{index}",
                 objective=f"FS08 canary stage {self.worker_count} worker {index}",
-                worker_kind=CANARY_WORKER_KIND,
+                worker_kind=self.worker_kind,
                 idempotency_key=f"{self.run_id}:{index}",
                 source_shared_state_version=1,
                 authority_class="READ_ONLY",
@@ -339,6 +345,7 @@ class CanaryRuntime:
             "schema_version": "JAYTEC_FS08_CANARY_STATUS_V1",
             "run_id": self.run_id,
             "stage_workers": self.worker_count,
+            "worker_kind": self.worker_kind,
             "expected_jobs": self.worker_count,
             "jobs_seen": len(jobs),
             "succeeded": succeeded,
