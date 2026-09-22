@@ -321,6 +321,8 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertIn("Return a test result.", message)
         self.assertTrue(message.startswith("lite\n\n"))
         self.assertEqual(message.splitlines()[0], "lite")
+        self.assertIn("You are lite, JAYTEC's bounded automation specialist.", message)
+        self.assertNotIn("You are Manus, JAYTEC's bounded automation specialist.", message)
         self.assertEqual(ma.MANUS_DIRECT_RECIPIENT, "lite")
 
     def test_create_task_explicitly_pins_lite_project_and_connector_ids(self):
@@ -365,6 +367,14 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertIn("JAYTEC_MANUS_GOVERNANCE_V1", payload["message"]["content"])
         self.assertTrue(payload["message"]["content"].startswith("lite\n\n"))
         self.assertEqual(payload["message"]["content"].splitlines()[0], "lite")
+        self.assertIn(
+            "You are lite, JAYTEC's bounded automation specialist.",
+            payload["message"]["content"],
+        )
+        self.assertNotIn(
+            "You are Manus, JAYTEC's bounded automation specialist.",
+            payload["message"]["content"],
+        )
 
     def test_create_task_profile_mismatch_stops_and_fails(self):
         client = ma.ManusClient(api_key="x")
@@ -448,6 +458,14 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertIn("JAYTEC_MANUS_GOVERNANCE_V1", payload["message"]["content"])
         self.assertTrue(payload["message"]["content"].startswith("lite\n\n"))
         self.assertEqual(payload["message"]["content"].splitlines()[0], "lite")
+        self.assertIn(
+            "You are lite, JAYTEC's bounded automation specialist.",
+            payload["message"]["content"],
+        )
+        self.assertNotIn(
+            "You are Manus, JAYTEC's bounded automation specialist.",
+            payload["message"]["content"],
+        )
 
     def test_send_message_with_no_connectors_clears_existing_set(self):
         auth = authorize_manus_dispatch(
@@ -508,6 +526,8 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertEqual(message.splitlines()[0], "lite")
         self.assertTrue(message.startswith("lite\n\n"))
         self.assertIn("Manus, inspect this bounded task.", message)
+        self.assertIn("You are lite, JAYTEC's bounded automation specialist.", message)
+        self.assertNotIn("You are Manus, JAYTEC's bounded automation specialist.", message)
         self.assertEqual(ma.MANUS_DIRECT_RECIPIENT, "lite")
 
     def test_old_non_lite_task_is_never_continued(self):
