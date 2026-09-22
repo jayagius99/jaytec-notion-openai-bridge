@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,134 +8,407 @@ from typing import Any, Dict, Mapping, Optional
 import psycopg2
 import psycopg2.extras
 
-from concurrency import SCHEDULER_LOCK_KEY, UNRESOLVED_OPERATION_STATUSES
-from five_seat_runtime import FiveSeatLeaseToken, FiveSeatStaleLease, WORKER_SEAT_IDS
+from five_seat_signals import WORK_AVAILABLE_CHANNEL
 
-WATCH_LOCK_KEY = "jaytec:five-seat-watch-leader:v1"
-WATCH_DECISIONS = frozenset({"ACCEPT", "REWORK", "BLOCK", "ESCALATE"})
 
-class WatchRuntimeError(RuntimeError): pass
-class WatchStaleLeader(WatchRuntimeError): pass
-class WatchReviewBlocked(WatchRuntimeError): pass
+WATCH_CONTROLLER_ID = "WATCH"
+WATCH_REVIEW_DECISIONS = ("ACCEPT", "REWORK", "BLOCK", "ESCALATE")
+WATCH_LEADER_LOCK_KEY = "jaytec-five-seat-watch-leader-v1"
+
+
+class WatchControllerError(RuntimeError):
+    pass
+
+
+class WatchLeaderUnavailable(WatchControllerError):
+    pass
+
+
+class WatchStaleLeader(WatchControllerError):
+    pass
+
+
+class WatchReviewConflict(WatchControllerError):
+    pass
+
+
+class WatchSelfApprovalForbidden(WatchControllerError):
+    pass
+
 
 @dataclass(frozen=True)
 class WatchLeaderToken:
-    leader_id: str
+    owner: str
     leader_epoch: int
     fence_token: int
     lease_expires_at: datetime
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def evidence_hash(evidence: Mapping[str, Any]) -> str:
-    return hashlib.sha256(_json(dict(evidence)).encode("utf-8")).hexdigest()
+def review_target(decision: str) -> tuple[str, str]:
+    mapping = {
+        "ACCEPT": ("SUCCEEDED", "SUCCEEDED"),
+        "REWORK": ("QUEUED", "REWORK_QUEUED"),
+        "BLOCK": ("BLOCKED", "QUARANTINED"),
+        "ESCALATE": ("BLOCKED", "ESCALATED"),
+    }
+    normalized = str(decision or "").upper()
+    if normalized not in mapping:
+        raise ValueError("invalid WATCH decision")
+    return mapping[normalized]
 
 
-class PostgresFiveSeatWatch:
-    """Out-of-band singleton WATCH leader and independent review barrier."""
+class PostgresWatchController:
+    """Singleton out-of-band WATCH dispatcher/reviewer authority."""
+
     def __init__(self, database_url: str):
-        if not database_url: raise ValueError("database_url is required")
+        if not database_url:
+            raise ValueError("database_url is required")
         self.database_url = database_url
 
-    def _connect(self): return psycopg2.connect(self.database_url)
+    def _connect(self):
+        return psycopg2.connect(self.database_url)
 
-    def claim_leader(self, *, leader_id: str, lease_seconds: int = 60) -> Optional[WatchLeaderToken]:
-        if not leader_id: raise ValueError("leader_id is required")
-        if lease_seconds < 10 or lease_seconds > 3600: raise ValueError("lease_seconds must be between 10 and 3600")
+    def claim_leader(
+        self,
+        *,
+        owner: str,
+        lease_seconds: int = 300,
+    ) -> WatchLeaderToken:
+        if not owner:
+            raise ValueError("owner is required")
+        if lease_seconds < 10 or lease_seconds > 3600:
+            raise ValueError("lease_seconds must be between 10 and 3600")
+
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (WATCH_LOCK_KEY,))
-                cur.execute("SELECT * FROM jaytec_watch_leader WHERE singleton_id=1 FOR UPDATE")
+                cur.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                    (WATCH_LEADER_LOCK_KEY,),
+                )
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM jaytec_watch_leader
+                    WHERE controller_id='WATCH'
+                    FOR UPDATE
+                    """
+                )
                 row = cur.fetchone()
-                if row is None: raise WatchRuntimeError("watch_singleton_missing")
-                now = datetime.now(timezone.utc)
-                if row["state"] == "LEADER" and row["lease_expires_at"] is not None and row["lease_expires_at"] > now and row["leader_id"] != leader_id:
-                    return None
-                cur.execute("""
+                if row is None:
+                    raise WatchControllerError("watch_leader_row_missing")
+                if (
+                    row["lease_expires_at"] is not None
+                    and row["lease_expires_at"] > datetime.now(timezone.utc)
+                    and row["lease_owner"] not in (None, owner)
+                ):
+                    raise WatchLeaderUnavailable(str(row["lease_owner"]))
+
+                cur.execute(
+                    """
                     UPDATE jaytec_watch_leader
-                    SET state='LEADER',leader_id=%s,
-                        lease_expires_at=now()+(%s*interval '1 second'),
-                        leader_epoch=leader_epoch+1,fence_token=fence_token+1,
-                        version=version+1,updated_at=now()
-                    WHERE singleton_id=1
-                    RETURNING leader_epoch,fence_token,lease_expires_at
-                """, (leader_id, lease_seconds))
-                claimed=cur.fetchone()
-                return WatchLeaderToken(leader_id,int(claimed["leader_epoch"]),int(claimed["fence_token"]),claimed["lease_expires_at"])
+                    SET lease_owner=%s,
+                        lease_expires_at=now() + (%s * interval '1 second'),
+                        leader_epoch=leader_epoch+1,
+                        fence_token=fence_token+1,
+                        version=version+1,
+                        updated_at=now()
+                    WHERE controller_id='WATCH'
+                    RETURNING lease_owner,leader_epoch,fence_token,lease_expires_at
+                    """,
+                    (owner, lease_seconds),
+                )
+                claimed = cur.fetchone()
+                if claimed is None:
+                    raise WatchControllerError("watch_leader_claim_failed")
+                return WatchLeaderToken(
+                    owner=str(claimed["lease_owner"]),
+                    leader_epoch=int(claimed["leader_epoch"]),
+                    fence_token=int(claimed["fence_token"]),
+                    lease_expires_at=claimed["lease_expires_at"],
+                )
 
-    def heartbeat(self, token: WatchLeaderToken, *, lease_seconds: int = 60) -> WatchLeaderToken:
+    def heartbeat(
+        self,
+        token: WatchLeaderToken,
+        *,
+        lease_seconds: int = 300,
+    ) -> WatchLeaderToken:
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
-                    UPDATE jaytec_watch_leader SET lease_expires_at=now()+(%s*interval '1 second'),version=version+1,updated_at=now()
-                    WHERE singleton_id=1 AND state='LEADER' AND leader_id=%s AND leader_epoch=%s AND fence_token=%s AND lease_expires_at>now()
-                    RETURNING lease_expires_at
-                """, (lease_seconds,token.leader_id,token.leader_epoch,token.fence_token))
-                row=cur.fetchone()
-                if row is None: raise WatchStaleLeader(token.leader_id)
-                return WatchLeaderToken(token.leader_id,token.leader_epoch,token.fence_token,row["lease_expires_at"])
+                cur.execute(
+                    """
+                    UPDATE jaytec_watch_leader
+                    SET lease_expires_at=now() + (%s * interval '1 second'),
+                        version=version+1,
+                        updated_at=now()
+                    WHERE controller_id='WATCH'
+                      AND lease_owner=%s
+                      AND leader_epoch=%s
+                      AND fence_token=%s
+                      AND lease_expires_at > now()
+                    RETURNING lease_owner,leader_epoch,fence_token,lease_expires_at
+                    """,
+                    (
+                        lease_seconds,
+                        token.owner,
+                        token.leader_epoch,
+                        token.fence_token,
+                    ),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise WatchStaleLeader(token.owner)
+                return WatchLeaderToken(
+                    owner=str(row["lease_owner"]),
+                    leader_epoch=int(row["leader_epoch"]),
+                    fence_token=int(row["fence_token"]),
+                    lease_expires_at=row["lease_expires_at"],
+                )
 
-    def write_handoff_and_retire(self, worker: FiveSeatLeaseToken, *, handoff_id: str, evidence: Mapping[str, Any]) -> Dict[str, Any]:
-        """Worker may submit evidence and retire; it cannot approve its own work."""
-        if not handoff_id: raise ValueError("handoff_id is required")
-        if worker.seat_id not in WORKER_SEAT_IDS: raise ValueError("invalid seat")
-        digest=evidence_hash(evidence)
+    def pending_reviews(self, *, limit: int = 100) -> list[Dict[str, Any]]:
+        bounded = max(1, min(int(limit), 500))
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (SCHEDULER_LOCK_KEY,))
-                cur.execute("SELECT * FROM jaytec_worker_seats WHERE seat_id=%s FOR UPDATE",(worker.seat_id,))
-                seat=cur.fetchone()
-                cur.execute("SELECT * FROM jaytec_jobs WHERE job_id=%s FOR UPDATE",(worker.job_id,))
-                job=cur.fetchone()
-                now=datetime.now(timezone.utc)
-                if seat is None or job is None or seat["state"]!="RUNNING" or seat["current_job_id"]!=worker.job_id or seat["worker_id"]!=worker.owner or seat["lease_owner"]!=worker.owner or int(seat["seat_epoch"])!=worker.seat_epoch or int(seat["fence_token"])!=worker.seat_fence_token or seat["lease_expires_at"] is None or seat["lease_expires_at"]<=now:
-                    raise FiveSeatStaleLease(worker.job_id)
-                if job["status"]!="RUNNING" or job["fabric_state"]!="RUNNING" or job["seat_id"]!=worker.seat_id or job["lease_owner"]!=worker.owner or int(job["ownership_epoch"])!=worker.ownership_epoch or int(job["fence_token"])!=worker.job_fence_token or job["lease_expires_at"] is None or job["lease_expires_at"]<=now:
-                    raise FiveSeatStaleLease(worker.job_id)
-                cur.execute("SELECT operation_id FROM jaytec_operations WHERE job_id=%s AND status=ANY(%s)",(worker.job_id,list(UNRESOLVED_OPERATION_STATUSES)))
-                unresolved=[str(r["operation_id"]) for r in cur.fetchall()]
-                if unresolved: raise WatchReviewBlocked("unresolved_operations:"+",".join(unresolved))
-                cur.execute("""
-                    INSERT INTO jaytec_worker_handoffs(handoff_id,job_id,seat_id,worker_id,job_ownership_epoch,job_fence_token,seat_epoch,seat_fence_token,evidence_hash,evidence)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
-                    ON CONFLICT (handoff_id) DO NOTHING RETURNING handoff_id
-                """,(handoff_id,worker.job_id,worker.seat_id,worker.owner,worker.ownership_epoch,worker.job_fence_token,worker.seat_epoch,worker.seat_fence_token,digest,_json(dict(evidence))))
-                inserted=cur.fetchone()
-                if inserted is None:
-                    cur.execute("SELECT evidence_hash,job_id,worker_id FROM jaytec_worker_handoffs WHERE handoff_id=%s",(handoff_id,))
-                    existing=cur.fetchone()
-                    if existing is None or existing["evidence_hash"]!=digest or existing["job_id"]!=worker.job_id or existing["worker_id"]!=worker.owner:
-                        raise WatchRuntimeError("conflicting_handoff_id")
-                cur.execute("""UPDATE jaytec_jobs SET status='PAUSED',fabric_state='HANDOFF_PENDING_REVIEW',seat_id=NULL,lease_owner=NULL,lease_expires_at=NULL,checkpoint_ref=%s,version=version+1,updated_at=now() WHERE job_id=%s AND seat_id=%s AND lease_owner=%s AND ownership_epoch=%s AND fence_token=%s RETURNING job_id""",(handoff_id,worker.job_id,worker.seat_id,worker.owner,worker.ownership_epoch,worker.job_fence_token))
-                if cur.fetchone() is None: raise FiveSeatStaleLease(worker.job_id)
-                cur.execute("""UPDATE jaytec_worker_seats SET state='FREE',current_job_id=NULL,worker_id=NULL,lease_owner=NULL,lease_expires_at=NULL,last_handoff_ref=%s,version=version+1,updated_at=now() WHERE seat_id=%s AND current_job_id=%s AND worker_id=%s AND seat_epoch=%s AND fence_token=%s RETURNING seat_id""",(handoff_id,worker.seat_id,worker.job_id,worker.owner,worker.seat_epoch,worker.seat_fence_token))
-                if cur.fetchone() is None: raise FiveSeatStaleLease(worker.job_id)
-                return {"handoff_id":handoff_id,"evidence_hash":digest,"job_id":worker.job_id,"seat_id":worker.seat_id}
+                cur.execute(
+                    """
+                    SELECT h.*,j.priority,j.fabric_state,j.checkpoint_ref
+                    FROM jaytec_worker_handoffs h
+                    JOIN jaytec_jobs j ON j.job_id=h.job_id
+                    LEFT JOIN jaytec_watch_reviews r ON r.handoff_id=h.handoff_id
+                    WHERE j.fabric_state='HANDOFF_PENDING_REVIEW'
+                      AND j.seat_id IS NULL
+                      AND j.lease_owner IS NULL
+                      AND r.handoff_id IS NULL
+                    ORDER BY j.priority ASC,h.created_at ASC,h.handoff_id ASC
+                    LIMIT %s
+                    """,
+                    (bounded,),
+                )
+                return [dict(row) for row in cur.fetchall()]
 
-    def review(self, leader: WatchLeaderToken, *, handoff_id: str, decision: str, reason: str, evidence: Optional[Mapping[str,Any]]=None) -> Dict[str,Any]:
-        decision=str(decision).upper()
-        if decision not in WATCH_DECISIONS: raise ValueError("invalid decision")
-        if not reason: raise ValueError("reason is required")
+    def review(
+        self,
+        token: WatchLeaderToken,
+        *,
+        review_id: str,
+        handoff_id: str,
+        decision: str,
+        reason: str,
+        evidence: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        review_id = str(review_id or "").strip()
+        handoff_id = str(handoff_id or "").strip()
+        reason = str(reason or "").strip()
+        decision = str(decision or "").upper().strip()
+        if not review_id or not handoff_id or not reason:
+            raise ValueError("review_id, handoff_id and reason are required")
+        if decision not in WATCH_REVIEW_DECISIONS:
+            raise ValueError("invalid WATCH decision")
+        if decision == "ACCEPT" and not dict(evidence or {}):
+            raise ValueError("ACCEPT requires non-empty independent evidence")
+
+        target_status, target_fabric_state = review_target(decision)
+
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (WATCH_LOCK_KEY,))
-                cur.execute("SELECT * FROM jaytec_watch_leader WHERE singleton_id=1 FOR UPDATE")
-                w=cur.fetchone(); now=datetime.now(timezone.utc)
-                if w is None or w["state"]!="LEADER" or w["leader_id"]!=leader.leader_id or int(w["leader_epoch"])!=leader.leader_epoch or int(w["fence_token"])!=leader.fence_token or w["lease_expires_at"] is None or w["lease_expires_at"]<=now:
-                    raise WatchStaleLeader(leader.leader_id)
-                cur.execute("SELECT * FROM jaytec_worker_handoffs WHERE handoff_id=%s FOR UPDATE",(handoff_id,)); h=cur.fetchone()
-                if h is None: raise WatchReviewBlocked("handoff_missing")
-                if h["worker_id"]==leader.leader_id: raise WatchReviewBlocked("self_approval_forbidden")
-                cur.execute("SELECT * FROM jaytec_watch_reviews WHERE handoff_id=%s",(handoff_id,)); existing=cur.fetchone()
+                self._assert_leader(cur, token)
+
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM jaytec_watch_reviews
+                    WHERE handoff_id=%s
+                    FOR UPDATE
+                    """,
+                    (handoff_id,),
+                )
+                existing = cur.fetchone()
                 if existing is not None:
-                    if existing["decision"]==decision and existing["watch_leader_id"]==leader.leader_id: return dict(existing)
-                    raise WatchReviewBlocked("handoff_already_reviewed")
-                job_id=str(h["job_id"])
-                target={"ACCEPT":("SUCCEEDED","SUCCEEDED"),"REWORK":("PAUSED","REWORK_QUEUED"),"BLOCK":("PAUSED","FAILED_SAFE"),"ESCALATE":("PAUSED","ESCALATED")}[decision]
-                cur.execute("""UPDATE jaytec_jobs SET status=%s,fabric_state=%s,version=version+1,updated_at=now() WHERE job_id=%s AND status='PAUSED' AND fabric_state='HANDOFF_PENDING_REVIEW' AND checkpoint_ref=%s RETURNING job_id""",(target[0],target[1],job_id,handoff_id))
-                if cur.fetchone() is None: raise WatchReviewBlocked("job_not_pending_current_handoff")
-                cur.execute("""INSERT INTO jaytec_watch_reviews(handoff_id,job_id,watch_leader_id,watch_leader_epoch,watch_fence_token,decision,reason,evidence) VALUES(%s,%s,%s,%s,%s,%s,%s,%s::jsonb) RETURNING *""",(handoff_id,job_id,leader.leader_id,leader.leader_epoch,leader.fence_token,decision,reason,_json(dict(evidence or {}))))
-                return dict(cur.fetchone())
+                    if (
+                        existing["review_id"] == review_id
+                        and existing["decision"] == decision
+                    ):
+                        return {
+                            "review": dict(existing),
+                            "idempotent_replay": True,
+                        }
+                    raise WatchReviewConflict("handoff_already_reviewed:" + handoff_id)
+
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM jaytec_worker_handoffs
+                    WHERE handoff_id=%s
+                    FOR UPDATE
+                    """,
+                    (handoff_id,),
+                )
+                handoff = cur.fetchone()
+                if handoff is None:
+                    raise WatchControllerError("handoff_not_found:" + handoff_id)
+                if str(handoff["worker_id"]) == token.owner:
+                    raise WatchSelfApprovalForbidden(handoff_id)
+
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM jaytec_jobs
+                    WHERE job_id=%s
+                    FOR UPDATE
+                    """,
+                    (handoff["job_id"],),
+                )
+                job = cur.fetchone()
+                if (
+                    job is None
+                    or job["fabric_state"] != "HANDOFF_PENDING_REVIEW"
+                    or job["seat_id"] is not None
+                    or job["lease_owner"] is not None
+                    or job["checkpoint_ref"] != handoff_id
+                ):
+                    raise WatchReviewConflict("job_not_reviewable:" + str(handoff["job_id"]))
+
+                cur.execute(
+                    """
+                    INSERT INTO jaytec_watch_reviews(
+                      review_id,job_id,handoff_id,controller_id,controller_owner,
+                      leader_epoch,fence_token,decision,reason,evidence
+                    ) VALUES (
+                      %s,%s,%s,'WATCH',%s,%s,%s,%s,%s,%s::jsonb
+                    )
+                    RETURNING *
+                    """,
+                    (
+                        review_id,
+                        handoff["job_id"],
+                        handoff_id,
+                        token.owner,
+                        token.leader_epoch,
+                        token.fence_token,
+                        decision,
+                        reason,
+                        _json(dict(evidence or {})),
+                    ),
+                )
+                review = cur.fetchone()
+                if review is None:
+                    raise WatchControllerError("review_insert_failed:" + review_id)
+
+                blockers = None
+                if decision in {"BLOCK", "ESCALATE"}:
+                    blockers = _json(
+                        [
+                            {
+                                "source": "WATCH_REVIEW",
+                                "decision": decision,
+                                "review_id": review_id,
+                                "reason": reason,
+                            }
+                        ]
+                    )
+
+                cur.execute(
+                    """
+                    UPDATE jaytec_jobs
+                    SET status=%s,
+                        fabric_state=%s,
+                        blockers=CASE
+                          WHEN %s::jsonb IS NULL THEN blockers
+                          ELSE %s::jsonb
+                        END,
+                        next_attempt_at=CASE
+                          WHEN %s='REWORK' THEN now()
+                          ELSE next_attempt_at
+                        END,
+                        version=version+1,
+                        updated_at=now()
+                    WHERE job_id=%s
+                      AND fabric_state='HANDOFF_PENDING_REVIEW'
+                      AND seat_id IS NULL
+                      AND lease_owner IS NULL
+                    RETURNING *
+                    """,
+                    (
+                        target_status,
+                        target_fabric_state,
+                        blockers,
+                        blockers,
+                        decision,
+                        handoff["job_id"],
+                    ),
+                )
+                updated_job = cur.fetchone()
+                if updated_job is None:
+                    raise WatchReviewConflict("review_state_transition_lost:" + handoff_id)
+
+                cur.execute(
+                    """
+                    INSERT INTO jaytec_job_events(
+                      job_id,event_type,source,source_version,payload
+                    )
+                    SELECT job_id,
+                           'WATCH_REVIEW_DECISION',
+                           'FIVE_SEAT_WATCH',
+                           source_shared_state_version,
+                           %s::jsonb
+                    FROM jaytec_jobs
+                    WHERE job_id=%s
+                    """,
+                    (
+                        _json(
+                            {
+                                "review_id": review_id,
+                                "handoff_id": handoff_id,
+                                "decision": decision,
+                                "leader_epoch": token.leader_epoch,
+                                "fence_token": token.fence_token,
+                            }
+                        ),
+                        handoff["job_id"],
+                    ),
+                )
+
+                if decision in {"ACCEPT", "REWORK"}:
+                    cur.execute(
+                        "SELECT pg_notify(%s,%s)",
+                        (
+                            WORK_AVAILABLE_CHANNEL,
+                            _json(
+                                {
+                                    "reason": "watch_review_" + decision.lower(),
+                                    "job_id": str(handoff["job_id"]),
+                                }
+                            ),
+                        ),
+                    )
+
+                return {
+                    "review": dict(review),
+                    "job": dict(updated_job),
+                    "idempotent_replay": False,
+                }
+
+    @staticmethod
+    def _assert_leader(cur, token: WatchLeaderToken) -> None:
+        cur.execute(
+            """
+            SELECT lease_owner,lease_expires_at,leader_epoch,fence_token
+            FROM jaytec_watch_leader
+            WHERE controller_id='WATCH'
+            FOR UPDATE
+            """
+        )
+        row = cur.fetchone()
+        if (
+            row is None
+            or row["lease_owner"] != token.owner
+            or int(row["leader_epoch"]) != token.leader_epoch
+            or int(row["fence_token"]) != token.fence_token
+            or row["lease_expires_at"] is None
+            or row["lease_expires_at"] <= datetime.now(timezone.utc)
+        ):
+            raise WatchStaleLeader(token.owner)
