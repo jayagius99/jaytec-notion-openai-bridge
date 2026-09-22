@@ -10,7 +10,7 @@ os.environ.setdefault("FIVE_SEAT_CANARY_MODE", "1")
 os.environ.setdefault("FIVE_SEAT_CANARY_WORKERS", "2")
 os.environ.setdefault("FIVE_SEAT_CANARY_RUN_ID", "unit-import")
 
-from five_seat_canary_server import CanaryAdapter, CanaryRuntime
+from five_seat_canary_server import CanaryAdapter, CanaryRuntime, _canary_worker_kind
 
 
 @unittest.skipUnless(os.environ.get("DATABASE_URL"), "DATABASE_URL required")
@@ -56,6 +56,14 @@ class TestFiveSeatCanaryRuntime(unittest.TestCase):
                            version=version+1,updated_at=now()
                        WHERE controller_id='WATCH'"""
                 )
+
+    def test_run_specific_worker_kind_prevents_stage_inheritance(self):
+        one = _canary_worker_kind("run-one", 2)
+        two = _canary_worker_kind("run-two", 2)
+        three = _canary_worker_kind("run-one", 3)
+        self.assertNotEqual(one, two)
+        self.assertNotEqual(one, three)
+        self.assertTrue(one.startswith("CANARY_2_"))
 
     def test_barrier_requires_exact_stage_width(self):
         adapter = CanaryAdapter(2, "barrier-test")
