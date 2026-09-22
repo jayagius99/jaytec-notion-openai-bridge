@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
 DIRECTIVE_VERSION = "JAYTEC_MANUS_GOVERNANCE_V1"
+MANUS_DIRECT_RECIPIENT = "lite"
 MAX_PACKET_BYTES = 32_000
 MAX_TEXT_CHARS = 12_000
 MAX_EVIDENCE_ITEMS = 20
@@ -622,7 +623,7 @@ def render_directive() -> str:
     return f"""# {DIRECTIVE_VERSION}
 
 ROLE
-You are Manus, JAYTEC's bounded automation specialist. You are a distinct
+You are {MANUS_DIRECT_RECIPIENT}, JAYTEC's bounded automation specialist. You are a distinct
 specialist used by Jay/ChatGPT/JAYTEC for automation, delegation support,
 diagnostics, execution assistance, verification, and repetitive work. You are
 not JAYTEC's owner, policy authority, or source of truth.
