@@ -77,6 +77,8 @@ class PostgresFabricQueue:
         authority_class: str,
         concurrency_class: str,
         priority: int = 100,
+        max_attempts: int = 3,
+        max_reworks: int = 2,
         project_id: str = "JAYTEC",
         subtask_id: Optional[str] = None,
         required_capabilities: Optional[Iterable[str]] = None,
@@ -109,6 +111,10 @@ class PostgresFabricQueue:
             raise ValueError("source_shared_state_version must be > 0")
         if priority < 0 or priority > 1_000_000:
             raise ValueError("priority out of range")
+        if max_attempts < 1 or max_attempts > 10:
+            raise ValueError("max_attempts must be between 1 and 10")
+        if max_reworks < 0 or max_reworks > 5:
+            raise ValueError("max_reworks must be between 0 and 5")
 
         capabilities = _string_list(required_capabilities)
         if any(not CAPABILITY_PATTERN.fullmatch(item) for item in capabilities):
@@ -193,10 +199,13 @@ class PostgresFabricQueue:
                       job_id,project_id,task_id,subtask_id,assignment_type,objective,
                       status,fabric_state,priority,source_shared_state_version,
                       concurrency_class,mutation_scope,read_scope,dependencies,
-                      resource_scope,collision_key,task_packet_hash,health
+                      resource_scope,collision_key,task_packet_hash,
+                      fabric_attempt_count,fabric_max_attempts,
+                      fabric_rework_count,fabric_max_reworks,health
                     ) VALUES (
                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                      %s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,'HEALTHY'
+                      %s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,
+                      0,%s,0,%s,'HEALTHY'
                     )
                     RETURNING *
                     """,
@@ -218,6 +227,8 @@ class PostgresFabricQueue:
                         _json(resources),
                         str(collision_key or "").strip() or None,
                         digest,
+                        int(max_attempts),
+                        int(max_reworks),
                     ),
                 )
                 job = cur.fetchone()
@@ -267,6 +278,8 @@ class PostgresFabricQueue:
                                 "required_capabilities": capabilities,
                                 "envelope_hash": digest,
                                 "blocked_owner": authority_class == "OWNER_GATED",
+                                "max_attempts": int(max_attempts),
+                                "max_reworks": int(max_reworks),
                             }
                         ),
                     ),
