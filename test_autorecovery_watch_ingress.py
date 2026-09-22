@@ -46,6 +46,37 @@ def broker_payload(refs):
     return value
 
 
+def resign_broker_payload(value):
+    unsigned = {k: v for k, v in value.items() if k != "sha256"}
+    value = dict(unsigned)
+    value["sha256"] = hashlib.sha256(
+        json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return value
+
+
+def compact_broker_payload(refs, *, mode="COMPACT_AUTHORITY", complete=False, rows=2):
+    value = broker_payload(refs)
+    value.pop("sha256", None)
+    value["context_mode"] = mode
+    value["open_pr_window"] = {"limit": 5, "complete": complete}
+    value["open_pull_requests"] = [
+        {
+            "number": 100 + index,
+            "draft": False,
+            "head_ref": f"repair/example-{index}",
+            "head_sha": f"{index + 1:040x}"[-40:],
+        }
+        for index in range(rows)
+    ]
+    return resign_broker_payload(value)
+
+
 def broker_checkpoint():
     return AssignmentCheckpoint(
         task_id=FORGE_TASK_ID,
@@ -470,6 +501,92 @@ class WatchIngressPolicyTests(unittest.TestCase):
         ).hexdigest()
         with self.assertRaisesRegex(WatchIngressError, "SECRET_FIELD_FORBIDDEN"):
             _broker_context(secret_value, refs)
+
+    def test_compact_broker_authority_contract_is_accepted_exactly(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        for mode in ("COMPACT_AUTHORITY", "MINIMAL_AUTHORITY"):
+            with self.subTest(mode=mode):
+                compact = compact_broker_payload(refs, mode=mode, complete=False, rows=5)
+                parsed = _broker_context(compact, refs)
+                self.assertEqual(parsed["context_mode"], mode)
+                self.assertEqual(parsed["open_pr_window"], {"limit": 5, "complete": False})
+                self.assertEqual(len(parsed["open_pull_requests"]), 5)
+
+        complete = compact_broker_payload(
+            refs,
+            mode="COMPACT_AUTHORITY",
+            complete=True,
+            rows=2,
+        )
+        self.assertTrue(_broker_context(complete, refs)["open_pr_window"]["complete"])
+
+    def test_compact_broker_contract_rejects_unknown_or_ambiguous_shapes(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+
+        bad_mode = compact_broker_payload(refs)
+        bad_mode["context_mode"] = "RELAXED"
+        bad_mode = resign_broker_payload(bad_mode)
+        with self.assertRaisesRegex(WatchIngressError, "CONTEXT_MODE_INVALID"):
+            _broker_context(bad_mode, refs)
+
+        missing_window = compact_broker_payload(refs)
+        missing_window.pop("open_pr_window")
+        missing_window = resign_broker_payload(missing_window)
+        with self.assertRaisesRegex(WatchIngressError, "FIELDS_INVALID"):
+            _broker_context(missing_window, refs)
+
+        extra = compact_broker_payload(refs)
+        extra["unexpected"] = True
+        extra = resign_broker_payload(extra)
+        with self.assertRaisesRegex(WatchIngressError, "FIELDS_INVALID"):
+            _broker_context(extra, refs)
+
+        bad_window_fields = compact_broker_payload(refs)
+        bad_window_fields["open_pr_window"] = {
+            "limit": 5,
+            "complete": False,
+            "cursor": "not-authorized",
+        }
+        bad_window_fields = resign_broker_payload(bad_window_fields)
+        with self.assertRaisesRegex(WatchIngressError, "WINDOW_FIELDS_INVALID"):
+            _broker_context(bad_window_fields, refs)
+
+        for bad_limit in (4, 6, True, "5"):
+            with self.subTest(bad_limit=bad_limit):
+                bad_limit_payload = compact_broker_payload(refs)
+                bad_limit_payload["open_pr_window"] = {
+                    "limit": bad_limit,
+                    "complete": False,
+                }
+                bad_limit_payload = resign_broker_payload(bad_limit_payload)
+                with self.assertRaisesRegex(WatchIngressError, "WINDOW_LIMIT_INVALID"):
+                    _broker_context(bad_limit_payload, refs)
+
+        bad_complete = compact_broker_payload(refs)
+        bad_complete["open_pr_window"] = {"limit": 5, "complete": "false"}
+        bad_complete = resign_broker_payload(bad_complete)
+        with self.assertRaisesRegex(WatchIngressError, "WINDOW_COMPLETE_INVALID"):
+            _broker_context(bad_complete, refs)
+
+        overflow = compact_broker_payload(refs, rows=6)
+        with self.assertRaisesRegex(WatchIngressError, "WINDOW_OVERFLOW"):
+            _broker_context(overflow, refs)
+
+        false_exhaustive = compact_broker_payload(
+            refs,
+            complete=True,
+            rows=5,
+        )
+        with self.assertRaisesRegex(WatchIngressError, "COMPLETENESS_INVALID"):
+            _broker_context(false_exhaustive, refs)
+
+    def test_legacy_full_broker_contract_does_not_accept_compact_metadata(self):
+        refs = {"security/root-owner-control-v1": "b" * 40}
+        legacy = broker_payload(refs)
+        legacy["open_pr_window"] = {"limit": 5, "complete": True}
+        legacy = resign_broker_payload(legacy)
+        with self.assertRaisesRegex(WatchIngressError, "FIELDS_INVALID"):
+            _broker_context(legacy, refs)
 
     def test_exact_g03_exhausted_local_preflight_is_refunded_once(self):
         cp = broker_checkpoint()
