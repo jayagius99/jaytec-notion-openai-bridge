@@ -322,6 +322,30 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertTrue(message.startswith("lite\n\n"))
         self.assertEqual(message.splitlines()[0], "lite")
         self.assertEqual(ma.MANUS_DIRECT_RECIPIENT, "lite")
+        self.assertIn(
+            "You are lite, JAYTEC's bounded automation specialist.",
+            message,
+        )
+        self.assertNotIn(
+            "You are Manus, JAYTEC's bounded automation specialist.",
+            message,
+        )
+
+    def test_direct_recipient_stays_lite_when_task_describes_manus(self):
+        message = ma.ManusClient._governed_message(
+            _route(),
+            "Inspect Manus Home naming without changing authority.",
+        )
+        self.assertEqual(message.splitlines()[0], "lite")
+        self.assertIn(
+            "You are lite, JAYTEC's bounded automation specialist.",
+            message,
+        )
+        self.assertNotIn(
+            "You are Manus, JAYTEC's bounded automation specialist.",
+            message,
+        )
+        self.assertIn("Inspect Manus Home naming", message)
 
     def test_create_task_explicitly_pins_lite_project_and_connector_ids(self):
         client = ma.ManusClient(api_key="x")
@@ -365,6 +389,14 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertIn("JAYTEC_MANUS_GOVERNANCE_V1", payload["message"]["content"])
         self.assertTrue(payload["message"]["content"].startswith("lite\n\n"))
         self.assertEqual(payload["message"]["content"].splitlines()[0], "lite")
+        self.assertIn(
+            "You are lite, JAYTEC's bounded automation specialist.",
+            payload["message"]["content"],
+        )
+        self.assertNotIn(
+            "You are Manus, JAYTEC's bounded automation specialist.",
+            payload["message"]["content"],
+        )
 
     def test_create_task_profile_mismatch_stops_and_fails(self):
         client = ma.ManusClient(api_key="x")
