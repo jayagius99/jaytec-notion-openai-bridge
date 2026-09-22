@@ -3,15 +3,18 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping
 
-from five_seat_adapters import AdapterRegistry
-from five_seat_runtime import FiveSeatStaleLease, PostgresFiveSeatScheduler
-from five_seat_signals import (
-    PostgresFabricSignal,
-    REVIEW_AVAILABLE_CHANNEL,
-    WORK_AVAILABLE_CHANNEL,
+from five_seat_adapters import (
+    AdapterExecutionError,
+    AdapterRegistry,
+    PermanentAdapterError,
+    RetryableAdapterError,
+    UncertainSideEffectError,
 )
+from five_seat_remedies import PostgresFabricRemedies, retry_delay_seconds
+from five_seat_runtime import FiveSeatStaleLease, PostgresFiveSeatScheduler
+from five_seat_signals import PostgresFabricSignal, WORK_AVAILABLE_CHANNEL
 
 
 class FabricWorkerError(RuntimeError):
@@ -39,7 +42,7 @@ def _handoff_payload(claim: Mapping[str, Any], result: Mapping[str, Any]) -> dic
         "unresolved_items": list(result.get("unresolved_items") or []),
         "partial_side_effect_status": str(
             result.get("partial_side_effect_status") or "NONE"
-        ),
+        ).upper(),
         "proposed_next_action": result.get("proposed_next_action"),
         "worker_completion_classification": str(
             result.get("worker_completion_classification") or "CANDIDATE_COMPLETE"
@@ -48,11 +51,38 @@ def _handoff_payload(claim: Mapping[str, Any], result: Mapping[str, Any]) -> dic
     }
 
 
-class FiveSeatWorker:
-    """Generic worker loop over the durable five-seat scheduler.
+def _failure_result(
+    *,
+    error_class: str,
+    message: str,
+    partial_side_effect_status: str,
+    classification: str,
+) -> dict[str, Any]:
+    return {
+        "operations": [],
+        "artifacts": [],
+        "tests": [],
+        "evidence": [
+            {
+                "type": "worker_failure",
+                "error_class": str(error_class),
+                "message": str(message)[:1000],
+            }
+        ],
+        "provider_identity": None,
+        "unresolved_items": [f"worker_failure:{error_class}"],
+        "partial_side_effect_status": partial_side_effect_status,
+        "proposed_next_action": "WATCH_REVIEW_FAILURE",
+        "worker_completion_classification": classification,
+    }
 
-    Work is chained immediately. LISTEN/NOTIFY only accelerates idle wakeups;
-    a bounded timeout always re-checks Postgres so lost signals cannot stall.
+
+class FiveSeatWorker:
+    """Generic continuous worker over the durable five-seat scheduler.
+
+    Automatic retries are allowed only for an explicit RetryableAdapterError,
+    which guarantees no side effect occurred. All ambiguous failures are
+    handed off as UNCERTAIN_PARTIAL and quarantined by the scheduler.
     """
 
     def __init__(
@@ -65,15 +95,34 @@ class FiveSeatWorker:
         execution_room_id: str,
         lease_seconds: int = 300,
         idle_fallback_seconds: float = 15.0,
+        remedies: PostgresFabricRemedies | None = None,
     ):
         self.scheduler = scheduler
         self.registry = registry
         self.signal = signal
+        self.remedies = remedies or PostgresFabricRemedies(scheduler.database_url)
         self.owner = owner
         self.execution_room_id = execution_room_id
         self.lease_seconds = lease_seconds
         self.idle_fallback_seconds = max(0.1, min(float(idle_fallback_seconds), 60.0))
         self._stop = threading.Event()
+
+    def _handoff(
+        self,
+        token,
+        claim: Mapping[str, Any],
+        result: Mapping[str, Any],
+    ) -> None:
+        handoff_id = _handoff_id(
+            token.job_id,
+            token.job_fence_token,
+            result,
+        )
+        self.scheduler.release_for_review(
+            token,
+            handoff_ref=handoff_id,
+            handoff_payload=_handoff_payload(claim, result),
+        )
 
     def run_once(self) -> bool:
         claim = self.scheduler.claim_next(
@@ -90,8 +139,22 @@ class FiveSeatWorker:
         worker_kind = str(claim.get("worker_kind") or "").upper()
         required_capabilities = list(claim.get("required_capabilities") or [])
         if not self.registry.can_run(worker_kind, required_capabilities):
-            raise FabricWorkerError("claimed_incompatible_adapter:" + worker_kind)
+            # Admission/registry mismatch is an internal safety fault. Do not
+            # leave the task running or attempt another adapter.
+            self.remedies.quarantine_current(
+                token,
+                reason="CLAIMED_INCOMPATIBLE_ADAPTER",
+                evidence={
+                    "worker_kind": worker_kind,
+                    "required_capabilities": required_capabilities,
+                },
+            )
+            return True
         adapter = self.registry.get(worker_kind)
+
+        if self.remedies.cancel_requested(token):
+            self.remedies.acknowledge_cancel(token)
+            return True
 
         stop_heartbeat = threading.Event()
         lost_lease = threading.Event()
@@ -115,34 +178,120 @@ class FiveSeatWorker:
             daemon=True,
         )
         heartbeat.start()
+
+        result: dict[str, Any] | None = None
+        failure: BaseException | None = None
         try:
-            result = adapter.execute(dict(claim.get("payload") or {}))
-            if not isinstance(result, Mapping):
-                raise FabricWorkerError("adapter_result_not_mapping")
-            result = dict(result)
+            raw = adapter.execute(dict(claim.get("payload") or {}))
+            if not isinstance(raw, Mapping):
+                raise UncertainSideEffectError("adapter_result_not_mapping")
+            result = dict(raw)
+        except BaseException as exc:
+            failure = exc
         finally:
             stop_heartbeat.set()
             heartbeat.join(timeout=1.0)
 
         if lost_lease.is_set():
-            # Stale worker authority is dead. Never hand off from a lost fence.
+            # A replacement/reconciler owns the lineage now. Never write a
+            # result, retry, or handoff from the stale token.
             return True
 
-        handoff_id = _handoff_id(
-            token.job_id,
-            token.job_fence_token,
-            result,
-        )
-        self.scheduler.release_for_review(
-            token,
-            handoff_ref=handoff_id,
-            handoff_payload=_handoff_payload(claim, result),
-        )
-        self.signal.notify(
-            REVIEW_AVAILABLE_CHANNEL,
-            reason="worker_handoff_ready",
-            job_id=token.job_id,
-        )
+        if failure is not None:
+            error = {
+                "error_class": type(failure).__name__,
+                "message": str(failure)[:1000],
+            }
+            self.remedies.record_adapter_failure(worker_kind, error=error)
+
+            if isinstance(failure, RetryableAdapterError):
+                delay = (
+                    failure.retry_after_seconds
+                    if failure.retry_after_seconds is not None
+                    else retry_delay_seconds(int(claim.get("fabric_attempt_count") or 1))
+                )
+                retry = self.remedies.safe_retry(
+                    token,
+                    worker_kind=worker_kind,
+                    error=error,
+                    delay_seconds=delay,
+                )
+                if retry.get("requeued") is True:
+                    return True
+                partial = (
+                    "UNCERTAIN_PARTIAL"
+                    if retry.get("reason") == "UNRESOLVED_SIDE_EFFECT"
+                    else "NONE"
+                )
+                result = _failure_result(
+                    error_class=type(failure).__name__,
+                    message=str(failure),
+                    partial_side_effect_status=partial,
+                    classification="RETRY_NOT_SAFE_OR_BUDGET_EXHAUSTED",
+                )
+            elif isinstance(failure, PermanentAdapterError):
+                result = _failure_result(
+                    error_class=type(failure).__name__,
+                    message=str(failure),
+                    partial_side_effect_status="NONE",
+                    classification="FAILED_SAFE_CANDIDATE",
+                )
+            else:
+                # UncertainSideEffectError and every unclassified exception are
+                # deliberately treated as potentially side-effecting.
+                result = _failure_result(
+                    error_class=type(failure).__name__,
+                    message=str(failure),
+                    partial_side_effect_status="UNCERTAIN_PARTIAL",
+                    classification="QUARANTINE_CANDIDATE",
+                )
+
+            try:
+                self._handoff(token, claim, result)
+            except FiveSeatStaleLease:
+                return True
+            return True
+
+        assert result is not None
+        partial = str(result.get("partial_side_effect_status") or "NONE").upper()
+        if partial not in {
+            "NONE",
+            "VERIFIED_COMPLETE",
+            "VERIFIED_NOT_DONE",
+            "UNCERTAIN_PARTIAL",
+        }:
+            partial = "UNCERTAIN_PARTIAL"
+            result["partial_side_effect_status"] = partial
+            unresolved = list(result.get("unresolved_items") or [])
+            unresolved.append("invalid_partial_side_effect_status")
+            result["unresolved_items"] = unresolved
+
+        if self.remedies.cancel_requested(token):
+            # Preserve what actually happened; cancellation arriving during
+            # execution cannot erase evidence. release_for_review sees the
+            # CANCEL_REQUESTED state and quarantines it for reconciliation.
+            unresolved = list(result.get("unresolved_items") or [])
+            unresolved.append("cancel_requested_during_execution")
+            result["unresolved_items"] = unresolved
+            result["worker_completion_classification"] = (
+                "CANCEL_REQUESTED_AFTER_EXECUTION"
+            )
+
+        if partial == "UNCERTAIN_PARTIAL":
+            self.remedies.record_adapter_failure(
+                worker_kind,
+                error={
+                    "error_class": "UNCERTAIN_PARTIAL_RESULT",
+                    "message": "adapter returned uncertain partial side-effect state",
+                },
+            )
+        else:
+            self.remedies.record_adapter_success(worker_kind)
+
+        try:
+            self._handoff(token, claim, result)
+        except FiveSeatStaleLease:
+            return True
         return True
 
     def run_until_idle(self, *, max_jobs: int = 100) -> int:
@@ -156,7 +305,15 @@ class FiveSeatWorker:
 
     def run_forever(self) -> None:
         while not self._stop.is_set():
-            if self.run_once():
+            try:
+                worked = self.run_once()
+            except Exception:
+                # Do not kill the persistent worker pool on one internal fault,
+                # and do not hot-loop. Durable state/leases remain the authority
+                # for Guardian/recovery.
+                self._stop.wait(self.idle_fallback_seconds)
+                continue
+            if worked:
                 # Immediate refill: no sleep after a completed handoff.
                 continue
             self.signal.wait(
