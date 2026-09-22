@@ -1,0 +1,99 @@
+name: Five-Seat Fabric CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/five-seat-fabric.yml'
+      - 'five_seat_*.py'
+      - 'five_seat_schema.sql'
+      - 'test_five_seat_*.py'
+      - 'config/five_seat_fabric_v1.json'
+      - 'docs/FIVE_SEAT_CONTINUOUS_FABRIC_V1.md'
+      - 'concurrency.py'
+      - 'job_runtime.py'
+      - 'job_runtime_schema.sql'
+      - 'test_concurrency.py'
+      - 'test_job_runtime.py'
+  push:
+    branches:
+      - 'infra/five-seat-worker-fabric-v1'
+    paths:
+      - '.github/workflows/five-seat-fabric.yml'
+      - 'five_seat_*.py'
+      - 'five_seat_schema.sql'
+      - 'test_five_seat_*.py'
+      - 'config/five_seat_fabric_v1.json'
+      - 'docs/FIVE_SEAT_CONTINUOUS_FABRIC_V1.md'
+      - 'concurrency.py'
+      - 'job_runtime.py'
+      - 'job_runtime_schema.sql'
+      - 'test_concurrency.py'
+      - 'test_job_runtime.py'
+
+concurrency:
+  group: five-seat-fabric-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  five-seat-unit-and-schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: jaytec
+          POSTGRES_PASSWORD: jaytec_test
+          POSTGRES_DB: jaytec_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jaytec -d jaytec_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://jaytec:jaytec_test@127.0.0.1:5432/jaytec_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile five-seat and inherited runtime
+        run: |
+          python -m py_compile             five_seat_adapters.py five_seat_guardian.py five_seat_queue.py             five_seat_remedies.py five_seat_runtime.py five_seat_signals.py             five_seat_watch.py five_seat_worker.py             concurrency.py job_runtime.py             test_five_seat_contract.py test_five_seat_runtime.py             test_five_seat_watch.py test_five_seat_continuous.py             test_five_seat_remedies.py test_concurrency.py test_job_runtime.py
+
+      - name: Apply existing durable schema
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f job_runtime_schema.sql
+
+      - name: Apply five-seat additive migration
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f five_seat_schema.sql
+
+      - name: Reapply five-seat migration for idempotency
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f five_seat_schema.sql
+
+      - name: Verify exact five seats and singleton WATCH row
+        run: |
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_worker_seats")" = "5"
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_watch_leader where controller_id='WATCH'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_worker_seats where seat_id='WORKER-SEAT-6'")" = "0"
+
+      - name: Run five-seat tests
+        run: python -m unittest discover -v -p 'test_five_seat*.py'
+
+      - name: Run inherited concurrency and fence regression tests
+        run: python -m unittest -v test_concurrency.py test_job_runtime.py
