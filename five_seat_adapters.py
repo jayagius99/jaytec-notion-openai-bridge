@@ -8,6 +8,61 @@ class AdapterRegistryError(RuntimeError):
     pass
 
 
+class AdapterExecutionError(RuntimeError):
+    """Base adapter failure with explicit retry/side-effect semantics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool,
+        side_effects_possible: bool,
+        retry_after_seconds: int | None = None,
+    ):
+        super().__init__(message)
+        self.retryable = bool(retryable)
+        self.side_effects_possible = bool(side_effects_possible)
+        self.retry_after_seconds = (
+            None
+            if retry_after_seconds is None
+            else max(1, min(int(retry_after_seconds), 3600))
+        )
+
+
+class RetryableAdapterError(AdapterExecutionError):
+    """Retryable only when the adapter guarantees no side effect occurred."""
+
+    def __init__(self, message: str, *, retry_after_seconds: int | None = None):
+        super().__init__(
+            message,
+            retryable=True,
+            side_effects_possible=False,
+            retry_after_seconds=retry_after_seconds,
+        )
+
+
+class PermanentAdapterError(AdapterExecutionError):
+    """Non-retryable failure with verified no-side-effect semantics."""
+
+    def __init__(self, message: str):
+        super().__init__(
+            message,
+            retryable=False,
+            side_effects_possible=False,
+        )
+
+
+class UncertainSideEffectError(AdapterExecutionError):
+    """Failure where an external effect may have happened. Never auto-retry."""
+
+    def __init__(self, message: str):
+        super().__init__(
+            message,
+            retryable=False,
+            side_effects_possible=True,
+        )
+
+
 @dataclass(frozen=True)
 class WorkerAdapter:
     worker_kind: str
