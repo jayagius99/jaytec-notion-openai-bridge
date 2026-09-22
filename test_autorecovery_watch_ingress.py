@@ -1558,6 +1558,42 @@ class WatchIngressPolicyTests(unittest.TestCase):
                 default_ref="security/root-owner-control-v1",
             )
 
+        issue_alias = broker_specialist_request(
+            {
+                "operation": "read_issue",
+                "issue_number": 59,
+                "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            }
+        )
+        issue_alias_normalized = _normalize_broker_operation(
+            issue_alias,
+            refs=refs,
+            fencing_token=9,
+            mutation_authorized=False,
+            default_ref="security/root-owner-control-v1",
+        )
+        self.assertEqual(issue_alias_normalized["operation"], "read_issue")
+        self.assertEqual(issue_alias_normalized["args"]["number"], 59)
+
+        ambiguous_issue = broker_specialist_request(
+            {
+                "operation": "read_issue",
+                "number": 59,
+                "issue_number": 66,
+                "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            }
+        )
+        with self.assertRaisesRegex(
+            WatchIngressError, "GITHUB_BROKER_READ_ISSUE_NUMBER_AMBIGUOUS"
+        ):
+            _normalize_broker_operation(
+                ambiguous_issue,
+                refs=refs,
+                fencing_token=9,
+                mutation_authorized=False,
+                default_ref="security/root-owner-control-v1",
+            )
+
         explicit_ref_list = broker_specialist_request(
             {
                 "operation": "list_path",
