@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -50,6 +51,24 @@ class FiveSeatLeaseToken:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _digest(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(_json(dict(value)).encode("utf-8")).hexdigest()
+
+
+HANDOFF_REQUIRED_FIELDS = (
+    "starting_checkpoint",
+    "operations",
+    "artifacts",
+    "tests",
+    "evidence",
+    "provider_identity",
+    "unresolved_items",
+    "partial_side_effect_status",
+    "proposed_next_action",
+    "worker_completion_classification",
+)
 
 
 def _row(row: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -447,10 +466,33 @@ class PostgresFiveSeatScheduler:
         token: FiveSeatLeaseToken,
         *,
         handoff_ref: str,
+        handoff_payload: Mapping[str, Any],
     ) -> Dict[str, Any]:
         handoff_ref = str(handoff_ref or "").strip()
         if not handoff_ref:
             raise ValueError("handoff_ref is required")
+        payload = dict(handoff_payload or {})
+        missing = [
+            key
+            for key in HANDOFF_REQUIRED_FIELDS
+            if key not in payload
+        ]
+        if missing:
+            raise ValueError("handoff_payload_missing:" + ",".join(sorted(missing)))
+
+        lineage = {
+            "handoff_id": handoff_ref,
+            "job_id": token.job_id,
+            "seat_id": token.seat_id,
+            "worker_id": token.owner,
+            "ownership_epoch": token.ownership_epoch,
+            "job_fence_token": token.job_fence_token,
+            "seat_epoch": token.seat_epoch,
+            "seat_fence_token": token.seat_fence_token,
+            "task_packet_hash": payload.get("task_packet_hash"),
+            "payload": payload,
+        }
+        handoff_digest = _digest(lineage)
 
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -458,6 +500,57 @@ class PostgresFiveSeatScheduler:
                     "SELECT pg_advisory_xact_lock(hashtext(%s))",
                     (SCHEDULER_LOCK_KEY,),
                 )
+
+                # Lost acknowledgement must be safely replayable. If the exact
+                # immutable handoff is already present and the seat is already
+                # free for that handoff, return the durable state unchanged.
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM jaytec_worker_handoffs
+                    WHERE handoff_id=%s
+                    FOR UPDATE
+                    """,
+                    (handoff_ref,),
+                )
+                existing_handoff = cur.fetchone()
+                if existing_handoff is not None:
+                    exact = (
+                        existing_handoff["job_id"] == token.job_id
+                        and existing_handoff["seat_id"] == token.seat_id
+                        and existing_handoff["worker_id"] == token.owner
+                        and int(existing_handoff["ownership_epoch"]) == token.ownership_epoch
+                        and int(existing_handoff["job_fence_token"]) == token.job_fence_token
+                        and int(existing_handoff["seat_epoch"]) == token.seat_epoch
+                        and int(existing_handoff["seat_fence_token"]) == token.seat_fence_token
+                        and existing_handoff["handoff_digest"] == handoff_digest
+                    )
+                    if not exact:
+                        raise FiveSeatRuntimeError("conflicting_handoff_replay:" + handoff_ref)
+                    cur.execute("SELECT * FROM jaytec_jobs WHERE job_id=%s", (token.job_id,))
+                    replay_job = cur.fetchone()
+                    cur.execute(
+                        "SELECT * FROM jaytec_worker_seats WHERE seat_id=%s",
+                        (token.seat_id,),
+                    )
+                    replay_seat = cur.fetchone()
+                    if (
+                        replay_job is not None
+                        and replay_job["fabric_state"] == "HANDOFF_PENDING_REVIEW"
+                        and replay_job["seat_id"] is None
+                        and replay_job["lease_owner"] is None
+                        and replay_seat is not None
+                        and replay_seat["state"] == "FREE"
+                        and replay_seat["current_job_id"] is None
+                        and replay_seat["last_handoff_ref"] == handoff_ref
+                    ):
+                        return {
+                            "job": _row(replay_job) or {},
+                            "seat": _row(replay_seat) or {},
+                            "handoff": _row(existing_handoff) or {},
+                            "idempotent_replay": True,
+                        }
+                    raise FiveSeatRuntimeError("handoff_replay_state_mismatch:" + handoff_ref)
 
                 cur.execute(
                     """
@@ -486,7 +579,8 @@ class PostgresFiveSeatScheduler:
                 cur.execute(
                     """
                     SELECT job_id,status,fabric_state,seat_id,lease_owner,
-                           lease_expires_at,ownership_epoch,fence_token
+                           lease_expires_at,ownership_epoch,fence_token,
+                           task_packet_hash
                     FROM jaytec_jobs
                     WHERE job_id=%s
                     FOR UPDATE
@@ -526,6 +620,35 @@ class PostgresFiveSeatScheduler:
                         "unresolved_operations:"
                         + ",".join(str(row["operation_id"]) for row in unresolved)
                     )
+
+                cur.execute(
+                    """
+                    INSERT INTO jaytec_worker_handoffs(
+                      handoff_id,job_id,seat_id,worker_id,
+                      ownership_epoch,job_fence_token,seat_epoch,seat_fence_token,
+                      task_packet_hash,handoff_digest,payload
+                    ) VALUES (
+                      %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb
+                    )
+                    RETURNING *
+                    """,
+                    (
+                        handoff_ref,
+                        token.job_id,
+                        token.seat_id,
+                        token.owner,
+                        token.ownership_epoch,
+                        token.job_fence_token,
+                        token.seat_epoch,
+                        token.seat_fence_token,
+                        payload.get("task_packet_hash") or job.get("task_packet_hash"),
+                        handoff_digest,
+                        _json(payload),
+                    ),
+                )
+                durable_handoff = cur.fetchone()
+                if durable_handoff is None:
+                    raise FiveSeatRuntimeError("handoff_insert_failed:" + handoff_ref)
 
                 cur.execute(
                     """
@@ -595,7 +718,7 @@ class PostgresFiveSeatScheduler:
                       job_id,event_type,source,source_version,payload
                     )
                     SELECT job_id,
-                           'WORKER_SEAT_RELEASED_FOR_REVIEW',
+                           'WORKER_HANDOFF_COMMITTED_AND_SEAT_RELEASED',
                            'FIVE_SEAT_SCHEDULER',
                            source_shared_state_version,
                            %s::jsonb
@@ -609,6 +732,7 @@ class PostgresFiveSeatScheduler:
                                 "seat_epoch": token.seat_epoch,
                                 "seat_fence_token": token.seat_fence_token,
                                 "handoff_ref": handoff_ref,
+                                "handoff_digest": handoff_digest,
                             }
                         ),
                         token.job_id,
@@ -618,4 +742,7 @@ class PostgresFiveSeatScheduler:
                 return {
                     "job": _row(released_job) or {},
                     "seat": _row(released_seat) or {},
+                    "handoff": _row(durable_handoff) or {},
+                    "idempotent_replay": False,
                 }
+
