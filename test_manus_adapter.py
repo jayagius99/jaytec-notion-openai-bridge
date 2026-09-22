@@ -480,6 +480,14 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertIn("JAYTEC_MANUS_GOVERNANCE_V1", payload["message"]["content"])
         self.assertTrue(payload["message"]["content"].startswith("lite\n\n"))
         self.assertEqual(payload["message"]["content"].splitlines()[0], "lite")
+        self.assertIn(
+            "You are lite, JAYTEC's bounded automation specialist.",
+            payload["message"]["content"],
+        )
+        self.assertNotIn(
+            "You are Manus, JAYTEC's bounded automation specialist.",
+            payload["message"]["content"],
+        )
 
     def test_send_message_with_no_connectors_clears_existing_set(self):
         auth = authorize_manus_dispatch(
