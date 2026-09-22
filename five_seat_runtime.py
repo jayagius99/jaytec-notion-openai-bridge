@@ -16,6 +16,7 @@ from concurrency import (
     UNRESOLVED_OPERATION_STATUSES,
     concurrency_decision,
     duplicate_assignment,
+    scopes_overlap,
 )
 
 
@@ -57,6 +58,62 @@ def _json(value: Any) -> str:
 
 def _digest(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(_json(dict(value)).encode("utf-8")).hexdigest()
+
+
+def _scope_values(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return set()
+        try:
+            return _scope_values(json.loads(text))
+        except json.JSONDecodeError:
+            return {text}
+    if isinstance(value, Mapping):
+        result: set[str] = set()
+        for key, item in value.items():
+            if isinstance(item, (list, tuple, set)):
+                for child in item:
+                    result.add(f"{key}={child}")
+            else:
+                result.add(f"{key}={item}")
+        return result
+    if isinstance(value, Iterable):
+        return {str(item).strip() for item in value if str(item).strip()}
+    return {str(value).strip()} if str(value).strip() else set()
+
+
+def quarantine_conflict(
+    candidate: Mapping[str, Any],
+    quarantined: Iterable[Mapping[str, Any]],
+) -> Optional[str]:
+    """Return quarantined job id only when the candidate overlaps its surface.
+
+    Quarantine is resource/scope-local. It must stop unsafe reuse of ambiguous
+    state without turning one damaged task into a global five-seat outage.
+    """
+    candidate_mut = _scope_values(candidate.get("mutation_scope"))
+    candidate_read = _scope_values(candidate.get("read_scope"))
+    candidate_resources = _scope_values(candidate.get("resource_scope"))
+    candidate_collision = str(candidate.get("collision_key") or "").strip()
+    for blocked in quarantined:
+        blocked_id = str(blocked.get("job_id") or "")
+        blocked_mut = _scope_values(blocked.get("mutation_scope"))
+        blocked_read = _scope_values(blocked.get("read_scope"))
+        blocked_resources = _scope_values(blocked.get("resource_scope"))
+        blocked_collision = str(blocked.get("collision_key") or "").strip()
+        if candidate_collision and blocked_collision and candidate_collision == blocked_collision:
+            return blocked_id
+        if (
+            scopes_overlap(candidate_mut, blocked_mut)
+            or scopes_overlap(candidate_mut, blocked_read)
+            or scopes_overlap(candidate_read, blocked_mut)
+            or scopes_overlap(candidate_resources, blocked_resources)
+        ):
+            return blocked_id
+    return None
 
 
 HANDOFF_REQUIRED_FIELDS = (
@@ -255,6 +312,15 @@ class PostgresFiveSeatScheduler:
 
                 cur.execute(
                     """
+                    SELECT job_id,mutation_scope,read_scope,resource_scope,collision_key
+                    FROM jaytec_jobs
+                    WHERE fabric_state='QUARANTINED'
+                    """
+                )
+                quarantined = [dict(row) for row in cur.fetchall()]
+
+                cur.execute(
+                    """
                     SELECT
                       j.*,
                       e.worker_kind,
@@ -333,6 +399,9 @@ class PostgresFiveSeatScheduler:
                     if not required.issubset(worker_capabilities):
                         continue
 
+                    blocked_by_quarantine = quarantine_conflict(candidate, quarantined)
+                    if blocked_by_quarantine:
+                        continue
                     duplicate = duplicate_assignment(candidate, active)
                     if duplicate:
                         continue
