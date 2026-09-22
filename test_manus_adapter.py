@@ -322,6 +322,10 @@ class ManusAdapterTests(unittest.TestCase):
         self.assertTrue(message.startswith("lite\n\n"))
         self.assertEqual(message.splitlines()[0], "lite")
         self.assertEqual(ma.MANUS_DIRECT_RECIPIENT, "lite")
+        self.assertIn("You are lite, JAYTEC's bounded automation specialist.", message)
+        self.assertNotIn("You are Manus, JAYTEC's bounded automation specialist.", message)
+        self.assertIn("JAYTEC alone selects and pins the execution profile", message)
+        self.assertIn("do not\nself-escalate", message)
 
     def test_create_task_explicitly_pins_lite_project_and_connector_ids(self):
         client = ma.ManusClient(api_key="x")
