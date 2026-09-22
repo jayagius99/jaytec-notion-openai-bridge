@@ -264,14 +264,24 @@ class PostgresFiveSeatScheduler:
                       e.evidence_standard,
                       e.stop_conditions,
                       e.result_destination,
-                      e.payload
+                      e.payload,
+                      c.state AS circuit_state,
+                      c.open_until AS circuit_open_until
                     FROM jaytec_jobs j
                     JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
+                    LEFT JOIN jaytec_fabric_circuits c ON c.worker_kind=e.worker_kind
                     WHERE j.assignment_type='FIVE_SEAT_FABRIC'
                       AND j.status IN ('QUEUED','PAUSED')
                       AND j.fabric_state IN ('QUEUED','REWORK_QUEUED')
                       AND j.seat_id IS NULL
                       AND e.authority_class <> 'OWNER_GATED'
+                      AND j.cancel_requested_at IS NULL
+                      AND j.fabric_attempt_count < j.fabric_max_attempts
+                      AND (
+                        c.state IS NULL
+                        OR c.state='CLOSED'
+                        OR (c.state='OPEN' AND c.open_until IS NOT NULL AND c.open_until <= now())
+                      )
                       AND (j.lease_expires_at IS NULL OR j.lease_expires_at < now())
                       AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= now())
                     ORDER BY j.priority ASC,j.created_at ASC,j.job_id ASC
@@ -284,6 +294,31 @@ class PostgresFiveSeatScheduler:
                     worker_kind = str(candidate.get("worker_kind") or "").upper()
                     if worker_kind not in supported:
                         continue
+                    circuit_state = str(candidate.get("circuit_state") or "CLOSED").upper()
+                    circuit_open_until = candidate.get("circuit_open_until")
+                    if circuit_state == "HALF_OPEN":
+                        continue
+                    if circuit_state == "OPEN":
+                        if (
+                            circuit_open_until is None
+                            or circuit_open_until > datetime.now(timezone.utc)
+                        ):
+                            continue
+                        # Only one worker may probe a recovered adapter kind.
+                        cur.execute(
+                            """
+                            UPDATE jaytec_fabric_circuits
+                            SET state='HALF_OPEN',version=version+1,updated_at=now()
+                            WHERE worker_kind=%s
+                              AND state='OPEN'
+                              AND open_until IS NOT NULL
+                              AND open_until <= now()
+                            RETURNING worker_kind
+                            """,
+                            (worker_kind,),
+                        )
+                        if cur.fetchone() is None:
+                            continue
                     required_raw = candidate.get("required_capabilities") or []
                     if isinstance(required_raw, str):
                         try:
@@ -321,6 +356,7 @@ class PostgresFiveSeatScheduler:
                             execution_room_id=%s,
                             ownership_epoch=ownership_epoch+1,
                             fence_token=fence_token+1,
+                            fabric_attempt_count=fabric_attempt_count+1,
                             version=version+1,
                             updated_at=now()
                         WHERE job_id=%s
