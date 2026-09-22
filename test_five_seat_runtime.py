@@ -58,7 +58,9 @@ class TestFiveSeatRuntimeContract(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS jaytec_worker_seats", schema)
         self.assertIn("ADD COLUMN IF NOT EXISTS seat_id TEXT", schema)
         self.assertIn("ADD COLUMN IF NOT EXISTS fabric_state TEXT", schema)
-        self.assertEqual(schema.count("('WORKER-SEAT-"), 5)
+        self.assertIn("INSERT INTO jaytec_worker_seats(seat_id)", schema)
+        for index in range(1, 6):
+            self.assertIn(f"('WORKER-SEAT-{index}')", schema)
 
     def test_one_running_job_per_seat_is_database_enforced(self):
         schema = Path(__file__).with_name("five_seat_schema.sql").read_text(encoding="utf-8")
@@ -77,7 +79,8 @@ class TestFiveSeatRuntimeContract(unittest.TestCase):
         self.assertIn('if not handoff_ref:', source)
         self.assertIn("UNRESOLVED_OPERATION_STATUSES", source)
         self.assertIn("HANDOFF_PENDING_REVIEW", source)
-        self.assertIn("WORKER_SEAT_RELEASED_FOR_REVIEW", source)
+        self.assertIn("WORKER_HANDOFF_COMMITTED_AND_SEAT_RELEASED", source)
+        self.assertIn("INSERT INTO jaytec_worker_handoffs", source)
 
 
 if __name__ == "__main__":
