@@ -180,13 +180,13 @@ class FiveSeatWorker:
         heartbeat.start()
 
         result: dict[str, Any] | None = None
-        failure: BaseException | None = None
+        failure: Exception | None = None
         try:
             raw = adapter.execute(dict(claim.get("payload") or {}))
             if not isinstance(raw, Mapping):
                 raise UncertainSideEffectError("adapter_result_not_mapping")
             result = dict(raw)
-        except BaseException as exc:
+        except Exception as exc:
             failure = exc
         finally:
             stop_heartbeat.set()
