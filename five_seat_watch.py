@@ -179,7 +179,7 @@ class PostgresWatchController:
                     FROM jaytec_worker_handoffs h
                     JOIN jaytec_jobs j ON j.job_id=h.job_id
                     LEFT JOIN jaytec_watch_reviews r ON r.handoff_id=h.handoff_id
-                    WHERE j.fabric_state='HANDOFF_PENDING_REVIEW'
+                    WHERE j.fabric_state IN ('HANDOFF_PENDING_REVIEW','QUARANTINED')
                       AND j.seat_id IS NULL
                       AND j.lease_owner IS NULL
                       AND r.handoff_id IS NULL
@@ -265,12 +265,23 @@ class PostgresWatchController:
                 job = cur.fetchone()
                 if (
                     job is None
-                    or job["fabric_state"] != "HANDOFF_PENDING_REVIEW"
+                    or job["fabric_state"] not in {"HANDOFF_PENDING_REVIEW", "QUARANTINED"}
                     or job["seat_id"] is not None
                     or job["lease_owner"] is not None
                     or job["checkpoint_ref"] != handoff_id
                 ):
                     raise WatchReviewConflict("job_not_reviewable:" + str(handoff["job_id"]))
+                if (
+                    job["fabric_state"] == "QUARANTINED"
+                    and decision in {"ACCEPT", "REWORK"}
+                    and dict(evidence or {}).get("quarantine_reconciled") is not True
+                ):
+                    raise WatchReviewConflict("quarantine_requires_reconciliation_evidence")
+                if decision == "REWORK":
+                    rework_count = int(job.get("fabric_rework_count") or 0)
+                    max_reworks = int(job.get("fabric_max_reworks") or 0)
+                    if rework_count >= max_reworks:
+                        raise WatchReviewConflict("rework_budget_exhausted")
 
                 cur.execute(
                     """
@@ -317,6 +328,7 @@ class PostgresWatchController:
                     SET status=%s,
                         fabric_state=%s,
                         blockers=CASE
+                          WHEN %s='REWORK' THEN '[]'::jsonb
                           WHEN %s::jsonb IS NULL THEN blockers
                           ELSE %s::jsonb
                         END,
@@ -324,10 +336,22 @@ class PostgresWatchController:
                           WHEN %s='REWORK' THEN now()
                           ELSE next_attempt_at
                         END,
+                        fabric_attempt_count=CASE
+                          WHEN %s='REWORK' THEN 0
+                          ELSE fabric_attempt_count
+                        END,
+                        fabric_rework_count=CASE
+                          WHEN %s='REWORK' THEN fabric_rework_count+1
+                          ELSE fabric_rework_count
+                        END,
+                        cancel_requested_at=CASE
+                          WHEN %s='REWORK' THEN NULL
+                          ELSE cancel_requested_at
+                        END,
                         version=version+1,
                         updated_at=now()
                     WHERE job_id=%s
-                      AND fabric_state='HANDOFF_PENDING_REVIEW'
+                      AND fabric_state IN ('HANDOFF_PENDING_REVIEW','QUARANTINED')
                       AND seat_id IS NULL
                       AND lease_owner IS NULL
                     RETURNING *
@@ -335,8 +359,12 @@ class PostgresWatchController:
                     (
                         target_status,
                         target_fabric_state,
+                        decision,
                         blockers,
                         blockers,
+                        decision,
+                        decision,
+                        decision,
                         decision,
                         handoff["job_id"],
                     ),
