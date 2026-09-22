@@ -364,27 +364,6 @@ class PostgresFiveSeatScheduler:
                     circuit_open_until = candidate.get("circuit_open_until")
                     if circuit_state == "HALF_OPEN":
                         continue
-                    if circuit_state == "OPEN":
-                        if (
-                            circuit_open_until is None
-                            or circuit_open_until > datetime.now(timezone.utc)
-                        ):
-                            continue
-                        # Only one worker may probe a recovered adapter kind.
-                        cur.execute(
-                            """
-                            UPDATE jaytec_fabric_circuits
-                            SET state='HALF_OPEN',version=version+1,updated_at=now()
-                            WHERE worker_kind=%s
-                              AND state='OPEN'
-                              AND open_until IS NOT NULL
-                              AND open_until <= now()
-                            RETURNING worker_kind
-                            """,
-                            (worker_kind,),
-                        )
-                        if cur.fetchone() is None:
-                            continue
                     required_raw = candidate.get("required_capabilities") or []
                     if isinstance(required_raw, str):
                         try:
@@ -413,6 +392,31 @@ class PostgresFiveSeatScheduler:
                     )
                     if not decision.allowed:
                         continue
+
+                    if circuit_state == "OPEN":
+                        if (
+                            circuit_open_until is None
+                            or circuit_open_until > datetime.now(timezone.utc)
+                        ):
+                            continue
+                        # Enter HALF_OPEN only after the candidate has passed
+                        # capability, quarantine and collision checks. This
+                        # prevents an incompatible idle worker from consuming
+                        # the one recovery probe for an adapter kind.
+                        cur.execute(
+                            """
+                            UPDATE jaytec_fabric_circuits
+                            SET state='HALF_OPEN',version=version+1,updated_at=now()
+                            WHERE worker_kind=%s
+                              AND state='OPEN'
+                              AND open_until IS NOT NULL
+                              AND open_until <= now()
+                            RETURNING worker_kind
+                            """,
+                            (worker_kind,),
+                        )
+                        if cur.fetchone() is None:
+                            continue
 
                     cur.execute(
                         """
