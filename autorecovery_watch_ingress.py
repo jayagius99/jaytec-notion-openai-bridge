@@ -441,17 +441,46 @@ def _broker_context(value: Any, refs: Mapping[str, str]) -> dict[str, Any]:
         "sha256",
     }
     if kind == "PRIVATE_REPO_BOOTSTRAP":
-        required = base_required | {
+        bootstrap_required = base_required | {
             "issues",
             "pull_requests",
             "open_pull_requests",
         }
+        context_mode = context.get("context_mode")
+        if context_mode is None:
+            required = bootstrap_required
+        elif context_mode in {"COMPACT_AUTHORITY", "MINIMAL_AUTHORITY"}:
+            required = bootstrap_required | {"context_mode", "open_pr_window"}
+        else:
+            raise WatchIngressError("GITHUB_BROKER_CONTEXT_MODE_INVALID")
     elif kind == "SPECIALIST_REQUEST_RESULTS":
         required = base_required | {"request_results"}
     else:
         raise WatchIngressError("GITHUB_BROKER_CONTEXT_KIND_INVALID")
     if set(context) != required:
         raise WatchIngressError("GITHUB_BROKER_CONTEXT_FIELDS_INVALID")
+
+    if kind == "PRIVATE_REPO_BOOTSTRAP" and context.get("context_mode") is not None:
+        window = context.get("open_pr_window")
+        if not isinstance(window, Mapping):
+            raise WatchIngressError("GITHUB_BROKER_OPEN_PR_WINDOW_INVALID")
+        if set(window) != {"limit", "complete"}:
+            raise WatchIngressError("GITHUB_BROKER_OPEN_PR_WINDOW_FIELDS_INVALID")
+        limit = window.get("limit")
+        complete = window.get("complete")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit != 5:
+            raise WatchIngressError("GITHUB_BROKER_OPEN_PR_WINDOW_LIMIT_INVALID")
+        if not isinstance(complete, bool):
+            raise WatchIngressError("GITHUB_BROKER_OPEN_PR_WINDOW_COMPLETE_INVALID")
+        open_prs = context.get("open_pull_requests")
+        if not isinstance(open_prs, list):
+            raise WatchIngressError("GITHUB_BROKER_OPEN_PRS_INVALID")
+        if len(open_prs) > limit:
+            raise WatchIngressError("GITHUB_BROKER_OPEN_PR_WINDOW_OVERFLOW")
+        # The producer checks pages 1..5 only. If all five rows are occupied it
+        # deliberately cannot claim the collision window is exhaustive.
+        if complete and len(open_prs) >= limit:
+            raise WatchIngressError("GITHUB_BROKER_OPEN_PR_WINDOW_COMPLETENESS_INVALID")
     if context.get("schema_version") != "JAYTEC_GITHUB_BROKER_CONTEXT_V1":
         raise WatchIngressError("GITHUB_BROKER_CONTEXT_VERSION_INVALID")
     if context.get("repo") != "jayagius99/jaytec-work-engine-v2-g1":
