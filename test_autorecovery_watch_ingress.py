@@ -1498,6 +1498,27 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(normalized["operation"], "read_file")
         self.assertEqual(normalized["args"]["ref"], "main")
 
+        malformed_read = broker_specialist_request(
+            {
+                "operation": "read_file",
+                "path": "src/example.py",
+                "ref": "main",
+                "legacy_repository": "do-not-leak-this-value",
+            }
+        )
+        with self.assertRaises(WatchIngressError) as shape_error:
+            _normalize_broker_operation(
+                malformed_read,
+                refs=refs,
+                fencing_token=9,
+                mutation_authorized=False,
+            )
+        shape_message = str(shape_error.exception)
+        self.assertIn("GITHUB_BROKER_REQUEST_FIELDS_INVALID", shape_message)
+        self.assertIn("op=read_file", shape_message)
+        self.assertIn("extra=legacy_repository", shape_message)
+        self.assertNotIn("do-not-leak-this-value", shape_message)
+
         bad_op = broker_specialist_request(
             {"operation": "merge_pr", "number": 17}
         )
