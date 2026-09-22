@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 
 from autorecovery_components import (
     CALLABLE_ROUTE_ID,
+    EXPECTED_REPO,
     JsonLogRecoveryNotifier,
     ManusLiteHealthProbe,
     ManusLiteRecoveryInvoker,
@@ -651,6 +652,7 @@ def _normalize_broker_operation(
     refs: Mapping[str, str],
     fencing_token: int,
     mutation_authorized: bool,
+    default_ref: str | None = None,
 ) -> dict[str, Any]:
     validate_specialist_request(request)
     if request.get("specialist") != "github_broker":
@@ -658,9 +660,20 @@ def _normalize_broker_operation(
     parent = str(request.get("parent_task_id") or "")
     if not parent.startswith(FORGE_TASK_ID):
         raise WatchIngressError("GITHUB_BROKER_PARENT_TASK_INVALID")
-    context = request.get("required_context")
-    if not isinstance(context, Mapping):
+    raw_context = request.get("required_context")
+    if not isinstance(raw_context, Mapping):
         raise WatchIngressError("GITHUB_BROKER_REQUEST_CONTEXT_INVALID")
+
+    # lite may include a descriptive repository scope in untrusted intent.
+    # Repository selection is JAYTEC authority, not a broker operation argument.
+    # Accept only an exact assertion of the already-canonical repository, then
+    # remove it before the strict operation-specific field contract is applied.
+    context = dict(raw_context)
+    asserted_repo = context.pop("repository", None)
+    if asserted_repo is not None:
+        if not isinstance(asserted_repo, str) or asserted_repo.strip() != EXPECTED_REPO:
+            raise WatchIngressError("GITHUB_BROKER_REPOSITORY_SCOPE_MISMATCH")
+
     op = str(context.get("operation") or "").strip()
     if op not in BROKER_OPERATIONS:
         raise WatchIngressError("GITHUB_BROKER_OPERATION_INVALID")
@@ -677,7 +690,8 @@ def _normalize_broker_operation(
                 op, context, allowed=allowed
             )
         args["path"] = _safe_broker_path(context.get("path"))
-        args["ref"] = _safe_broker_ref(context.get("ref"), refs, fencing_token)
+        ref_value = str(context.get("ref") or "").strip() or str(default_ref or "").strip()
+        args["ref"] = _safe_broker_ref(ref_value, refs, fencing_token)
         start_line = int(context.get("start_line") or 1)
         end_line = int(context.get("end_line") or min(start_line + 119, 5000))
         if start_line < 1 or end_line < start_line or end_line - start_line > 199:
@@ -692,7 +706,8 @@ def _normalize_broker_operation(
             )
         raw_path = str(context.get("path") or "").strip()
         args["path"] = _safe_broker_path(raw_path) if raw_path else ""
-        args["ref"] = _safe_broker_ref(context.get("ref"), refs, fencing_token)
+        ref_value = str(context.get("ref") or "").strip() or str(default_ref or "").strip()
+        args["ref"] = _safe_broker_ref(ref_value, refs, fencing_token)
     elif op in {"read_issue", "read_pr"}:
         allowed = {"operation", "number"}
         if set(context) - allowed:
@@ -835,6 +850,7 @@ def _split_help_requests(
     refs: Mapping[str, str],
     fencing_token: int,
     mutation_authorized: bool,
+    default_ref: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     """Split one Manus help request batch into GitHub and model assistance.
 
@@ -872,6 +888,7 @@ def _split_help_requests(
                 refs=refs,
                 fencing_token=fencing_token,
                 mutation_authorized=mutation_authorized,
+                default_ref=default_ref,
             )
             github_requests.append(normalized)
             rid = str(normalized["request_id"])
@@ -1550,6 +1567,7 @@ def execute_watch_cycle(
                     refs=refs,
                     fencing_token=state.fencing_token,
                     mutation_authorized=mutation_authorized,
+                    default_ref=state.checkpoint.branch,
                 )
             except (WatchIngressError, SpecialistBrokerError) as exc:
                 return {

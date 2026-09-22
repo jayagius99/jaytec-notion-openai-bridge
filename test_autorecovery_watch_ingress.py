@@ -1472,6 +1472,7 @@ class WatchIngressPolicyTests(unittest.TestCase):
         from autorecovery_watch_ingress import (
             _normalize_broker_operation,
             _broker_results_match_requests,
+            _split_help_requests,
         )
 
         refs = {
@@ -1497,6 +1498,82 @@ class WatchIngressPolicyTests(unittest.TestCase):
         )
         self.assertEqual(normalized["operation"], "read_file")
         self.assertEqual(normalized["args"]["ref"], "main")
+
+        scoped_list = broker_specialist_request(
+            {
+                "operation": "list_path",
+                "path": "",
+                "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            }
+        )
+        scoped_normalized = _normalize_broker_operation(
+            scoped_list,
+            refs=refs,
+            fencing_token=9,
+            mutation_authorized=False,
+            default_ref="security/root-owner-control-v1",
+        )
+        self.assertEqual(scoped_normalized["operation"], "list_path")
+        self.assertEqual(scoped_normalized["args"]["path"], "")
+        self.assertEqual(
+            scoped_normalized["args"]["ref"],
+            "security/root-owner-control-v1",
+        )
+        self.assertNotIn("repository", scoped_normalized["args"])
+
+        github_requests, model_requests, request_order = _split_help_requests(
+            {
+                "specialist_requests": [
+                    json.dumps(scoped_list, sort_keys=True)
+                ]
+            },
+            refs=refs,
+            fencing_token=9,
+            mutation_authorized=False,
+            default_ref="security/root-owner-control-v1",
+        )
+        self.assertEqual(len(github_requests), 1)
+        self.assertEqual(model_requests, [])
+        self.assertEqual(request_order, [github_requests[0]["request_id"]])
+        self.assertEqual(
+            github_requests[0]["args"]["ref"],
+            "security/root-owner-control-v1",
+        )
+
+        wrong_repo = broker_specialist_request(
+            {
+                "operation": "list_path",
+                "path": "",
+                "repository": "someone-else/not-canonical",
+            }
+        )
+        with self.assertRaisesRegex(
+            WatchIngressError, "GITHUB_BROKER_REPOSITORY_SCOPE_MISMATCH"
+        ):
+            _normalize_broker_operation(
+                wrong_repo,
+                refs=refs,
+                fencing_token=9,
+                mutation_authorized=False,
+                default_ref="security/root-owner-control-v1",
+            )
+
+        explicit_ref_list = broker_specialist_request(
+            {
+                "operation": "list_path",
+                "path": "",
+                "ref": "main",
+                "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            }
+        )
+        explicit_normalized = _normalize_broker_operation(
+            explicit_ref_list,
+            refs=refs,
+            fencing_token=9,
+            mutation_authorized=False,
+            default_ref="security/root-owner-control-v1",
+        )
+        self.assertEqual(explicit_normalized["args"]["ref"], "main")
 
         malformed_read = broker_specialist_request(
             {
