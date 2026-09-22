@@ -87,3 +87,55 @@ CREATE TABLE IF NOT EXISTS jaytec_watch_reviews (
 );
 CREATE INDEX IF NOT EXISTS jaytec_worker_handoffs_job_idx ON jaytec_worker_handoffs(job_id,created_at);
 CREATE INDEX IF NOT EXISTS jaytec_watch_reviews_job_idx ON jaytec_watch_reviews(job_id,created_at);
+
+-- FS03: immutable worker handoff + singleton WATCH review authority.
+
+CREATE TABLE IF NOT EXISTS jaytec_worker_handoffs (
+  handoff_id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jaytec_jobs(job_id) ON DELETE RESTRICT,
+  seat_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  ownership_epoch BIGINT NOT NULL,
+  job_fence_token BIGINT NOT NULL,
+  seat_epoch BIGINT NOT NULL,
+  seat_fence_token BIGINT NOT NULL,
+  task_packet_hash TEXT,
+  handoff_digest TEXT NOT NULL UNIQUE,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(job_id, ownership_epoch, job_fence_token)
+);
+
+CREATE INDEX IF NOT EXISTS jaytec_worker_handoffs_job_idx
+  ON jaytec_worker_handoffs(job_id, created_at);
+
+CREATE TABLE IF NOT EXISTS jaytec_watch_leader (
+  controller_id TEXT PRIMARY KEY CHECK (controller_id='WATCH'),
+  lease_owner TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  leader_epoch BIGINT NOT NULL DEFAULT 0,
+  fence_token BIGINT NOT NULL DEFAULT 0,
+  version BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO jaytec_watch_leader(controller_id)
+VALUES ('WATCH')
+ON CONFLICT (controller_id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS jaytec_watch_reviews (
+  review_id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jaytec_jobs(job_id) ON DELETE RESTRICT,
+  handoff_id TEXT NOT NULL UNIQUE REFERENCES jaytec_worker_handoffs(handoff_id) ON DELETE RESTRICT,
+  controller_id TEXT NOT NULL DEFAULT 'WATCH' CHECK (controller_id='WATCH'),
+  controller_owner TEXT NOT NULL,
+  leader_epoch BIGINT NOT NULL,
+  fence_token BIGINT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('ACCEPT','REWORK','BLOCK','ESCALATE')),
+  reason TEXT NOT NULL,
+  evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS jaytec_watch_reviews_job_idx
+  ON jaytec_watch_reviews(job_id, created_at);
