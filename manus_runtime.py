@@ -414,6 +414,77 @@ def _validated_or_canonicalized_specialist_request(
     raise ManusGovernanceError("MANUS_SPECIALIST_REQUEST_FIELDS_INVALID")
 
 
+_BROKER_SHAPE_OPERATIONS = frozenset({
+    "read_file",
+    "list_path",
+    "read_issue",
+    "read_pr",
+    "read_workflow_runs",
+    "create_branch",
+    "write_file",
+    "create_pr",
+})
+
+
+def specialist_request_shape_diagnostics(
+    result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return content-free shape evidence for existing github_broker requests.
+
+    This helper is diagnostic only. It parses the already-returned structured
+    result and exposes no context values, request ids, objectives, reasons,
+    credentials, file contents, or provider messages.
+    """
+
+    raw_requests = result.get("specialist_requests")
+    if not isinstance(raw_requests, list):
+        return []
+
+    def safe_field_name(value: Any) -> str:
+        name = str(value or "")
+        if (
+            1 <= len(name) <= 64
+            and all(ch.isalnum() or ch in "_.:-" for ch in name)
+        ):
+            return name
+        return "sha256-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+
+    rows: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_requests[:8]):
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(decoded, Mapping):
+            continue
+        if str(decoded.get("specialist") or "").strip().casefold() != "github_broker":
+            continue
+
+        context = decoded.get("required_context")
+        if not isinstance(context, Mapping):
+            rows.append({
+                "index": index,
+                "specialist": "github_broker",
+                "required_context_kind": type(context).__name__,
+                "required_context_fields": [],
+            })
+            continue
+
+        operation = str(context.get("operation") or "").strip()
+        rows.append({
+            "index": index,
+            "specialist": "github_broker",
+            "operation": operation if operation in _BROKER_SHAPE_OPERATIONS else "OTHER_OR_MISSING",
+            "required_context_fields": sorted(
+                safe_field_name(key) for key in context.keys()
+            ),
+            "values_included": False,
+        })
+    return rows
+
+
 def _decode_specialist_request(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, str) or not value.strip():
         raise ManusRuntimeError("MANUS_RUNTIME_SPECIALIST_REQUEST_INVALID")

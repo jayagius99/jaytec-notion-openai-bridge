@@ -76,7 +76,11 @@ from proving_grounds import (
     run_registered_suite as proving_grounds_run_registered_suite,
 )
 from manus_adapter import MANUS_API_KEY, MANUS_MAX_MESSAGE_CHARS, ManusClient
-from manus_runtime import ManusLiteRuntime, runtime_error_payload
+from manus_runtime import (
+    ManusLiteRuntime,
+    runtime_error_payload,
+    specialist_request_shape_diagnostics,
+)
 from orchestration import ExecutionRegistry, PacketValidationError, execute_task_packet_core, parse_packet_json
 from startup_probe_guard import authorize_startup_probe, sha256_json, sha256_text
 from specialist_adapters import (
@@ -927,6 +931,13 @@ async def jaytec_watch_status(request: Request) -> JSONResponse:
                         ),
                         "verification": terminal.get("verification"),
                     }
+                    broker_shapes = specialist_request_shape_diagnostics(terminal)
+                    if broker_shapes:
+                        safe_worker["github_broker_request_shape_diagnostics"] = {
+                            "requests": broker_shapes,
+                            "values_included": False,
+                            "read_only": True,
+                        }
                 result["current_worker_result"] = safe_worker
 
     result["runtime_deployment"] = {
