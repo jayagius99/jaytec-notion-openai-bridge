@@ -92,6 +92,63 @@ jobs:
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_watch_leader where controller_id='WATCH'")" = "1"
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_worker_seats where seat_id='WORKER-SEAT-6'")" = "0"
 
+      - name: Prove legacy scheduler cannot bypass seat registry
+        run: |
+          python - <<'PY'
+          import os, psycopg2
+          from concurrency import PostgresConcurrencyScheduler
+          from five_seat_runtime import PostgresFiveSeatScheduler
+          url=os.environ["DATABASE_URL"]
+          legacy_id="ci-legacy-isolation"
+          fabric_id="ci-fabric-isolation"
+          try:
+              with psycopg2.connect(url) as conn:
+                  with conn.cursor() as cur:
+                      cur.execute(
+                          """INSERT INTO jaytec_jobs(
+                          job_id,project_id,task_id,assignment_type,objective,status,
+                          priority,source_shared_state_version,concurrency_class,
+                          mutation_scope,read_scope,dependencies,resource_scope,fabric_state
+                          ) VALUES
+                          (%s,'CI','legacy','LEGACY_TEST','legacy','QUEUED',2,1,'A','[]','[]','[]','{}',NULL),
+                          (%s,'CI','fabric','FIVE_SEAT_FABRIC','fabric','QUEUED',1,1,'B','["scope/fabric"]','[]','[]','{}','QUEUED')""",
+                          (legacy_id,fabric_id),
+                      )
+                      cur.execute(
+                          """INSERT INTO jaytec_fabric_envelopes(
+                          job_id,envelope_hash,idempotency_key,worker_kind,
+                          required_capabilities,authority_class,payload
+                          ) VALUES (%s,'hash','idem-ci-isolation','TEST','["test.run"]',
+                          'SCOPED_MUTATION','{}')""",
+                          (fabric_id,),
+                      )
+              legacy=PostgresConcurrencyScheduler(url,max_parallel=4)
+              first=legacy.claim_next(owner="legacy-ci",execution_room_id="legacy-room",lease_seconds=60)
+              assert first and first["job_id"]==legacy_id, first
+              with psycopg2.connect(url) as conn:
+                  with conn.cursor() as cur:
+                      cur.execute("SELECT status,seat_id FROM jaytec_jobs WHERE job_id=%s",(fabric_id,))
+                      assert cur.fetchone()==("QUEUED",None)
+              fabric=PostgresFiveSeatScheduler(url)
+              second=fabric.claim_next(
+                  owner="fabric-ci",execution_room_id="fabric-room",lease_seconds=60,
+                  supported_worker_kinds={"TEST"},capabilities={"test.run"},
+              )
+              assert second and second["job_id"]==fabric_id, second
+              assert second["seat_id"].startswith("WORKER-SEAT-")
+              print("legacy_scheduler_isolation=PASS", second["seat_id"])
+          finally:
+              with psycopg2.connect(url) as conn:
+                  with conn.cursor() as cur:
+                      cur.execute(
+                          """UPDATE jaytec_worker_seats SET state='FREE',current_job_id=NULL,
+                          worker_id=NULL,lease_owner=NULL,lease_expires_at=NULL
+                          WHERE current_job_id=%s""",(fabric_id,)
+                      )
+                      cur.execute("DELETE FROM jaytec_fabric_envelopes WHERE job_id=%s",(fabric_id,))
+                      cur.execute("DELETE FROM jaytec_jobs WHERE job_id IN (%s,%s)",(legacy_id,fabric_id))
+          PY
+
       - name: Run five-seat tests
         run: python -m unittest discover -v -p 'test_five_seat*.py'
 
