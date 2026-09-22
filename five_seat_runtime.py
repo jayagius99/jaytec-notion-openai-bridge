@@ -4,10 +4,12 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 import psycopg2
 import psycopg2.extras
+
+from five_seat_signals import REVIEW_AVAILABLE_CHANNEL, WORK_AVAILABLE_CHANNEL
 
 from concurrency import (
     SCHEDULER_LOCK_KEY,
@@ -159,6 +161,8 @@ class PostgresFiveSeatScheduler:
         owner: str,
         execution_room_id: str,
         lease_seconds: int = 300,
+        supported_worker_kinds: Optional[Iterable[str]] = None,
+        capabilities: Optional[Iterable[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         if not owner:
             raise ValueError("owner is required")
@@ -166,6 +170,19 @@ class PostgresFiveSeatScheduler:
             raise ValueError("execution_room_id is required")
         if lease_seconds < 10 or lease_seconds > 3600:
             raise ValueError("lease_seconds must be between 10 and 3600")
+
+        supported = {
+            str(item).strip().upper()
+            for item in (supported_worker_kinds or [])
+            if str(item).strip()
+        }
+        worker_capabilities = {
+            str(item).strip()
+            for item in (capabilities or [])
+            if str(item).strip()
+        }
+        if not supported:
+            return None
 
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -208,6 +225,14 @@ class PostgresFiveSeatScheduler:
                 active = [dict(row) for row in cur.fetchall()]
                 if len(active) >= WORKER_SEAT_COUNT:
                     return None
+                # Unknown active ownership is not something the new fabric may
+                # guess around during migration.
+                if any(
+                    str(job.get("concurrency_class") or "").upper()
+                    not in {"A", "B", "C", "D", "E"}
+                    for job in active
+                ):
+                    return None
 
                 cur.execute(
                     """
@@ -230,19 +255,49 @@ class PostgresFiveSeatScheduler:
 
                 cur.execute(
                     """
-                    SELECT * FROM jaytec_jobs
-                    WHERE status IN ('QUEUED','PAUSED')
-                      AND COALESCE(fabric_state,'QUEUED') IN ('QUEUED','REWORK_QUEUED')
-                      AND seat_id IS NULL
-                      AND (lease_expires_at IS NULL OR lease_expires_at < now())
-                      AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-                    ORDER BY priority ASC, created_at ASC, job_id ASC
-                    FOR UPDATE SKIP LOCKED
+                    SELECT
+                      j.*,
+                      e.worker_kind,
+                      e.required_capabilities,
+                      e.authority_class,
+                      e.cost_policy,
+                      e.evidence_standard,
+                      e.stop_conditions,
+                      e.result_destination,
+                      e.payload
+                    FROM jaytec_jobs j
+                    JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
+                    WHERE j.assignment_type='FIVE_SEAT_FABRIC'
+                      AND j.status IN ('QUEUED','PAUSED')
+                      AND j.fabric_state IN ('QUEUED','REWORK_QUEUED')
+                      AND j.seat_id IS NULL
+                      AND e.authority_class <> 'OWNER_GATED'
+                      AND (j.lease_expires_at IS NULL OR j.lease_expires_at < now())
+                      AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= now())
+                    ORDER BY j.priority ASC,j.created_at ASC,j.job_id ASC
+                    FOR UPDATE OF j SKIP LOCKED
                     """
                 )
                 queued = [dict(row) for row in cur.fetchall()]
 
                 for candidate in queued:
+                    worker_kind = str(candidate.get("worker_kind") or "").upper()
+                    if worker_kind not in supported:
+                        continue
+                    required_raw = candidate.get("required_capabilities") or []
+                    if isinstance(required_raw, str):
+                        try:
+                            required_raw = json.loads(required_raw)
+                        except json.JSONDecodeError:
+                            required_raw = [required_raw]
+                    required = {
+                        str(item).strip()
+                        for item in required_raw
+                        if str(item).strip()
+                    }
+                    if not required.issubset(worker_capabilities):
+                        continue
+
                     duplicate = duplicate_assignment(candidate, active)
                     if duplicate:
                         continue
@@ -270,7 +325,7 @@ class PostgresFiveSeatScheduler:
                             updated_at=now()
                         WHERE job_id=%s
                           AND status IN ('QUEUED','PAUSED')
-                          AND COALESCE(fabric_state,'QUEUED') IN ('QUEUED','REWORK_QUEUED')
+                          AND fabric_state IN ('QUEUED','REWORK_QUEUED')
                           AND seat_id IS NULL
                           AND (lease_expires_at IS NULL OR lease_expires_at < now())
                         RETURNING *
@@ -318,13 +373,15 @@ class PostgresFiveSeatScheduler:
                     if seat_claim is None:
                         raise FiveSeatRuntimeError("seat_claim_lost:" + seat_id)
 
-                    payload = {
+                    event_payload = {
                         "execution_room_id": execution_room_id,
                         "concurrency_class": claimed.get("concurrency_class"),
                         "scheduler": "five-seat-v1",
                         "seat_id": seat_id,
                         "seat_epoch": int(seat_claim["seat_epoch"]),
                         "seat_fence_token": int(seat_claim["fence_token"]),
+                        "worker_kind": worker_kind,
+                        "required_capabilities": sorted(required),
                     }
                     cur.execute(
                         """
@@ -338,11 +395,22 @@ class PostgresFiveSeatScheduler:
                         (
                             claimed["job_id"],
                             claimed.get("source_shared_state_version"),
-                            _json(payload),
+                            _json(event_payload),
                         ),
                     )
 
                     result = dict(claimed)
+                    for key in (
+                        "worker_kind",
+                        "required_capabilities",
+                        "authority_class",
+                        "cost_policy",
+                        "evidence_standard",
+                        "stop_conditions",
+                        "result_destination",
+                        "payload",
+                    ):
+                        result[key] = candidate.get(key)
                     result["seat_id"] = seat_id
                     result["seat_epoch"] = int(seat_claim["seat_epoch"])
                     result["seat_fence_token"] = int(seat_claim["fence_token"])
@@ -736,6 +804,33 @@ class PostgresFiveSeatScheduler:
                             }
                         ),
                         token.job_id,
+                    ),
+                )
+
+                cur.execute(
+                    "SELECT pg_notify(%s,%s)",
+                    (
+                        REVIEW_AVAILABLE_CHANNEL,
+                        _json(
+                            {
+                                "reason": "worker_handoff_ready",
+                                "job_id": token.job_id,
+                                "handoff_ref": handoff_ref,
+                            }
+                        ),
+                    ),
+                )
+                cur.execute(
+                    "SELECT pg_notify(%s,%s)",
+                    (
+                        WORK_AVAILABLE_CHANNEL,
+                        _json(
+                            {
+                                "reason": "seat_released",
+                                "job_id": token.job_id,
+                                "seat_id": token.seat_id,
+                            }
+                        ),
                     ),
                 )
 
