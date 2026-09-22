@@ -131,7 +131,15 @@ class TestFiveSeatRecoveryPostgres(unittest.TestCase):
         actions = PostgresFabricRemedies(self.url).reconcile_expired_leases()
         self.assertTrue(any(row.get("job_id") == job for row in actions))
 
+        self.assertIsNone(self._claim("worker-too-early"))
+        with psycopg2.connect(self.url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE jaytec_jobs SET next_attempt_at=now() WHERE job_id=%s",
+                    (job,),
+                )
         second = self._claim("worker-new")
+        self.assertIsNotNone(second)
         self.assertEqual(second["job_id"], job)
         self.assertGreater(int(second["ownership_epoch"]), token.ownership_epoch)
         self.assertGreater(int(second["fence_token"]), token.job_fence_token)
