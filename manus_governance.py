@@ -18,6 +18,7 @@ from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
 DIRECTIVE_VERSION = "JAYTEC_MANUS_GOVERNANCE_V1"
+MANUS_DIRECT_RECIPIENT = "lite"
 MAX_PACKET_BYTES = 32_000
 MAX_TEXT_CHARS = 12_000
 MAX_EVIDENCE_ITEMS = 20
