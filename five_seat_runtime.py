@@ -773,7 +773,7 @@ class PostgresFiveSeatScheduler:
                 if (
                     job is None
                     or job["status"] != "RUNNING"
-                    or job["fabric_state"] != "RUNNING"
+                    or job["fabric_state"] not in {"RUNNING", "CANCEL_REQUESTED"}
                     or job["seat_id"] != token.seat_id
                     or job["lease_owner"] != token.owner
                     or int(job["ownership_epoch"]) != token.ownership_epoch
@@ -782,6 +782,8 @@ class PostgresFiveSeatScheduler:
                     or job["lease_expires_at"] <= datetime.now(timezone.utc)
                 ):
                     raise FiveSeatStaleLease(token.job_id)
+                if job["fabric_state"] == "CANCEL_REQUESTED":
+                    quarantined = True
 
                 cur.execute(
                     """
