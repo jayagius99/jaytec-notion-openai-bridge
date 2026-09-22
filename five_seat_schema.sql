@@ -7,6 +7,12 @@ ALTER TABLE jaytec_jobs ADD COLUMN IF NOT EXISTS fabric_state TEXT;
 ALTER TABLE jaytec_jobs ADD COLUMN IF NOT EXISTS collision_key TEXT;
 ALTER TABLE jaytec_jobs ADD COLUMN IF NOT EXISTS task_packet_hash TEXT;
 
+ALTER TABLE jaytec_jobs ADD COLUMN IF NOT EXISTS fabric_attempt_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE jaytec_jobs ADD COLUMN IF NOT EXISTS fabric_max_attempts INTEGER NOT NULL DEFAULT 3;
+ALTER TABLE jaytec_jobs ADD COLUMN IF NOT EXISTS fabric_rework_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE jaytec_jobs ADD COLUMN IF NOT EXISTS fabric_max_reworks INTEGER NOT NULL DEFAULT 2;
+ALTER TABLE jaytec_jobs ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMPTZ;
+
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -92,6 +98,23 @@ CREATE TABLE IF NOT EXISTS jaytec_fabric_envelopes (
 
 CREATE INDEX IF NOT EXISTS jaytec_fabric_envelopes_worker_idx
   ON jaytec_fabric_envelopes(worker_kind,job_id);
+
+-- Durable worker-kind circuit state prevents provider/adapter retry storms.
+CREATE TABLE IF NOT EXISTS jaytec_fabric_circuits (
+  worker_kind TEXT PRIMARY KEY,
+  state TEXT NOT NULL DEFAULT 'CLOSED'
+    CHECK (state IN ('CLOSED','OPEN','HALF_OPEN')),
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  failure_threshold INTEGER NOT NULL DEFAULT 3
+    CHECK (failure_threshold BETWEEN 1 AND 20),
+  open_until TIMESTAMPTZ,
+  last_failure JSONB,
+  version BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS jaytec_fabric_circuits_open_idx
+  ON jaytec_fabric_circuits(state,open_until);
 
 -- Worker output becomes immutable candidate evidence before the seat is freed.
 CREATE TABLE IF NOT EXISTS jaytec_worker_handoffs (
