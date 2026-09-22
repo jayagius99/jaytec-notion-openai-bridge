@@ -601,7 +601,7 @@ class PostgresFiveSeatScheduler:
                         updated_at=now()
                     WHERE job_id=%s
                       AND status='RUNNING'
-                      AND fabric_state='RUNNING'
+                      AND fabric_state IN ('RUNNING','CANCEL_REQUESTED')
                       AND seat_id=%s
                       AND lease_owner=%s
                       AND ownership_epoch=%s
