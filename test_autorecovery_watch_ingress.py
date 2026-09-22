@@ -1498,6 +1498,40 @@ class WatchIngressPolicyTests(unittest.TestCase):
         self.assertEqual(normalized["operation"], "read_file")
         self.assertEqual(normalized["args"]["ref"], "main")
 
+        scoped_list = broker_specialist_request(
+            {
+                "operation": "list_path",
+                "path": "",
+                "repository": "jayagius99/jaytec-work-engine-v2-g1",
+            }
+        )
+        scoped_normalized = _normalize_broker_operation(
+            scoped_list,
+            refs=refs,
+            fencing_token=9,
+            mutation_authorized=False,
+        )
+        self.assertEqual(scoped_normalized["operation"], "list_path")
+        self.assertEqual(scoped_normalized["args"]["path"], "")
+        self.assertNotIn("repository", scoped_normalized["args"])
+
+        wrong_repo = broker_specialist_request(
+            {
+                "operation": "list_path",
+                "path": "",
+                "repository": "someone-else/not-canonical",
+            }
+        )
+        with self.assertRaisesRegex(
+            WatchIngressError, "GITHUB_BROKER_REPOSITORY_SCOPE_MISMATCH"
+        ):
+            _normalize_broker_operation(
+                wrong_repo,
+                refs=refs,
+                fencing_token=9,
+                mutation_authorized=False,
+            )
+
         malformed_read = broker_specialist_request(
             {
                 "operation": "read_file",
