@@ -562,10 +562,28 @@ def _specialist_protocol_repair_context() -> dict[str, Any]:
                 "write_file",
                 "create_pr",
             ],
+            "operation_fields": {
+                "read_file": ["operation", "path", "ref", "start_line", "end_line"],
+                "list_path": ["operation", "path", "ref"],
+                "read_issue": ["operation", "number"],
+                "read_pr": ["operation", "number"],
+                "read_workflow_runs": ["operation", "branch"],
+                "create_branch": ["operation", "base_ref", "new_branch"],
+                "write_file": [
+                    "operation",
+                    "branch",
+                    "path",
+                    "content",
+                    "commit_message",
+                    "expected_sha",
+                ],
+                "create_pr": ["operation", "head", "base", "title", "body"],
+            },
             "instruction": (
                 "If the intended specialist is github_broker, required_context must "
-                "contain one exact operation and only its required bounded arguments. "
-                "Do not include credentials, secrets, sealed provenance, or unrelated context."
+                "use the exact field names listed for that operation. Do not include "
+                "repository selection, credentials, secrets, sealed provenance, or "
+                "unrelated context. JAYTEC owns repository scope and authority."
             ),
         },
     }
@@ -679,6 +697,14 @@ def _normalize_broker_operation(
         raise WatchIngressError("GITHUB_BROKER_OPERATION_INVALID")
     if op in BROKER_WRITE_OPERATIONS and not mutation_authorized:
         raise WatchIngressError("GITHUB_BROKER_MUTATION_NOT_AUTHORIZED")
+
+    # Exact compatibility for the currently observed Lite read_issue intent.
+    # Canonical broker authority remains {"operation", "number"}; this only
+    # translates the untrusted naming alias before strict validation.
+    if op == "read_issue" and "issue_number" in context:
+        if "number" in context:
+            raise WatchIngressError("GITHUB_BROKER_READ_ISSUE_NUMBER_AMBIGUOUS")
+        context["number"] = context.pop("issue_number")
 
     request_id = str(request.get("request_id") or "").strip()
     args: dict[str, Any] = {}
