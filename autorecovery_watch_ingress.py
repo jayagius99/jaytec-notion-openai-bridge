@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 
 from autorecovery_components import (
     CALLABLE_ROUTE_ID,
+    EXPECTED_REPO,
     JsonLogRecoveryNotifier,
     ManusLiteHealthProbe,
     ManusLiteRecoveryInvoker,
@@ -658,9 +659,20 @@ def _normalize_broker_operation(
     parent = str(request.get("parent_task_id") or "")
     if not parent.startswith(FORGE_TASK_ID):
         raise WatchIngressError("GITHUB_BROKER_PARENT_TASK_INVALID")
-    context = request.get("required_context")
-    if not isinstance(context, Mapping):
+    raw_context = request.get("required_context")
+    if not isinstance(raw_context, Mapping):
         raise WatchIngressError("GITHUB_BROKER_REQUEST_CONTEXT_INVALID")
+
+    # lite may include a descriptive repository scope in untrusted intent.
+    # Repository selection is JAYTEC authority, not a broker operation argument.
+    # Accept only an exact assertion of the already-canonical repository, then
+    # remove it before the strict operation-specific field contract is applied.
+    context = dict(raw_context)
+    asserted_repo = context.pop("repository", None)
+    if asserted_repo is not None:
+        if not isinstance(asserted_repo, str) or asserted_repo.strip() != EXPECTED_REPO:
+            raise WatchIngressError("GITHUB_BROKER_REPOSITORY_SCOPE_MISMATCH")
+
     op = str(context.get("operation") or "").strip()
     if op not in BROKER_OPERATIONS:
         raise WatchIngressError("GITHUB_BROKER_OPERATION_INVALID")
