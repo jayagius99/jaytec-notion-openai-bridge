@@ -1,0 +1,125 @@
+{
+  "schema_version": "JAYTEC_FIVE_SEAT_FABRIC_V1",
+  "fabric_id": "JAYTEC_FIVE_SEAT_CONTINUOUS_FABRIC",
+  "source_baseline": {
+    "repository": "jayagius99/jaytec-notion-openai-bridge",
+    "main_sha": "16701957c1dabaf70937819a03ded0e9c9d4cb0d"
+  },
+  "freeze_reference": "jayagius99/jaytec-work-engine-v2-g1#126",
+  "transformation_control": "jayagius99/jaytec-work-engine-v2-g1#127",
+  "worker_seat_count": 5,
+  "worker_seat_ids": [
+    "WORKER-SEAT-1",
+    "WORKER-SEAT-2",
+    "WORKER-SEAT-3",
+    "WORKER-SEAT-4",
+    "WORKER-SEAT-5"
+  ],
+  "controller": {
+    "name": "WATCH",
+    "out_of_band": true,
+    "consumes_worker_seat": false,
+    "singleton_leader_required": true,
+    "review_decisions": [
+      "ACCEPT",
+      "REWORK",
+      "BLOCK",
+      "ESCALATE"
+    ],
+    "may_self_approve_worker_output": false
+  },
+  "task_lifecycle": [
+    "INTAKE",
+    "QUEUED",
+    "CLAIMED",
+    "RUNNING",
+    "HANDOFF_PENDING_REVIEW",
+    "REVIEWING",
+    "SUCCEEDED"
+  ],
+  "task_exception_states": [
+    "BLOCKED_OWNER",
+    "BLOCKED_DEPENDENCY",
+    "FAILED_SAFE",
+    "REWORK_QUEUED",
+    "QUARANTINED",
+    "CANCEL_REQUESTED",
+    "CANCELLED",
+    "STALE",
+    "SUPERSEDED",
+    "ESCALATED"
+  ],
+  "seat_lifecycle": [
+    "FREE",
+    "CLAIMED",
+    "RUNNING",
+    "HANDOFF_WRITTEN",
+    "RELEASING",
+    "FREE"
+  ],
+  "concurrency_classes": [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E"
+  ],
+  "ownership_required_fields": [
+    "job_id",
+    "worker_id",
+    "seat_id",
+    "ownership_epoch",
+    "fence_token",
+    "lease_owner",
+    "lease_expires_at",
+    "execution_room_id",
+    "idempotency_key",
+    "task_packet_hash",
+    "read_scope",
+    "mutation_scope",
+    "resource_scope",
+    "concurrency_class",
+    "collision_key"
+  ],
+  "invariants": {
+    "durable_before_execution": true,
+    "stale_authority_rejected": true,
+    "worker_result_requires_watch_review": true,
+    "seat_release_requires_durable_handoff": true,
+    "partial_side_effects_require_reconciliation": true,
+    "silent_provider_fallback_forbidden": true,
+    "silent_model_fallback_forbidden": true,
+    "canonical_high_risk_serialized": true,
+    "chat_is_not_worker_lifetime": true,
+    "scheduled_automation_is_not_worker_seat": true
+  },
+  "implementation_delta": {
+    "schema": [
+      "durable seats",
+      "seat_id lineage",
+      "worker handoffs",
+      "WATCH review records",
+      "WATCH leader lease/fence"
+    ],
+    "runtime": [
+      "fixed 5-seat ceiling",
+      "atomic seat-aware claim/release",
+      "immediate refill",
+      "work stealing",
+      "retirement"
+    ],
+    "watch": [
+      "singleton dispatcher",
+      "independent reviewer",
+      "rework/block/escalate",
+      "no self-approval"
+    ],
+    "proof": [
+      "2/3/5-seat stress",
+      "stale worker",
+      "duplicate claim/result",
+      "partial side effect",
+      "WATCH re-election"
+    ]
+  }
+}
