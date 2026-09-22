@@ -4,8 +4,8 @@ on:
   push:
     branches:
       - 'staging/**'
-  pull_request:
     paths:
+      - '.github/workflows/**'
       - 'orchestration.py'
       - 'circuit_breaker.py'
       - 'worker_json.py'
@@ -63,6 +63,70 @@ on:
       - 'idempotency_postgres.py'
       - 'test_idempotency_postgres.py'
       - 'requirements.txt'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'orchestration.py'
+      - 'circuit_breaker.py'
+      - 'worker_json.py'
+      - 'specialist_adapters.py'
+      - 'manus_policy.py'
+      - 'jaytec_read.py'
+      - 'meeting_bus.py'
+      - 'test_meeting_bus.py'
+      - 'test_sol_authority_policy.py'
+      - 'test_sol_reserve_zero_spend.py'
+      - 'test_specialist_authority_registration.py'
+      - 'jaytec_read_startup_selftest.py'
+      - 'job_runtime.py'
+      - 'job_runtime_schema.sql'
+      - 'concurrency.py'
+      - 'guardian.py'
+      - 'guardian_runtime.py'
+      - 'durable_tasks.py'
+      - 'durable_tasks_runtime.py'
+      - 'reliability_registry.py'
+      - 'server.py'
+      - 'reliable_server.py'
+      - 'compat_server.py'
+      - 'notion_courier_policy.py'
+      - 'notion_courier_server.py'
+      - 'test_notion_courier_policy.py'
+      - 'notion_courier_transport_probe.py'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'test_compat_server.py'
+      - 'test_compat_native_validation.py'
+      - 'test_compat_transport_hardening.py'
+      - 'test_dockerfile_packaging.py'
+      - 'test_contract_equivalence.py'
+      - 'test_orchestration.py'
+      - 'test_circuit_breaker.py'
+      - 'test_worker_policy_hardening.py'
+      - 'test_worker_output_parsing.py'
+      - 'test_gemini_transport_hardening.py'
+      - 'test_jaytec_read.py'
+      - 'test_specialist_timeout_hardening.py'
+      - 'test_manus_policy.py'
+      - 'test_manus_policy_integration_guard.py'
+      - 'test_job_runtime.py'
+      - 'test_concurrency.py'
+      - 'test_guardian.py'
+      - 'test_durable_tasks.py'
+      - 'test_reliable_runtime_hardening.py'
+      - 'test_server_candidate_probe.py'
+      - 'staging_server.py'
+      - 'staging_runtime_probe.py'
+      - 'staging_adversarial_probe.py'
+      - 'render.yaml'
+      - 'BRIDGE_CONTRACT_V1.md'
+      - 'idempotency_postgres.py'
+      - 'test_idempotency_postgres.py'
+      - 'requirements.txt'
+ 
+concurrency:
+  group: orchestration-staging-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -78,6 +142,28 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+      - name: Enforce GitHub Actions runtime policy
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re, sys
+          violations = []
+          for wf in sorted(Path(".github/workflows").glob("*.y*ml")):
+              text = wf.read_text(encoding="utf-8")
+              for key, limit in (("timeout-minutes", 30), ("retention-days", 30)):
+                  for m in re.finditer(rf"{re.escape(key)}:\s*(\d+)", text):
+                      if int(m.group(1)) > limit:
+                          violations.append(f"{wf}: {key}={m.group(1)} exceeds {limit}")
+              for m in re.finditer(r"(?m)\bsleep\s+(\d+)\b", text):
+                  if int(m.group(1)) > 120:
+                      violations.append(f"{wf}: sleep {m.group(1)} exceeds 120s hosted-runner guard")
+          if violations:
+              print("\n".join(violations), file=sys.stderr)
+              raise SystemExit(1)
+          print("actions_runtime_policy=PASS")
+          PY
       - name: Install dependencies
         run: python -m pip install --upgrade pip && pip install -r requirements.txt
       - name: Compile modules (including production entrypoint)
