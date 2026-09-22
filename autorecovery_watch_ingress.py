@@ -611,6 +611,40 @@ def _safe_broker_ref(value: Any, refs: Mapping[str, str], fencing_token: int) ->
     raise WatchIngressError("GITHUB_BROKER_REF_INVALID")
 
 
+def _broker_request_field_shape_error(
+    op: str,
+    context: Mapping[str, Any],
+    *,
+    allowed: set[str],
+    required: set[str] | None = None,
+) -> WatchIngressError:
+    """Return a content-free broker field-shape diagnostic.
+
+    Only operation and field names are exposed. Values are never included.
+    Unusual field names are replaced with a bounded digest label so diagnostics
+    cannot become an exfiltration channel.
+    """
+
+    def safe_name(value: Any) -> str:
+        name = str(value or "")
+        if re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", name):
+            return name
+        return "sha256-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+
+    present = {str(key) for key in context.keys()}
+    extras = sorted(present - allowed)
+    missing = sorted(set(required or ()) - present)
+    parts = [
+        "GITHUB_BROKER_REQUEST_FIELDS_INVALID",
+        "op=" + safe_name(op),
+    ]
+    if extras:
+        parts.append("extra=" + ",".join(safe_name(key) for key in extras[:8]))
+    if missing:
+        parts.append("missing=" + ",".join(safe_name(key) for key in missing[:8]))
+    return WatchIngressError(":".join(parts))
+
+
 def _normalize_broker_operation(
     request: Mapping[str, Any],
     *,
@@ -639,7 +673,9 @@ def _normalize_broker_operation(
     if op == "read_file":
         allowed = {"operation", "path", "ref", "start_line", "end_line"}
         if set(context) - allowed:
-            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+            raise _broker_request_field_shape_error(
+                op, context, allowed=allowed
+            )
         args["path"] = _safe_broker_path(context.get("path"))
         args["ref"] = _safe_broker_ref(context.get("ref"), refs, fencing_token)
         start_line = int(context.get("start_line") or 1)
@@ -651,14 +687,18 @@ def _normalize_broker_operation(
     elif op == "list_path":
         allowed = {"operation", "path", "ref"}
         if set(context) - allowed:
-            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+            raise _broker_request_field_shape_error(
+                op, context, allowed=allowed
+            )
         raw_path = str(context.get("path") or "").strip()
         args["path"] = _safe_broker_path(raw_path) if raw_path else ""
         args["ref"] = _safe_broker_ref(context.get("ref"), refs, fencing_token)
     elif op in {"read_issue", "read_pr"}:
         allowed = {"operation", "number"}
         if set(context) - allowed:
-            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+            raise _broker_request_field_shape_error(
+                op, context, allowed=allowed
+            )
         number = int(context.get("number") or 0)
         if number < 1 or number > 1000000:
             raise WatchIngressError("GITHUB_BROKER_NUMBER_INVALID")
@@ -666,14 +706,18 @@ def _normalize_broker_operation(
     elif op == "read_workflow_runs":
         allowed = {"operation", "branch"}
         if set(context) - allowed:
-            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+            raise _broker_request_field_shape_error(
+                op, context, allowed=allowed
+            )
         branch_value = str(context.get("branch") or "").strip()
         if branch_value:
             args["branch"] = _safe_broker_ref(branch_value, refs, fencing_token)
     elif op == "create_branch":
         allowed = {"operation", "base_ref", "new_branch"}
         if set(context) != allowed:
-            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+            raise _broker_request_field_shape_error(
+                op, context, allowed=allowed, required=allowed
+            )
         args["base_ref"] = _safe_broker_ref(
             context.get("base_ref"), refs, fencing_token
         )
@@ -693,8 +737,11 @@ def _normalize_broker_operation(
             "commit_message",
             "expected_sha",
         }
-        if set(context) - allowed or not {"operation", "branch", "path", "content"} <= set(context):
-            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+        required = {"operation", "branch", "path", "content"}
+        if set(context) - allowed or not required <= set(context):
+            raise _broker_request_field_shape_error(
+                op, context, allowed=allowed, required=required
+            )
         branch_name = _safe_broker_ref(
             context.get("branch"), refs, fencing_token
         )
@@ -723,7 +770,9 @@ def _normalize_broker_operation(
     elif op == "create_pr":
         allowed = {"operation", "head", "base", "title", "body"}
         if set(context) != allowed:
-            raise WatchIngressError("GITHUB_BROKER_REQUEST_FIELDS_INVALID")
+            raise _broker_request_field_shape_error(
+                op, context, allowed=allowed, required=allowed
+            )
         head = _safe_broker_ref(context.get("head"), refs, fencing_token)
         if not _BROKER_WORKER_BRANCH.fullmatch(head):
             raise WatchIngressError("GITHUB_BROKER_PR_HEAD_INVALID")
