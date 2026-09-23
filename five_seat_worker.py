@@ -195,6 +195,21 @@ class FiveSeatWorker:
                 "resource_scope": dict(claim.get("resource_scope") or {}),
                 "authority_class": claim.get("authority_class"),
             }
+            blockers = claim.get("blockers") or []
+            if isinstance(blockers, str):
+                try:
+                    blockers = json.loads(blockers)
+                except json.JSONDecodeError:
+                    blockers = []
+            if isinstance(blockers, list):
+                dan_context = [
+                    dict(item)
+                    for item in blockers
+                    if isinstance(item, Mapping)
+                    and str(item.get("source") or "") == "DAN_RECOVERY"
+                ]
+                if dan_context:
+                    adapter_payload["_fabric_context"]["dan_recovery"] = dan_context[-1]
             raw = adapter.execute(adapter_payload)
             if not isinstance(raw, Mapping):
                 raise UncertainSideEffectError("adapter_result_not_mapping")
