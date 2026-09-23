@@ -8,10 +8,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Any
+from typing import Any, Mapping
 from openai import OpenAI
 
+from gemini_paid_reserve import require_gemini_paid_reserve
+
 MODEL = "google/gemini-3.1-pro-preview"
+WORKFLOW_ID = "JAYTEC_PAID_GEMINI_RESERVE_DAN_ELASTIC_REGRESSION_V1_2_4"
 PROVIDER = "openrouter"
 BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
@@ -305,10 +308,29 @@ def _independent_reference_matrix() -> dict:
     }
     return {"checks":checks,"pass":all(checks.values())}
 
-def run() -> dict:
-    if not API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY_MISSING")
-    c=OpenAI(api_key=API_KEY, base_url=BASE_URL)
+def _validate_reserve_packet(packet: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(packet, Mapping):
+        raise RuntimeError("GEMINI_PAID_RESERVE_POLICY_BLOCKED:dan_elastic_regression_packet_required")
+    require_gemini_paid_reserve(packet)
+    if packet.get("workflow_id") != WORKFLOW_ID:
+        raise RuntimeError("GEMINI_PAID_RESERVE_POLICY_BLOCKED:dan_elastic_regression_workflow_required")
+    allowed = packet.get("allowed_operations")
+    if not isinstance(allowed, list) or not set(allowed).issubset({"research", "validate", "test"}):
+        raise RuntimeError("GEMINI_PAID_RESERVE_POLICY_BLOCKED:dan_elastic_regression_operations_invalid")
+    return packet
+
+
+def run(
+    packet: Mapping[str, Any] | None = None,
+    *,
+    openrouter_client: OpenAI | None = None,
+) -> dict:
+    _validate_reserve_packet(packet)
+    c = openrouter_client
+    if c is None:
+        if not API_KEY:
+            raise RuntimeError("OPENROUTER_API_KEY_MISSING")
+        c = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
     baseline_schema={
         "type":"object","additionalProperties":False,
@@ -488,17 +510,3 @@ def run() -> dict:
         "passed":all(live_checks.values()) and all(local_checks.values()),
     }
 
-def _once():
-    if os.path.exists(MARKER):
-        print("JAYTEC_DAN_ELASTIC_V12_HARDENED_ALREADY_RAN",flush=True)
-        return
-    try:
-        result=run()
-        with open(MARKER,"w",encoding="utf-8") as f:
-            json.dump(result,f,sort_keys=True)
-        print("JAYTEC_DAN_ELASTIC_V12_HARDENED_RESULT="+json.dumps(result,sort_keys=True),flush=True)
-    except Exception as exc:
-        print("JAYTEC_DAN_ELASTIC_V12_HARDENED_ERROR="+type(exc).__name__+":"+str(exc),flush=True)
-
-if os.environ.get("JAYTEC_DAN_V12_REGRESSION_ON_START","").strip().lower() in {"1","true","yes","on"}:
-    _once()
