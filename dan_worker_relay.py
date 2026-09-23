@@ -245,7 +245,10 @@ class DanWorkerRelay:
             }
         return None
 
-    def _request_exists(self, relay_task_id: str, request_digest: str) -> bool:
+    def _existing_request(
+        self,
+        relay_task_id: str,
+    ) -> Optional[dict[str, Any]]:
         for comment in self._comments():
             login = str((comment.get("user") or {}).get("login") or "").lower()
             if login != TRUSTED_RELAY_LOGIN.lower():
@@ -257,10 +260,31 @@ class DanWorkerRelay:
             if (
                 isinstance(job, Mapping)
                 and str(job.get("task_id") or "") == relay_task_id
-                and str(job.get("request_digest") or "") == request_digest
             ):
-                return True
-        return False
+                return dict(job)
+        return None
+
+    @staticmethod
+    def _semantic_request(value: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: value.get(key)
+            for key in (
+                "schema",
+                "principal",
+                "task_id",
+                "assignment_name",
+                "original_task_id",
+                "original_handoff_id",
+                "subtask_id",
+                "attempt_id",
+                "source_shared_state_version",
+                "objective",
+                "worker_failure",
+                "watch_reason",
+                "cost_policy",
+                "side_effect_policy",
+            )
+        }
 
     def recover(
         self,
@@ -304,6 +328,31 @@ class DanWorkerRelay:
         request_digest = hashlib.sha256(_compact(job).encode("utf-8")).hexdigest()
         job["request_digest"] = request_digest
 
+        existing_request = self._existing_request(relay_task_id)
+        if existing_request is not None:
+            if self._semantic_request(existing_request) != self._semantic_request(job):
+                raise DanWorkerRelayError("dan_worker_conflicting_duplicate_request")
+            try:
+                expires_at = datetime.fromisoformat(
+                    str(existing_request.get("expires_at") or "").replace(
+                        "Z", "+00:00"
+                    )
+                )
+            except Exception as exc:
+                raise DanWorkerRelayError(
+                    "dan_worker_existing_request_expiry_invalid"
+                ) from exc
+            if expires_at <= datetime.now(timezone.utc):
+                raise DanWorkerRelayError(
+                    "dan_worker_existing_request_expired"
+                )
+            job = existing_request
+            request_digest = str(job.get("request_digest") or "")
+            if not request_digest:
+                raise DanWorkerRelayError(
+                    "dan_worker_existing_request_digest_missing"
+                )
+
         existing = self._matching_result(
             relay_task_id=relay_task_id,
             request_digest=request_digest,
@@ -315,7 +364,7 @@ class DanWorkerRelay:
         if existing is not None:
             return existing
 
-        if not self._request_exists(relay_task_id, request_digest):
+        if existing_request is None:
             status, value = self._request(
                 "POST",
                 "/comments",
