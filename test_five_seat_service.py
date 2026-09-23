@@ -148,6 +148,9 @@ class TestFiveSeatProductionServiceContract(unittest.TestCase):
         self.assertIn("self.watch.release_leader(token)", source)
         self.assertIn("FIVE_SEAT_WATCH_LEADER_ACQUIRED", source)
         self.assertIn("FIVE_SEAT_WATCH_LEADER_RELEASED", source)
+        self.assertIn("def watch_leader_snapshot", source)
+        self.assertIn("watch_controller_owner", source)
+        self.assertIn("watch_leader_epoch", source)
 
 
 
