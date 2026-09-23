@@ -1,0 +1,185 @@
+name: Production Main CI Attestation
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-main-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  core-tests:
+    name: core-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install locked runtime dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compile production entrypoints and core control modules
+        run: |
+          set -euo pipefail
+          python -m py_compile             orchestration.py circuit_breaker.py worker_json.py specialist_adapters.py             manus_policy.py jaytec_read.py meeting_bus.py job_runtime.py concurrency.py             guardian.py guardian_runtime.py durable_tasks.py durable_tasks_runtime.py             reliability_registry.py server.py reliable_server.py compat_server.py             notion_courier_policy.py notion_courier_server.py idempotency_postgres.py
+      - name: Import production entrypoint without provider secrets
+        run: python -c "import server; print('production_server_import_ok')"
+      - name: Run full unit suite
+        run: |
+          set -euo pipefail
+          python -m unittest discover -v
+
+  negative-core:
+    name: negative-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install runtime dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run focused fail-closed/negative suites
+        run: |
+          set -euo pipefail
+          python -m unittest -v             test_worker_policy_hardening             test_compat_transport_hardening             test_contract_equivalence             test_specialist_timeout_hardening             test_manus_policy_integration_guard             test_idempotency_postgres
+
+  docker-runtime-smoke:
+    name: docker-runtime-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Build production Dockerfile
+        run: |
+          set -euo pipefail
+          docker build -t jaytec-bridge-production-ci:smoke .
+      - name: Start compatibility runtime with providers locked
+        run: |
+          set -euo pipefail
+          cid=$(docker run -d             -p 127.0.0.1:18000:8000             -e RUNTIME_MODE=staging_candidate             -e MCP_AUTH_TOKEN=test             -e OPENAI_API_KEY=test             -e OPENROUTER_API_KEY=test             -e CODEX_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free             -e GEMINI_MODEL=deepseek/deepseek-v4-flash-0731:free             -e DURABLE_WORKER_ENABLED=0             -e GUARDIAN_LOOP_ENABLED=0             jaytec-bridge-production-ci:smoke)
+          cleanup() {
+            docker logs "$cid" || true
+            docker rm -f "$cid" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          ready=0
+          for _ in $(seq 1 20); do
+            if [ "$(docker inspect -f '{{.State.Running}}' "$cid")" != "true" ]; then
+              echo "production compatibility container exited during startup"
+              exit 1
+            fi
+            code=$(curl --connect-timeout 1 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18000/mcp || true)
+            if [ "$code" != "000" ]; then
+              echo "production_container_startup_ok http_status=$code"
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != "1" ]; then
+            echo "production compatibility container did not become reachable"
+            exit 1
+          fi
+          docker exec "$cid" python notion_courier_transport_probe.py http://127.0.0.1:8000/mcp test
+
+  exact-sha-attestation:
+    name: exact-sha-attestation
+    needs:
+      - core-tests
+      - negative-core
+      - docker-runtime-smoke
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      CORE_RESULT: ${{ needs.core-tests.result }}
+      NEGATIVE_RESULT: ${{ needs.negative-core.result }}
+      DOCKER_RESULT: ${{ needs.docker-runtime-smoke.result }}
+      PRODUCTION_DEPLOY_GATE_VERIFIED: "false"
+      FULL_CERTIFICATION: "false"
+    steps:
+      - name: Build exact-SHA evidence manifest
+        run: |
+          set -euo pipefail
+          test "$CORE_RESULT" = "success"
+          test "$NEGATIVE_RESULT" = "success"
+          test "$DOCKER_RESULT" = "success"
+          mkdir -p attestation
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          manifest = {
+              "schema_version": "JAYTEC_BRIDGE_PRODUCTION_CI_ATTESTATION_V1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "source_commit_sha": os.environ["GITHUB_SHA"],
+              "ref": os.environ["GITHUB_REF"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "jobs": {
+                  "core-tests": os.environ["CORE_RESULT"],
+                  "negative-core": os.environ["NEGATIVE_RESULT"],
+                  "docker-runtime-smoke": os.environ["DOCKER_RESULT"],
+              },
+              "production_deploy_gate_verified": False,
+              "runtime_deploy_attested": False,
+              "state_plane_attested": False,
+              "full_certification": False,
+              "promotion_authorized": False,
+              "limitations": [
+                  "Render production currently deploys on commit rather than exact successful checks.",
+                  "This manifest is CI evidence only and does not prove the deployed runtime or state plane.",
+                  "Full G03 certification requires cross-repo contract, runtime, state-plane, and hostile-review evidence.",
+              ],
+              "created_at_utc": datetime.now(timezone.utc).isoformat(),
+          }
+          path = Path("attestation/JAYTEC_BRIDGE_PRODUCTION_CI_ATTESTATION_V1.json")
+          encoded = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+          path.write_bytes(encoded)
+          digest = hashlib.sha256(encoded).hexdigest()
+          Path(str(path) + ".sha256").write_text(f"{digest}  {path.name}\n")
+          print("JAYTEC_BRIDGE_PRODUCTION_CI_ATTESTATION_SHA256=" + digest)
+          PY
+          sha256sum -c attestation/JAYTEC_BRIDGE_PRODUCTION_CI_ATTESTATION_V1.json.sha256
+
+      - name: Retain exact-SHA evidence artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: jaytec-bridge-production-ci-${{ github.sha }}
+          path: attestation/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
