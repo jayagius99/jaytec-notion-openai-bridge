@@ -109,7 +109,7 @@ def submit_low_risk_task_packet(
         authority_class="READ_ONLY",
         concurrency_class="A",
         priority=int(priority),
-        max_attempts=3,
+        max_attempts=max(1, min(3, int(bounded.get("max_retries") or 0) + 1)),
         max_reworks=2,
         required_capabilities={TASK_PACKET_CAPABILITY},
         read_scope={f"specialist:{name}" for name in plan},

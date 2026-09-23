@@ -82,6 +82,7 @@ class JaytecCourierRuntime:
             OpenAI(
                 api_key=legacy_server.OPENROUTER_API_KEY,
                 base_url=legacy_server.OPENROUTER_BASE_URL,
+                max_retries=0,
             )
             if legacy_server.OPENROUTER_API_KEY
             else None

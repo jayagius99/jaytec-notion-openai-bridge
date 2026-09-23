@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 import unittest
@@ -161,6 +162,72 @@ class TestFiveSeatRecoveryPostgres(unittest.TestCase):
                 handoff_ref=_uid("stale"),
                 handoff_payload=_handoff_payload(),
             )
+
+    def test_expired_zero_retry_task_packet_fails_safe_without_requeue(self):
+        job_id = _uid("zero-retry")
+        self.jobs.append(job_id)
+        packet_json = json.dumps({"max_retries": 0})
+        with psycopg2.connect(self.url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO jaytec_jobs(
+                       job_id,project_id,task_id,assignment_type,objective,status,
+                       fabric_state,priority,source_shared_state_version,
+                       concurrency_class,mutation_scope,read_scope,dependencies,
+                       resource_scope,fabric_attempt_count,fabric_max_attempts
+                       ) VALUES (
+                       %s,'CI',%s,'FIVE_SEAT_FABRIC','zero retry','QUEUED','QUEUED',
+                       1,1,'A','[]'::jsonb,'[]'::jsonb,'[]'::jsonb,'{}'::jsonb,0,3)""",
+                    (job_id, job_id),
+                )
+                cur.execute(
+                    """INSERT INTO jaytec_fabric_envelopes(
+                       job_id,envelope_hash,idempotency_key,worker_kind,
+                       required_capabilities,authority_class,payload
+                       ) VALUES (%s,%s,%s,'TASK_PACKET','[]'::jsonb,
+                       'READ_ONLY',%s::jsonb)""",
+                    (
+                        job_id,
+                        "hash-" + job_id,
+                        "idem-" + job_id,
+                        json.dumps({"packet_json": packet_json}),
+                    ),
+                )
+
+        scheduler = PostgresFiveSeatScheduler(self.url)
+        claim = scheduler.claim_next(
+            owner="worker-zero-retry",
+            execution_room_id="zero-retry-room",
+            lease_seconds=60,
+            supported_worker_kinds={"TASK_PACKET"},
+            capabilities=set(),
+        )
+        self.assertIsNotNone(claim)
+        token = scheduler.token_from_claim(claim)
+        with psycopg2.connect(self.url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE jaytec_jobs SET lease_expires_at=now()-interval '1 second' WHERE job_id=%s",
+                    (job_id,),
+                )
+                cur.execute(
+                    "UPDATE jaytec_worker_seats SET lease_expires_at=now()-interval '1 second' WHERE seat_id=%s",
+                    (token.seat_id,),
+                )
+
+        actions = PostgresFabricRemedies(self.url).reconcile_expired_leases()
+        matching = [row for row in actions if row.get("job_id") == job_id]
+        self.assertEqual(
+            matching[0]["action"],
+            "EXPIRED_WORKER_RETRY_BUDGET_EXHAUSTED",
+        )
+        with psycopg2.connect(self.url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT status,fabric_state FROM jaytec_jobs WHERE job_id=%s",
+                    (job_id,),
+                )
+                self.assertEqual(cur.fetchone(), ("FAILED_SAFE", "FAILED_SAFE"))
 
     def test_handoff_is_idempotent_and_seat_refills_immediately(self):
         first_job = self._insert(priority=1)
