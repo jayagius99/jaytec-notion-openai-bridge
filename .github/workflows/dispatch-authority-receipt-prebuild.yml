@@ -1,0 +1,46 @@
+# Revalidate synthetic PR merge against current staging base after PR #162.\nname: Dispatch Authority Receipt Prebuild
+
+on:
+  pull_request:
+    paths:
+      - "dispatch_authority_receipt.py"
+      - "test_dispatch_authority_receipt.py"
+      - ".github/workflows/dispatch-authority-receipt-prebuild.yml"
+  push:
+    branches:
+      - "prebuild/dispatch-authority-receipt-v1"
+    paths:
+      - "dispatch_authority_receipt.py"
+      - "test_dispatch_authority_receipt.py"
+      - ".github/workflows/dispatch-authority-receipt-prebuild.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: authority-receipt-prebuild-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONHASHSEED: "0"
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Compile verifier
+        run: |
+          set -euo pipefail
+          python -m py_compile dispatch_authority_receipt.py test_dispatch_authority_receipt.py
+      - name: Run adversarial receipt tests
+        run: |
+          set -euo pipefail
+          python -m unittest -v test_dispatch_authority_receipt
