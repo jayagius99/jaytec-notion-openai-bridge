@@ -24,6 +24,7 @@ DAN_RELAY_ISSUE_DEFAULT = 130
 EXPECTED_QWEN_MODEL = r"C:\JAYTEC_BOOTSTRAP\Scratch\local-model-proof\qwen2.5-1.5b-instruct-q4_k_m.gguf"
 EXPECTED_QWEN_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
 EXPECTED_QWEN_ROUTE = "local-llama-127.0.0.1:18081"
+MAX_DAN_RECOVERIES_PER_JOB = 2
 _HARD_BOUNDARY_TERMS = (
     "policy", "permission", "secret", "credential", "privacy", "spend",
     "owner approval", "hold", "stop", "canonical authority", "unsafe",
@@ -185,6 +186,14 @@ class DanRecoveryManager:
                 )
                 if cur.fetchone() is not None:
                     return {"dispatched": False, "reason": "already_dispatched"}
+                cur.execute(
+                    """SELECT count(*) AS n FROM jaytec_job_events
+                       WHERE job_id=%s AND event_type='DAN_RECOVERY_DISPATCHED'""",
+                    (job_id,),
+                )
+                prior_recoveries = int((cur.fetchone() or {}).get("n") or 0)
+                if prior_recoveries >= MAX_DAN_RECOVERIES_PER_JOB:
+                    return {"dispatched": False, "reason": "dan_recovery_budget_exhausted"}
                 compact_result = {
                     "whole_packet_status": result.get("whole_packet_status"),
                     "worker_completion_classification": result.get("worker_completion_classification"),
@@ -232,6 +241,8 @@ class DanRecoveryManager:
         self._last_poll = now
         accepted: list[str] = []
         for receipt in self.relay.results():
+            if str(receipt.get("_relay_author") or "").lower() != "jayagius99":
+                continue
             if receipt.get("principal") != DAN_RECOVERY_ID:
                 continue
             if str(receipt.get("status") or "").upper() != "DAN_COMPLETE":
@@ -293,6 +304,8 @@ class DanRecoveryManager:
                 source_version = int(job["source_shared_state_version"])
                 if source_version != int(job["current_shared_state_version"]):
                     return False
+                if int(receipt.get("source_shared_state_version") or -1) != source_version:
+                    return False
                 if str(job["status"]) != "BLOCKED" or str(job["fabric_state"]) != "QUARANTINED":
                     return False
                 if job.get("seat_id") is not None or job.get("lease_owner") is not None:
@@ -316,7 +329,7 @@ class DanRecoveryManager:
                     """UPDATE jaytec_jobs
                        SET status='QUEUED',fabric_state='REWORK_QUEUED',blockers=%s::jsonb,
                            next_attempt_at=now(),fabric_attempt_count=0,
-                           fabric_rework_count=fabric_rework_count+1,cancel_requested_at=NULL,
+                           fabric_rework_count=fabric_rework_count,cancel_requested_at=NULL,
                            version=version+1,updated_at=now()
                        WHERE job_id=%s AND status='BLOCKED' AND fabric_state='QUARANTINED'
                          AND seat_id IS NULL AND lease_owner IS NULL
