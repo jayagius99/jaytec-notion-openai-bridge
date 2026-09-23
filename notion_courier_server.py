@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 from typing import Any, Protocol
 
@@ -180,6 +181,9 @@ class JaytecCourierRuntime:
                 self._execute_direct,
                 instance_id=self.fabric_instance_id,
                 lease_seconds=int(os.environ.get("FIVE_SEAT_LEASE_S", "300")),
+                watch_lease_seconds=int(
+                    os.environ.get("FIVE_SEAT_WATCH_LEASE_S", "30")
+                ),
                 guardian_interval_seconds=float(
                     os.environ.get("FIVE_SEAT_GUARDIAN_INTERVAL_S", "30")
                 ),
@@ -196,7 +200,11 @@ class JaytecCourierRuntime:
                 ).strip()
                 == "1"
             ):
-                self._emit_fabric_startup_report()
+                threading.Thread(
+                    target=self._emit_fabric_startup_report,
+                    name="five-seat-startup-attestation",
+                    daemon=True,
+                ).start()
 
     def _emit_fabric_startup_report(self) -> None:
         """Emit a bounded read-only fabric/WATCH startup snapshot.
@@ -215,7 +223,19 @@ class JaytecCourierRuntime:
         expected_leader = (
             "five-seat-watch:" + str(self.fabric_instance_id or "courier")
         )
-        deadline = time.monotonic() + 2.0
+        timeout_seconds = max(
+            5.0,
+            min(
+                float(
+                    os.environ.get(
+                        "FIVE_SEAT_FABRIC_STARTUP_REPORT_TIMEOUT_S",
+                        "90",
+                    )
+                ),
+                600.0,
+            ),
+        )
+        deadline = time.monotonic() + timeout_seconds
         snapshot: dict[str, Any] = {
             "schema_version": "JAYTEC_FIVE_SEAT_STARTUP_REPORT_V1",
             "ready": False,
@@ -253,6 +273,12 @@ class JaytecCourierRuntime:
                         str(watch.get("leader") or "") == expected_leader
                     ),
                     "fabric_error_count": len(errors),
+                    "watch_transient_contention_count": int(
+                        service.get("watch_transient_contention_count") or 0
+                    ),
+                    "watch_lease_seconds": int(
+                        service.get("watch_lease_seconds") or 0
+                    ),
                 }
                 snapshot["ready"] = bool(
                     snapshot["worker_threads_configured"] == 5
@@ -265,7 +291,7 @@ class JaytecCourierRuntime:
                 )
                 if snapshot["ready"] or time.monotonic() >= deadline:
                     break
-                time.sleep(0.1)
+                time.sleep(0.25)
         except Exception as exc:
             snapshot = {
                 "schema_version": "JAYTEC_FIVE_SEAT_STARTUP_REPORT_V1",
