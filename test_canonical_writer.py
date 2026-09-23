@@ -16,6 +16,16 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 @unittest.skipUnless(DATABASE_URL, "DATABASE_URL required for canonical writer integration proof")
 class TestCanonicalWriterIntegration(unittest.TestCase):
+    @staticmethod
+    def _preflight():
+        return {
+            "candidate_head_verified": True,
+            "expected_base_verified": True,
+            "pr_open_verified": True,
+            "watch_accept_verified": True,
+            "ci_green_verified": True,
+        }
+
     def _seed_candidate(self, suffix, *, canonical=True):
         job_id = f"ci-canonical-job-{suffix}"
         handoff_id = f"ci-canonical-handoff-{suffix}"
@@ -184,6 +194,7 @@ class TestCanonicalWriterIntegration(unittest.TestCase):
                 expected_candidate_digest=candidate_digest,
                 expected_base_sha=first["base"],
                 expected_source_shared_state_version=1,
+                preflight_evidence=self._preflight(),
             )
 
         approved = queue.approve(
@@ -193,6 +204,7 @@ class TestCanonicalWriterIntegration(unittest.TestCase):
             expected_candidate_digest=candidate_digest,
             expected_base_sha=first["base"],
             expected_source_shared_state_version=1,
+            preflight_evidence=self._preflight(),
         )
         self.assertEqual(approved["state"], "APPROVED")
 
@@ -263,6 +275,7 @@ class TestCanonicalWriterIntegration(unittest.TestCase):
             expected_candidate_digest=second_item["candidate_digest"],
             expected_base_sha=second_item["expected_base_sha"],
             expected_source_shared_state_version=1,
+            preflight_evidence=self._preflight(),
         )
         token2 = queue.claim_next(owner=CANONICAL_WRITER_ID, lease_seconds=30)
         self.assertIsNotNone(token2)
