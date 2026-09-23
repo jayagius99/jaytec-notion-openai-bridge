@@ -63,6 +63,13 @@ class TestFiveSeatWatchContract(unittest.TestCase):
         self.assertIn("UNRESOLVED_OPERATION_STATUSES", source)
         self.assertIn("FiveSeatReleaseBlocked", source)
 
+    def test_watch_emits_explicit_owner_notification_events(self):
+        source = Path(__file__).with_name("five_seat_watch.py").read_text(encoding="utf-8")
+        self.assertIn("'OWNER_NOTIFICATION_REQUIRED'", source)
+        self.assertIn('"WHOLE_JOB_COMPLETE"', source)
+        self.assertIn('"NEEDS_OWNER"', source)
+        self.assertIn('if decision in {"ACCEPT", "ESCALATE"}', source)
+
     def test_watch_review_can_wake_runnable_work_but_signal_is_not_authority(self):
         watch = Path(__file__).with_name("five_seat_watch.py").read_text(encoding="utf-8")
         signals = Path(__file__).with_name("five_seat_signals.py").read_text(encoding="utf-8")
