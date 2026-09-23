@@ -150,8 +150,19 @@ def _invoke_openrouter(req: Mapping[str, Any]) -> dict[str, Any]:
         with urllib.request.urlopen(request, timeout=120) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            payload = json.loads(exc.read().decode("utf-8", errors="replace"))
+            upstream = payload.get("error")
+            if isinstance(upstream, Mapping):
+                detail = str(upstream.get("message") or upstream.get("code") or "")
+            elif upstream is not None:
+                detail = str(upstream)
+        except Exception:
+            detail = ""
+        detail = re.sub(r"sk-[A-Za-z0-9_-]{8,}", "[REDACTED]", detail)[:180]
         raise DanCognitionHttpError(
-            "openrouter_http_" + str(exc.code)
+            "openrouter_http_" + str(exc.code) + ((":" + detail) if detail else "")
         ) from exc
     except Exception as exc:
         raise DanCognitionHttpError(
