@@ -57,6 +57,8 @@ def gemini_paid_packet(now=None):
         "gemini_required_reason": "Gemini-specific review is required after the free reviewer route is exhausted.",
         "paid_reserve_authorized": True,
         "cost_policy": "PAID_BACKUP_ONLY",
+        "authority_controller": "CHATGPT_OPENAI_LEAD",
+        "specialist_authority": "SUBORDINATE",
     }
     return packet
 
