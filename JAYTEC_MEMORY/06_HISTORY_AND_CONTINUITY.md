@@ -36,6 +36,18 @@ Repeated hardening priorities include:
 - no claim of completion from heartbeat alone;
 - CI/runtime/proving evidence before promotion.
 
+Deployment reconciliation lesson:
+- reconcile deployments by immutable commit ancestry and file content, not by the
+  number of deployment cards;
+- multiple deployment records for the same commit are duplicate rollout
+  attempts/triggers, not different code states;
+- a deployed descendant commit contains accepted ancestor changes unless a later
+  commit explicitly reverts or overwrites them;
+- absence of a separate deployment card for an intermediate commit does not mean
+  that commit was omitted from a later descendant deployment;
+- when API-triggered and automatic new-commit deploys overlap, record the
+  duplication and identify the trigger owner before changing deployment policy.
+
 ## Continuity
 
 When resuming:
