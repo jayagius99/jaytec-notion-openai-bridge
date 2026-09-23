@@ -42,6 +42,9 @@ A Gemini call is eligible only when ALL of these are true:
 
 If any condition is missing, JAYTEC fails closed and does not call Gemini.
 Provider availability or a configured API key never grants spend authority.
+This gate applies equally to normal orchestration, diagnostics, one-shot review
+scripts, startup hooks, experiments, and staging-only utilities. No helper
+module or environment startup flag may create a direct Gemini side-door.
 
 ## WATCH/Manus assistance trio
 
