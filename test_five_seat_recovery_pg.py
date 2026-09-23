@@ -166,7 +166,7 @@ class TestFiveSeatRecoveryPostgres(unittest.TestCase):
     def test_expired_zero_retry_task_packet_fails_safe_without_requeue(self):
         job_id = _uid("zero-retry")
         self.jobs.append(job_id)
-        packet_json = json.dumps({"max_retries": 0})
+        packet_json = json.dumps({"max_retries": 0, "deadline": "2099-01-01T00:00:00Z"})
         with psycopg2.connect(self.url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
