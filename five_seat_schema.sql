@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS jaytec_canonical_write_queue (
   expected_base_sha TEXT NOT NULL CHECK (expected_base_sha ~ '^[0-9a-f]{40}$'),
   candidate_digest TEXT NOT NULL CHECK (candidate_digest ~ '^[0-9a-f]{64}$'),
   source_shared_state_version BIGINT NOT NULL CHECK (source_shared_state_version > 0),
+  candidate_manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
   deployment_target JSONB NOT NULL DEFAULT '{}'::jsonb,
   requested_by TEXT NOT NULL,
   priority INTEGER NOT NULL DEFAULT 100 CHECK (priority BETWEEN 0 AND 1000),
@@ -267,6 +268,7 @@ CREATE TABLE IF NOT EXISTS jaytec_canonical_write_queue (
   ),
   approved_by TEXT,
   approval_ref TEXT,
+  approval_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
   approved_at TIMESTAMPTZ,
   writer_owner TEXT,
   writer_epoch BIGINT,
@@ -284,6 +286,11 @@ CREATE TABLE IF NOT EXISTS jaytec_canonical_write_queue (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(job_id,handoff_id,review_id)
 );
+
+ALTER TABLE jaytec_canonical_write_queue
+  ADD COLUMN IF NOT EXISTS candidate_manifest JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE jaytec_canonical_write_queue
+  ADD COLUMN IF NOT EXISTS approval_evidence JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE UNIQUE INDEX IF NOT EXISTS jaytec_canonical_write_one_inflight_idx
   ON jaytec_canonical_write_queue((1))
