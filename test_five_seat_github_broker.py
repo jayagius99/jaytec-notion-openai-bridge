@@ -16,6 +16,7 @@ COMMIT_SHA = "c" * 40
 
 class FakeGitHub:
     def __init__(self):
+        self.base_head = BASE_SHA
         self.branch = None
         self.branch_head = None
         self.files = {}
@@ -29,7 +30,7 @@ class FakeGitHub:
 
         if "/git/ref/heads/" in url and method == "GET":
             if url.endswith("/git/ref/heads/main"):
-                return 200, {"object": {"sha": BASE_SHA}}
+                return 200, {"object": {"sha": self.base_head}}
             if self.branch is None:
                 return 404, {"message": "not found"}
             return 200, {"object": {"sha": self.branch_head}}
@@ -202,7 +203,7 @@ class TestFiveSeatGitHubBroker(unittest.TestCase):
             "sha": FILE_SHA,
             "content": "old\n",
         }
-        with self.assertRaises(PermanentAdapterError):
+        with self.assertRaises(UncertainSideEffectError):
             broker.execute(payload(expected_sha=""))
         self.assertFalse(any(method == "PUT" for method, *_rest in fake.calls))
 
@@ -214,7 +215,7 @@ class TestFiveSeatGitHubBroker(unittest.TestCase):
             "sha": FILE_SHA,
             "content": "old\n",
         }
-        with self.assertRaises(PermanentAdapterError):
+        with self.assertRaises(UncertainSideEffectError):
             broker.execute(payload(expected_sha="d" * 40))
         self.assertFalse(any(method == "PUT" for method, *_rest in fake.calls))
 
@@ -234,9 +235,17 @@ class TestFiveSeatGitHubBroker(unittest.TestCase):
             "sha": FILE_SHA,
             "content": "bad\n",
         }
-        with self.assertRaises(PermanentAdapterError):
+        with self.assertRaises(UncertainSideEffectError):
             broker.execute(payload())
         self.assertFalse(any(method == "PUT" for method, *_rest in fake.calls))
+
+    def test_base_head_move_fails_before_side_effect(self):
+        broker, fake = self.broker()
+        fake.base_head = "d" * 40
+        with self.assertRaises(PermanentAdapterError):
+            broker.execute(payload())
+        self.assertIsNone(fake.branch)
+        self.assertFalse(any(method in {"POST", "PUT"} for method, *_rest in fake.calls))
 
     def test_repository_allowlist_is_hard_boundary(self):
         broker, fake = self.broker()
