@@ -10,6 +10,7 @@ import psycopg2.extras
 
 from concurrency import concurrency_decision
 from durable_tasks import contains_secret_material
+from five_seat_authority import authority_requires_approval, normalize_cost_policy
 from five_seat_signals import PostgresFabricSignal, WORK_AVAILABLE_CHANNEL
 
 
@@ -109,6 +110,11 @@ class PostgresFabricQueue:
             raise ValueError("invalid concurrency_class")
         if source_shared_state_version <= 0:
             raise ValueError("source_shared_state_version must be > 0")
+        normalized_cost_policy = normalize_cost_policy(cost_policy)
+        approval_required = authority_requires_approval(
+            authority_class,
+            normalized_cost_policy,
+        )
         if priority < 0 or priority > 1_000_000:
             raise ValueError("priority out of range")
         if max_attempts < 1 or max_attempts > 10:
@@ -150,7 +156,8 @@ class PostgresFabricQueue:
             "resource_scope": resources,
             "dependencies": deps,
             "collision_key": str(collision_key or "").strip(),
-            "cost_policy": dict(cost_policy or {}),
+            "cost_policy": normalized_cost_policy,
+            "approval_required": approval_required,
             "evidence_standard": dict(evidence_standard or {}),
             "stop_conditions": dict(stop_conditions or {}),
             "result_destination": dict(result_destination or {}),
@@ -163,10 +170,8 @@ class PostgresFabricQueue:
         job_id = "fabric-" + hashlib.sha256(
             (idempotency_key + ":" + digest).encode("utf-8")
         ).hexdigest()[:24]
-        initial_status = "BLOCKED" if authority_class == "OWNER_GATED" else "QUEUED"
-        initial_fabric_state = (
-            "BLOCKED_OWNER" if authority_class == "OWNER_GATED" else "QUEUED"
-        )
+        initial_status = "BLOCKED" if approval_required else "QUEUED"
+        initial_fabric_state = "BLOCKED_OWNER" if approval_required else "QUEUED"
 
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -174,6 +179,29 @@ class PostgresFabricQueue:
                     "SELECT pg_advisory_xact_lock(hashtext(%s))",
                     (FABRIC_SUBMIT_LOCK_PREFIX + idempotency_key,),
                 )
+                cur.execute(
+                    """
+                    SELECT current_shared_state_version,authority_epoch,fence_token
+                    FROM jaytec_fabric_authority_state
+                    WHERE authority_id='FABRIC'
+                    FOR UPDATE
+                    """
+                )
+                authority = cur.fetchone()
+                if authority is None:
+                    raise FabricQueueError("fabric_authority_state_missing")
+                current_shared_state_version = int(
+                    authority["current_shared_state_version"]
+                )
+                if current_shared_state_version <= 0:
+                    raise FabricQueueError("authority_state_uninitialized")
+                if int(source_shared_state_version) != current_shared_state_version:
+                    raise FabricQueueError(
+                        "stale_source_shared_state_version:"
+                        + str(source_shared_state_version)
+                        + "!="
+                        + str(current_shared_state_version)
+                    )
                 cur.execute(
                     """
                     SELECT *
@@ -239,10 +267,10 @@ class PostgresFabricQueue:
                     """
                     INSERT INTO jaytec_fabric_envelopes(
                       job_id,envelope_hash,idempotency_key,worker_kind,
-                      required_capabilities,authority_class,cost_policy,
+                      required_capabilities,approval_required,authority_class,cost_policy,
                       evidence_standard,stop_conditions,result_destination,payload
                     ) VALUES (
-                      %s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s::jsonb,
+                      %s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s::jsonb,
                       %s::jsonb,%s::jsonb,%s::jsonb
                     )
                     """,
@@ -252,8 +280,9 @@ class PostgresFabricQueue:
                         idempotency_key,
                         worker_kind,
                         _json(capabilities),
+                        approval_required,
                         authority_class,
-                        _json(dict(cost_policy or {})),
+                        _json(normalized_cost_policy),
                         _json(dict(evidence_standard or {})),
                         _json(dict(stop_conditions or {})),
                         _json(dict(result_destination or {})),
@@ -277,7 +306,8 @@ class PostgresFabricQueue:
                                 "authority_class": authority_class,
                                 "required_capabilities": capabilities,
                                 "envelope_hash": digest,
-                                "blocked_owner": authority_class == "OWNER_GATED",
+                                "blocked_owner": approval_required,
+                                "approval_required": approval_required,
                                 "max_attempts": int(max_attempts),
                                 "max_reworks": int(max_reworks),
                             }
@@ -285,7 +315,7 @@ class PostgresFabricQueue:
                     ),
                 )
 
-        if authority_class != "OWNER_GATED":
+        if not approval_required:
             self.signal.notify(
                 WORK_AVAILABLE_CHANNEL,
                 reason="fabric_task_submitted",
