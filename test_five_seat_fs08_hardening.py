@@ -146,7 +146,7 @@ class TestFiveSeatFS08HardeningPostgres(unittest.TestCase):
         worker_kind = worker_kind or ("TEST_" + uuid.uuid4().hex[:8].upper())
         self.worker_kinds.add(worker_kind)
         job = self.queue.submit(
-            task_id=_uid("task"),
+            task_id=_uid("jobref"),
             objective="FS08 hardening proof",
             worker_kind=worker_kind,
             idempotency_key=_uid("idem"),
