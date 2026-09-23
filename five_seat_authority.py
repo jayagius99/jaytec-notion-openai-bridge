@@ -151,6 +151,17 @@ class PostgresFabricAuthority:
                     raise FabricAuthorityStale("shared_state_version_regression")
                 cur.execute(
                     """
+                    UPDATE jaytec_fabric_approvals
+                    SET state='REVOKED',
+                        revoked_at=now(),
+                        updated_at=now()
+                    WHERE state='APPROVED'
+                      AND source_shared_state_version <> %s
+                    """,
+                    (version,),
+                )
+                cur.execute(
+                    """
                     UPDATE jaytec_fabric_authority_state
                     SET current_shared_state_version=%s,
                         authority_epoch=authority_epoch+1,
@@ -229,6 +240,19 @@ class PostgresFabricAuthority:
                 ):
                     raise FabricApprovalRequired("unnecessary_paid_cap_for_zero_spend_job")
 
+                cur.execute(
+                    """
+                    UPDATE jaytec_fabric_approvals
+                    SET state='REVOKED',
+                        revoked_at=now(),
+                        updated_at=now()
+                    WHERE job_id=%s
+                      AND state='APPROVED'
+                      AND expires_at IS NOT NULL
+                      AND expires_at <= now()
+                    """,
+                    (job_id,),
+                )
                 cur.execute(
                     """
                     SELECT *
