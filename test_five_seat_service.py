@@ -45,6 +45,45 @@ class TestFiveSeatProductionServiceContract(unittest.TestCase):
         self.assertIn("nvidia/nemotron", result["provider_identity"])
         self.assertEqual(result["worker_completion_classification"], "CANDIDATE_COMPLETE")
 
+    def test_adapter_accepts_json_object_text_from_production_executor(self):
+        def execute(_packet_json):
+            return json.dumps(
+                {
+                    "overall_status": "SUCCESS",
+                    "codex_result": {
+                        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+                    },
+                    "unresolved_items": [],
+                }
+            )
+
+        result = build_task_packet_adapter(execute)({
+            "packet_json": json.dumps({"task_id": "json-text"})
+        })
+        self.assertEqual(result["whole_packet_status"], "SUCCESS")
+        self.assertEqual(result["partial_side_effect_status"], "NONE")
+        self.assertIn("nvidia/nemotron", result["provider_identity"])
+
+    def test_adapter_rejects_malformed_json_text_fail_closed(self):
+        def execute(_packet_json):
+            return '{"overall_status":"SUCCESS"'
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "TASK_PACKET_RESULT_JSON_INVALID",
+        ):
+            build_task_packet_adapter(execute)({"packet_json": "{}"})
+
+    def test_adapter_rejects_non_object_json_text_fail_closed(self):
+        def execute(_packet_json):
+            return '["SUCCESS"]'
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "TASK_PACKET_RESULT_NOT_MAPPING",
+        ):
+            build_task_packet_adapter(execute)({"packet_json": "{}"})
+
     def test_low_risk_ingress_accepts_valid_safe_operations(self):
         class Queue:
             def __init__(self):

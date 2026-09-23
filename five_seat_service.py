@@ -142,7 +142,7 @@ def submit_low_risk_task_packet(
 
 
 def build_task_packet_adapter(
-    execute_packet: Callable[[str], Mapping[str, Any]],
+    execute_packet: Callable[[str], Mapping[str, Any] | str],
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
     """Adapt the existing specialist executor to one bounded five-seat worker kind.
 
@@ -156,6 +156,13 @@ def build_task_packet_adapter(
         if not isinstance(packet_json, str) or not packet_json.strip():
             raise RuntimeError("TASK_PACKET_PAYLOAD_MISSING")
         raw = execute_packet(packet_json)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "TASK_PACKET_RESULT_JSON_INVALID"
+                ) from exc
         if not isinstance(raw, Mapping):
             raise RuntimeError("TASK_PACKET_RESULT_NOT_MAPPING")
         result = dict(raw)
@@ -212,7 +219,7 @@ class FiveSeatFabricService:
     def __init__(
         self,
         database_url: str,
-        execute_packet: Callable[[str], Mapping[str, Any]],
+        execute_packet: Callable[[str], Mapping[str, Any] | str],
         *,
         instance_id: str | None = None,
         lease_seconds: int = 300,
