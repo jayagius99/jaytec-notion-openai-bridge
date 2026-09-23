@@ -114,19 +114,27 @@ def run() -> dict:
     hardened=_call(c,HARDENED,900)
     boundaries=_call(c,BOUNDARIES,700)
 
-    bp=baseline["parsed"]
-    hp=hardened["parsed"]
-    xp=boundaries["parsed"]
+    bp=baseline["parsed"] if isinstance(baseline["parsed"],dict) else {}
+    hp=hardened["parsed"] if isinstance(hardened["parsed"],dict) else {}
+    xp=boundaries["parsed"] if isinstance(boundaries["parsed"],dict) else {}
+
+    def obj(v):
+        return v if isinstance(v,dict) else {}
+
+    c1=obj(hp.get("c1"))
+    c2=obj(hp.get("c2"))
+    c3=obj(hp.get("c3"))
 
     baseline_pass=all(bp.get(k)=="HANDOFF_REQUIRED" for k in ("c1","c2","c3"))
-    c1_ok=hp.get("c1",{}).get("status")=="COMPLETED" and hp.get("c1",{}).get("canonical")==EXPECTED_C1
-    c2_ok=hp.get("c2",{}).get("status")=="COMPLETED" and hp.get("c2",{}).get("labels")==EXPECTED_C2
+    c1_ok=c1.get("status")=="COMPLETED" and c1.get("canonical")==EXPECTED_C1
+    c2_ok=c2.get("status")=="COMPLETED" and c2.get("labels")==EXPECTED_C2
     c3_ok=(
-        hp.get("c3",{}).get("status")=="COMPLETED"
-        and hp.get("c3",{}).get("acyclic") is True
-        and hp.get("c3",{}).get("topological_order")==EXPECTED_C3
+        c3.get("status")=="COMPLETED"
+        and c3.get("acyclic") is True
+        and c3.get("topological_order")==EXPECTED_C3
     )
-    runtime_hash=_sha(hp.get("c1",{}).get("canonical",""))
+    returned_canonical=c1.get("canonical") if isinstance(c1.get("canonical"),str) else ""
+    runtime_hash=_sha(returned_canonical)
     runtime_hash_ok=runtime_hash==_sha(EXPECTED_C1)
 
     expected_boundaries={
@@ -163,7 +171,15 @@ def run() -> dict:
         "boundary_checks":boundary_checks,
         "runtime_verification":{
             "c1_expected":EXPECTED_C1,
-            "c1_returned":hp.get("c1",{}).get("canonical"),
+            "c1_returned":returned_canonical,
+            "parsed_types":{
+                "baseline":type(baseline["parsed"]).__name__,
+                "hardened":type(hardened["parsed"]).__name__,
+                "boundaries":type(boundaries["parsed"]).__name__,
+                "c1":type(hp.get("c1")).__name__,
+                "c2":type(hp.get("c2")).__name__,
+                "c3":type(hp.get("c3")).__name__,
+            },
             "c1_sha256":runtime_hash,
             "c1_sha256_expected":_sha(EXPECTED_C1),
             "c2_expected":EXPECTED_C2,
