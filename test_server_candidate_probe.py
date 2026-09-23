@@ -37,7 +37,8 @@ class TestServerCandidateProbe(unittest.TestCase):
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ["OPENROUTER_API_KEY"] = "test"
         os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
-        os.environ["GEMINI_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
+        os.environ["DEEPSEEK_REVIEWER_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
+        os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         import server
         importlib.reload(server)
