@@ -223,6 +223,14 @@ class PostgresFabricRemedies:
                     (SCHEDULER_LOCK_KEY,),
                 )
                 job = self._assert_worker(cur, token)
+                if (
+                    job.get("fabric_state") == "CANCEL_REQUESTED"
+                    or job.get("cancel_requested_at") is not None
+                ):
+                    return {
+                        "requeued": False,
+                        "reason": "CANCEL_REQUESTED",
+                    }
                 unresolved = self._unresolved_operations(cur, token.job_id)
                 target_status = "BLOCKED" if unresolved else "CANCELED"
                 target_fabric = "QUARANTINED" if unresolved else "CANCELLED"
@@ -258,6 +266,8 @@ class PostgresFabricRemedies:
                       AND lease_owner=%s
                       AND ownership_epoch=%s
                       AND fence_token=%s
+                      AND fabric_state='RUNNING'
+                      AND cancel_requested_at IS NULL
                     RETURNING *
                     """,
                     (
@@ -273,6 +283,26 @@ class PostgresFabricRemedies:
                 )
                 updated = cur.fetchone()
                 if updated is None:
+                    cur.execute(
+                        """
+                        SELECT fabric_state,cancel_requested_at
+                        FROM jaytec_jobs
+                        WHERE job_id=%s
+                        """,
+                        (token.job_id,),
+                    )
+                    current = cur.fetchone()
+                    if (
+                        current is not None
+                        and (
+                            current["fabric_state"] == "CANCEL_REQUESTED"
+                            or current["cancel_requested_at"] is not None
+                        )
+                    ):
+                        return {
+                            "requeued": False,
+                            "reason": "CANCEL_REQUESTED",
+                        }
                     raise FiveSeatStaleLease(token.job_id)
                 self._free_seat(cur, token, last_ref=None)
                 cur.execute(
@@ -413,8 +443,8 @@ class PostgresFabricRemedies:
                     """
                     INSERT INTO jaytec_fabric_circuits(
                       worker_kind,state,consecutive_failures,failure_threshold,
-                      open_until,last_failure
-                    ) VALUES (%s,'CLOSED',1,3,NULL,%s::jsonb)
+                      open_until,probe_job_id,probe_started_at,last_failure
+                    ) VALUES (%s,'CLOSED',1,3,NULL,NULL,NULL,%s::jsonb)
                     ON CONFLICT(worker_kind) DO UPDATE SET
                       consecutive_failures=jaytec_fabric_circuits.consecutive_failures+1,
                       last_failure=EXCLUDED.last_failure,
@@ -432,6 +462,8 @@ class PostgresFabricRemedies:
                         THEN now()+(%s*interval '1 second')
                         ELSE NULL
                       END,
+                      probe_job_id=NULL,
+                      probe_started_at=NULL,
                       version=jaytec_fabric_circuits.version+1,
                       updated_at=now()
                     RETURNING *
@@ -449,12 +481,15 @@ class PostgresFabricRemedies:
                 cur.execute(
                     """
                     INSERT INTO jaytec_fabric_circuits(
-                      worker_kind,state,consecutive_failures,failure_threshold,open_until
-                    ) VALUES (%s,'CLOSED',0,3,NULL)
+                      worker_kind,state,consecutive_failures,failure_threshold,
+                      open_until,probe_job_id,probe_started_at
+                    ) VALUES (%s,'CLOSED',0,3,NULL,NULL,NULL)
                     ON CONFLICT(worker_kind) DO UPDATE SET
                       state='CLOSED',
                       consecutive_failures=0,
                       open_until=NULL,
+                      probe_job_id=NULL,
+                      probe_started_at=NULL,
                       last_failure=NULL,
                       version=jaytec_fabric_circuits.version+1,
                       updated_at=now()
@@ -551,9 +586,11 @@ class PostgresFabricRemedies:
                     """
                     SELECT s.*,j.status AS job_status,j.fabric_state,
                            j.fabric_attempt_count,j.fabric_max_attempts,
-                           j.cancel_requested_at
+                           j.cancel_requested_at,j.source_shared_state_version,
+                           e.worker_kind
                     FROM jaytec_worker_seats s
                     LEFT JOIN jaytec_jobs j ON j.job_id=s.current_job_id
+                    LEFT JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
                     WHERE s.state='RUNNING'
                       AND s.lease_expires_at IS NOT NULL
                       AND s.lease_expires_at <= now()
@@ -564,6 +601,17 @@ class PostgresFabricRemedies:
                     (bounded,),
                 )
                 seats = [dict(row) for row in cur.fetchall()]
+                cur.execute(
+                    """
+                    SELECT current_shared_state_version
+                    FROM jaytec_fabric_authority_state
+                    WHERE authority_id='FABRIC'
+                    """
+                )
+                authority = cur.fetchone()
+                current_shared_state_version = int(
+                    authority["current_shared_state_version"]
+                ) if authority is not None else 0
 
                 for seat in seats:
                     job_id = str(seat.get("current_job_id") or "")
@@ -598,11 +646,24 @@ class PostgresFabricRemedies:
                         continue
 
                     unresolved = self._unresolved_operations(cur, job_id)
-                    cancelled = job["fabric_state"] == "CANCEL_REQUESTED"
+                    cancelled = (
+                        job["fabric_state"] == "CANCEL_REQUESTED"
+                        or job.get("cancel_requested_at") is not None
+                    )
+                    stale_source = (
+                        current_shared_state_version <= 0
+                        or int(job.get("source_shared_state_version") or -1)
+                           != current_shared_state_version
+                    )
                     attempts = int(job.get("fabric_attempt_count") or 0)
                     max_attempts = int(job.get("fabric_max_attempts") or 1)
 
-                    if unresolved:
+                    if stale_source:
+                        new_status = "BLOCKED"
+                        new_fabric = "STALE"
+                        next_attempt = None
+                        action = "EXPIRED_WORKER_STALE_SOURCE"
+                    elif unresolved:
                         new_status = "BLOCKED"
                         new_fabric = "QUARANTINED"
                         next_attempt = None
@@ -686,11 +747,77 @@ class PostgresFabricRemedies:
                             ),
                         ),
                     )
+                    worker_kind = str(seat.get("worker_kind") or "").upper()
+                    if worker_kind:
+                        cur.execute(
+                            """
+                            UPDATE jaytec_fabric_circuits
+                            SET state='OPEN',
+                                consecutive_failures=consecutive_failures+1,
+                                open_until=now()+(60*interval '1 second'),
+                                probe_job_id=NULL,
+                                probe_started_at=NULL,
+                                last_failure=%s::jsonb,
+                                version=version+1,
+                                updated_at=now()
+                            WHERE worker_kind=%s
+                              AND state='HALF_OPEN'
+                              AND probe_job_id=%s
+                            """,
+                            (
+                                _json(
+                                    {
+                                        "reason":"HALF_OPEN_PROBE_WORKER_EXPIRED",
+                                        "job_id":job_id,
+                                    }
+                                ),
+                                worker_kind,
+                                job_id,
+                            ),
+                        )
                     results.append(
                         {
                             "job_id": job_id,
                             "seat_id": seat["seat_id"],
                             "action": action,
+                        }
+                    )
+
+                cur.execute(
+                    """
+                    UPDATE jaytec_fabric_circuits c
+                    SET state='OPEN',
+                        consecutive_failures=consecutive_failures+1,
+                        open_until=now()+(60*interval '1 second'),
+                        probe_job_id=NULL,
+                        probe_started_at=NULL,
+                        last_failure=%s::jsonb,
+                        version=version+1,
+                        updated_at=now()
+                    WHERE c.state='HALF_OPEN'
+                      AND (
+                        c.probe_job_id IS NULL
+                        OR NOT EXISTS (
+                          SELECT 1
+                          FROM jaytec_jobs j
+                          WHERE j.job_id=c.probe_job_id
+                            AND j.status='RUNNING'
+                            AND j.lease_expires_at IS NOT NULL
+                            AND j.lease_expires_at > now()
+                        )
+                      )
+                    RETURNING worker_kind
+                    """,
+                    (_json({"reason":"ORPHAN_HALF_OPEN_RECOVERED"}),),
+                )
+                recovered_circuits = [
+                    str(row["worker_kind"]) for row in cur.fetchall()
+                ]
+                for worker_kind in recovered_circuits:
+                    results.append(
+                        {
+                            "worker_kind":worker_kind,
+                            "action":"ORPHAN_HALF_OPEN_RECOVERED",
                         }
                     )
 
