@@ -711,6 +711,7 @@ class PostgresCanonicalWriterQueue:
                     LEFT JOIN jaytec_canonical_write_queue q ON q.review_id=r.review_id
                     WHERE r.decision='ACCEPT'
                       AND e.worker_kind='GITHUB_BRANCH_PR'
+                      AND e.result_destination->>'type'='CANONICAL_WRITE_CANDIDATE'
                       AND q.write_id IS NULL
                     ORDER BY r.created_at ASC,r.review_id ASC
                     LIMIT %s
