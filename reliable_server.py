@@ -61,6 +61,7 @@ DURABLE_WORKER_LEASE_S = int(os.environ.get("DURABLE_WORKER_LEASE_S", "300"))
 GUARDIAN_INTERVAL_S = float(os.environ.get("GUARDIAN_INTERVAL_S", "60"))
 MAX_PARALLEL_DURABLE_JOBS = int(os.environ.get("MAX_PARALLEL_DURABLE_JOBS", "4"))
 FIVE_SEAT_LEASE_S = int(os.environ.get("FIVE_SEAT_LEASE_S", "300"))
+FIVE_SEAT_WATCH_LEASE_S = int(os.environ.get("FIVE_SEAT_WATCH_LEASE_S", "30"))
 FIVE_SEAT_GUARDIAN_INTERVAL_S = float(os.environ.get("FIVE_SEAT_GUARDIAN_INTERVAL_S", "30"))
 FIVE_SEAT_REPORT_INTERVAL_S = float(os.environ.get("FIVE_SEAT_REPORT_INTERVAL_S", "3600"))
 
@@ -473,6 +474,7 @@ def create_mcp_app():
                 _execute_durable,
                 instance_id=instance_id,
                 lease_seconds=FIVE_SEAT_LEASE_S,
+                watch_lease_seconds=FIVE_SEAT_WATCH_LEASE_S,
                 guardian_interval_seconds=FIVE_SEAT_GUARDIAN_INTERVAL_S,
                 report_interval_seconds=FIVE_SEAT_REPORT_INTERVAL_S,
             )
