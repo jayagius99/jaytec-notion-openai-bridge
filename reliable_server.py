@@ -677,6 +677,9 @@ def create_mcp_app():
                 files=list(spec.get("files") or []),
                 pull_request=dict(spec.get("pull_request") or {}),
                 priority=int(priority),
+                canonical_write_intent=bool(
+                    spec.get("canonical_write_intent", False)
+                ),
             )
             return _json({
                 "available": True,
