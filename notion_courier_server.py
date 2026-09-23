@@ -267,10 +267,19 @@ class JaytecCourierRuntime:
                 deadline=deadline,
             )
         except Exception as exc:
+            error_text = str(exc)
+            error_code = "UNCLASSIFIED_RUNTIME_ERROR"
+            if error_text == "fabric_authority_state_uninitialized":
+                error_code = "FABRIC_AUTHORITY_STATE_UNINITIALIZED"
+            elif error_text == "admission_probe_job_id_missing":
+                error_code = "ADMISSION_PROBE_JOB_ID_MISSING"
+            elif error_text.startswith("stale_source_shared_state_version:"):
+                error_code = "STALE_SOURCE_SHARED_STATE_VERSION"
             result = {
                 "schema_version": "JAYTEC_FS08_PRODUCTION_ADMISSION_PROBE_V1",
                 "passed": False,
                 "error_class": type(exc).__name__,
+                "error_code": error_code,
             }
         print(
             "FIVE_SEAT_PROD_ADMISSION_PROBE="
@@ -303,6 +312,14 @@ class JaytecCourierRuntime:
         try:
             while True:
                 service = self.fabric_service.status()
+                authority_state = (
+                    self.fabric_authority.current_state()
+                    if self.fabric_authority is not None
+                    else {}
+                )
+                authority_source_version = int(
+                    authority_state.get("current_shared_state_version") or 0
+                )
                 report = self.fabric_reporter.last_60_minutes(
                     window_minutes=60
                 )
@@ -332,6 +349,8 @@ class JaytecCourierRuntime:
                     "watch_leader_matches_instance": (
                         str(watch.get("leader") or "") == expected_leader
                     ),
+                    "authority_source_shared_state_version": authority_source_version,
+                    "authority_ready": authority_source_version > 0,
                     "fabric_error_count": len(errors),
                 }
                 snapshot["ready"] = bool(
@@ -341,6 +360,7 @@ class JaytecCourierRuntime:
                     and seat_ids == expected_seats
                     and snapshot["watch_healthy"]
                     and snapshot["watch_leader_matches_instance"]
+                    and snapshot["authority_ready"]
                     and snapshot["fabric_error_count"] == 0
                 )
                 if snapshot["ready"] or time.monotonic() >= deadline:
