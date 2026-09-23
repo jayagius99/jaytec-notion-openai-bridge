@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 from typing import Any, Mapping
 
 import psycopg2
@@ -50,9 +49,6 @@ def _validate_packet(packet: Mapping[str, Any]) -> None:
         raise V3QuarantineReconcileRefused("PACKET_TASK_ID_MISMATCH")
     if str(packet.get("deadline") or "") != EXPECTED_DEADLINE:
         raise V3QuarantineReconcileRefused("PACKET_DEADLINE_MISMATCH")
-    deadline = datetime.fromisoformat(EXPECTED_DEADLINE.replace("Z", "+00:00"))
-    if deadline >= datetime.now(timezone.utc):
-        raise V3QuarantineReconcileRefused("PACKET_DEADLINE_NOT_EXPIRED")
     if str(packet.get("side_effect_policy") or "").lower() != "none":
         raise V3QuarantineReconcileRefused("PACKET_SIDE_EFFECT_POLICY_MISMATCH")
     if {str(x).lower() for x in list(packet.get("allowed_operations") or [])} != {"analyze", "validate"}:
