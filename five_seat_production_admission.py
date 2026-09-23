@@ -143,6 +143,30 @@ def _recovery_count(report: Mapping[str, Any], job_id: str) -> int:
     )
 
 
+def wait_for_local_watch(
+    *,
+    reporter: Any,
+    expected_leader: str,
+    timeout_seconds: float = 90.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    expected = str(expected_leader or "").strip()
+    if not expected:
+        raise ValueError("expected_leader is required")
+    stop_at = monotonic_fn() + max(1.0, float(timeout_seconds))
+    last_watch: dict[str, Any] = {}
+    while True:
+        report = reporter.last_60_minutes(window_minutes=60)
+        watch = dict(report.get("watch") or {})
+        last_watch = watch
+        if bool(watch.get("healthy")) and str(watch.get("leader") or "") == expected:
+            return watch
+        if monotonic_fn() >= stop_at:
+            raise RuntimeError("admission_probe_local_watch_not_ready")
+        sleep_fn(0.25)
+
+
 def run_probe(
     *,
     database_url: str,
