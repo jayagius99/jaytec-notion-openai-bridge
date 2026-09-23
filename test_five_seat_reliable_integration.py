@@ -42,11 +42,15 @@ class TestFiveSeatReliableServerIntegration(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('any(item not in {"codex", "gemini"} for item in plan)', source)
-        self.assertIn("FIVE_SEAT_LOW_RISK_V1 forbids specialist side-effect operations", source)
-        self.assertIn('"mode": "ZERO_SPEND"', source)
-        self.assertIn('"provider_mode": "FREE_ONLY"', source)
-        self.assertIn('authority_class="READ_ONLY"', source)
-        self.assertIn('concurrency_class="A"', source)
+        self.assertIn("submit_low_risk_task_packet", source)
+        policy = Path(__file__).with_name("five_seat_service.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("FIVE_SEAT_LOW_RISK_V1 requires side_effect_policy=none", policy)
+        self.assertIn('"mode": "ZERO_SPEND"', policy)
+        self.assertIn('"provider_mode": "FREE_ONLY"', policy)
+        self.assertIn('authority_class="READ_ONLY"', policy)
+        self.assertIn('concurrency_class="A"', policy)
 
 
 if __name__ == "__main__":
