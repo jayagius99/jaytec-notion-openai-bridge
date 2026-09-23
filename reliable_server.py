@@ -11,7 +11,16 @@ from openai import OpenAI
 
 import server as legacy_server
 from circuit_breaker import CircuitBreaker, CircuitOpenError
+from durable_tasks import contains_secret_material
 from durable_tasks_runtime import ReliableDurableTaskQueue, ReliableDurableTaskWorker
+from five_seat_authority import PostgresFabricAuthority
+from five_seat_queue import PostgresFabricQueue
+from five_seat_reporting import FiveSeatReporter
+from five_seat_service import (
+    FiveSeatFabricService,
+    TASK_PACKET_CAPABILITY,
+    TASK_PACKET_WORKER_KIND,
+)
 from guardian_runtime import ReliabilityGuardian
 from idempotency_postgres import PostgresExecutionRegistry
 from orchestration import (
@@ -19,6 +28,8 @@ from orchestration import (
     PacketValidationError,
     ProviderUnavailableError,
     RateLimitError,
+    parse_packet_json,
+    validate_packet,
 )
 from reliability_registry import TransientAwareRegistry
 from specialist_adapters import (
@@ -50,6 +61,13 @@ DURABLE_WORKER_POLL_S = float(os.environ.get("DURABLE_WORKER_POLL_S", "1"))
 DURABLE_WORKER_LEASE_S = int(os.environ.get("DURABLE_WORKER_LEASE_S", "300"))
 GUARDIAN_INTERVAL_S = float(os.environ.get("GUARDIAN_INTERVAL_S", "60"))
 MAX_PARALLEL_DURABLE_JOBS = int(os.environ.get("MAX_PARALLEL_DURABLE_JOBS", "4"))
+FIVE_SEAT_LEASE_S = int(os.environ.get("FIVE_SEAT_LEASE_S", "300"))
+FIVE_SEAT_GUARDIAN_INTERVAL_S = float(os.environ.get("FIVE_SEAT_GUARDIAN_INTERVAL_S", "30"))
+FIVE_SEAT_REPORT_INTERVAL_S = float(os.environ.get("FIVE_SEAT_REPORT_INTERVAL_S", "3600"))
+
+
+def _five_seat_enabled() -> bool:
+    return legacy_server.five_seat_fabric_enabled()
 
 
 _ORIGINAL_EXECUTE = legacy_server._execute_task_packet_json
@@ -310,6 +328,11 @@ def create_mcp_app():
     durable_codex_circuit: Optional[CircuitBreaker] = None
     durable_gemini_circuit: Optional[CircuitBreaker] = None
     durable_sol_circuit: Optional[CircuitBreaker] = None
+    fabric_queue: Optional[PostgresFabricQueue] = None
+    fabric_authority: Optional[PostgresFabricAuthority] = None
+    fabric_service: Optional[FiveSeatFabricService] = None
+    fabric_reporter: Optional[FiveSeatReporter] = None
+    fabric_enabled = _five_seat_enabled()
 
     if legacy_server.DATABASE_URL:
         queue = ReliableDurableTaskQueue(
@@ -439,23 +462,41 @@ def create_mcp_app():
             return value
 
         instance_id = os.environ.get("RENDER_INSTANCE_ID", "").strip() or socket.gethostname()
-        worker = ReliableDurableWorkerPool(
-            queue,
-            _execute_durable,
-            instance_id=instance_id,
-            worker_count=MAX_PARALLEL_DURABLE_JOBS,
-            poll_seconds=DURABLE_WORKER_POLL_S,
-            lease_seconds=DURABLE_WORKER_LEASE_S,
-        )
-        guardian_loop = GuardianBackgroundLoop(
-            guardian,
-            queue,
-            interval_seconds=GUARDIAN_INTERVAL_S,
-        )
-        if DURABLE_WORKER_ENABLED:
-            worker.start()
-        if GUARDIAN_LOOP_ENABLED:
-            guardian_loop.start()
+        if fabric_enabled:
+            # One execution owner only. The legacy durable background worker and
+            # legacy Guardian loop stay stopped while the five-seat fabric owns
+            # admission/execution/review/recovery.
+            fabric_queue = PostgresFabricQueue(legacy_server.DATABASE_URL)
+            fabric_authority = PostgresFabricAuthority(legacy_server.DATABASE_URL)
+            fabric_reporter = FiveSeatReporter(legacy_server.DATABASE_URL)
+            fabric_service = FiveSeatFabricService(
+                legacy_server.DATABASE_URL,
+                _execute_durable,
+                instance_id=instance_id,
+                lease_seconds=FIVE_SEAT_LEASE_S,
+                guardian_interval_seconds=FIVE_SEAT_GUARDIAN_INTERVAL_S,
+                report_interval_seconds=FIVE_SEAT_REPORT_INTERVAL_S,
+            )
+            fabric_service.verify_ready()
+            fabric_service.start()
+        else:
+            worker = ReliableDurableWorkerPool(
+                queue,
+                _execute_durable,
+                instance_id=instance_id,
+                worker_count=MAX_PARALLEL_DURABLE_JOBS,
+                poll_seconds=DURABLE_WORKER_POLL_S,
+                lease_seconds=DURABLE_WORKER_LEASE_S,
+            )
+            guardian_loop = GuardianBackgroundLoop(
+                guardian,
+                queue,
+                interval_seconds=GUARDIAN_INTERVAL_S,
+            )
+            if DURABLE_WORKER_ENABLED:
+                worker.start()
+            if GUARDIAN_LOOP_ENABLED:
+                guardian_loop.start()
 
     @mcp.tool
     def submit_task_packet_durable(
@@ -467,6 +508,13 @@ def create_mcp_app():
         """Persist a specialist packet and immediately return a pollable job handle."""
         if queue is None:
             return _json({"available": False, "reason": "DATABASE_URL_NOT_CONFIGURED"})
+        if fabric_enabled:
+            return _json({
+                "available": True,
+                "accepted": False,
+                "reason": "FIVE_SEAT_FABRIC_OWNS_EXECUTION",
+                "preferred_submit_tool": "submit_task_packet_five_seat",
+            })
         try:
             snapshot = queue.submit(
                 packet_json,
@@ -486,6 +534,147 @@ def create_mcp_app():
                 "accepted": False,
                 "error_class": type(exc).__name__,
                 "error": str(exc),
+            })
+
+    @mcp.tool
+    def submit_task_packet_five_seat(
+        packet_json: str,
+        source_shared_state_version: int,
+        priority: int = 100,
+    ) -> str:
+        """Submit one zero-spend specialist packet to the WATCH-controlled five-seat fabric."""
+        if not fabric_enabled:
+            return _json({
+                "available": False,
+                "accepted": False,
+                "reason": "FIVE_SEAT_FABRIC_DISABLED",
+            })
+        if fabric_queue is None or fabric_authority is None:
+            return _json({
+                "available": False,
+                "accepted": False,
+                "reason": "FIVE_SEAT_FABRIC_NOT_READY",
+            })
+        try:
+            packet, parse_errors = parse_packet_json(packet_json)
+            if packet is None:
+                raise PacketValidationError(";".join(parse_errors))
+            validation = validate_packet(packet)
+            if not validation.ok:
+                raise PacketValidationError(";".join(validation.errors))
+            if contains_secret_material(packet):
+                raise PacketValidationError("packet_contains_secret_material")
+
+            plan = [str(item).strip().lower() for item in packet.get("specialist_plan", [])]
+            if not plan or any(item not in {"codex", "gemini"} for item in plan):
+                raise PacketValidationError(
+                    "FIVE_SEAT_LOW_RISK_V1 permits only codex/gemini free-primary roles"
+                )
+            if list(packet.get("allowed_operations") or []):
+                raise PacketValidationError(
+                    "FIVE_SEAT_LOW_RISK_V1 forbids specialist side-effect operations"
+                )
+
+            bounded = copy.deepcopy(packet)
+            bounded["max_retries"] = 0
+            objective = str(
+                bounded.get("intent")
+                or bounded.get("request")
+                or "JAYTEC specialist packet"
+            )[:4000]
+            task_id = str(bounded.get("task_id") or "").strip()
+            subtask_id = str(bounded.get("subtask_id") or "").strip() or None
+            idempotency_key = str(bounded.get("idempotency_key") or "").strip()
+            if not task_id or not idempotency_key:
+                raise PacketValidationError("task_id/idempotency_key required")
+
+            snapshot = fabric_queue.submit(
+                task_id=task_id,
+                subtask_id=subtask_id,
+                objective=objective,
+                worker_kind=TASK_PACKET_WORKER_KIND,
+                idempotency_key="five-seat:" + idempotency_key,
+                source_shared_state_version=int(source_shared_state_version),
+                authority_class="READ_ONLY",
+                concurrency_class="A",
+                priority=int(priority),
+                max_attempts=3,
+                max_reworks=2,
+                required_capabilities={TASK_PACKET_CAPABILITY},
+                read_scope={f"specialist:{name}" for name in plan},
+                mutation_scope=set(),
+                resource_scope={"specialists": plan},
+                dependencies=set(),
+                collision_key="task-packet:" + task_id,
+                cost_policy={
+                    "mode": "ZERO_SPEND",
+                    "allow_paid": False,
+                    "max_cost_usd": 0,
+                    "provider_mode": "FREE_ONLY",
+                },
+                evidence_standard={
+                    "watch_review_required": True,
+                    "whole_packet_accept_required": True,
+                },
+                stop_conditions={
+                    "provider_fallback": "FAIL_CLOSED",
+                    "side_effect_request": "FAIL_CLOSED",
+                },
+                result_destination={
+                    "type": "WATCH_ATTESTED_TASK_PACKET",
+                    "task_id": task_id,
+                },
+                payload={
+                    "packet_json": json.dumps(bounded, ensure_ascii=False, sort_keys=True),
+                },
+            )
+            return _json({
+                "available": True,
+                "accepted": True,
+                "preferred_poll_tool": "five_seat_job_status",
+                "snapshot": snapshot,
+            })
+        except (PacketValidationError, ValueError, RuntimeError) as exc:
+            return _json({
+                "available": True,
+                "accepted": False,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
+    def five_seat_job_status(job_id: str) -> str:
+        """Read one five-seat job and its latest WATCH attestation."""
+        if not fabric_enabled or fabric_service is None:
+            return _json({"available": False, "reason": "FIVE_SEAT_FABRIC_DISABLED"})
+        try:
+            return _json({"available": True, **fabric_service.job_status(job_id)})
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:500],
+            })
+
+    @mcp.tool
+    def five_seat_status() -> str:
+        """Return current five-seat host/seat state without mutating it."""
+        if not fabric_enabled or fabric_service is None:
+            return _json({"available": False, "reason": "FIVE_SEAT_FABRIC_DISABLED"})
+        return _json({"available": True, **fabric_service.status()})
+
+    @mcp.tool
+    def watch_last_60_minutes() -> str:
+        """Return the WATCH delta report required by the owner operating contract."""
+        if not fabric_enabled or fabric_reporter is None:
+            return _json({"available": False, "reason": "FIVE_SEAT_FABRIC_DISABLED"})
+        try:
+            return _json({"available": True, **fabric_reporter.last_60_minutes(window_minutes=60)})
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:500],
             })
 
     @mcp.tool
@@ -521,15 +710,22 @@ def create_mcp_app():
         return _json({
             "runtime_id": RUNTIME_ID,
             "database_available": True,
-            "preferred_specialist_execution": "submit_task_packet_durable -> task_packet_status",
+            "preferred_specialist_execution": (
+                "submit_task_packet_five_seat -> five_seat_job_status"
+                if fabric_enabled
+                else "submit_task_packet_durable -> task_packet_status"
+            ),
             "legacy_sync_execute_task_packet": "compatibility_only_bounded_single-attempt",
             "legacy_sync_provider_timeout_seconds": LEGACY_SYNC_PROVIDER_TIMEOUT_S,
-            "durable_worker_enabled": DURABLE_WORKER_ENABLED,
+            "five_seat_fabric_enabled": fabric_enabled,
+            "five_seat_service": fabric_service.status() if fabric_service else None,
+            "legacy_durable_worker_suppressed_by_fabric": bool(fabric_enabled),
+            "durable_worker_enabled": bool(DURABLE_WORKER_ENABLED and not fabric_enabled),
             "durable_worker_alive": bool(worker and worker.alive),
             "durable_worker_count": worker.worker_count if worker else 0,
             "durable_worker_alive_count": worker.alive_count if worker else 0,
             "durable_worker_has_lease_heartbeat": bool(worker),
-            "guardian_loop_enabled": GUARDIAN_LOOP_ENABLED,
+            "guardian_loop_enabled": bool(GUARDIAN_LOOP_ENABLED and not fabric_enabled),
             "guardian_loop_alive": bool(guardian_loop and guardian_loop.alive),
             "guardian_runtime": "ReliabilityGuardian",
             "durable_codex_circuit": durable_codex_circuit.snapshot() if durable_codex_circuit else None,
@@ -596,6 +792,11 @@ def create_mcp_app():
     @mcp.tool
     def durable_worker_kick() -> str:
         """Run one worker iteration for diagnostics when background execution is disabled."""
+        if fabric_enabled:
+            return _json({
+                "available": False,
+                "reason": "FIVE_SEAT_FABRIC_OWNS_EXECUTION",
+            })
         if worker is None:
             return _json({"available": False, "reason": "DATABASE_URL_NOT_CONFIGURED"})
         try:
@@ -613,6 +814,11 @@ def create_mcp_app():
         "guardian": guardian,
         "guardian_loop": guardian_loop,
         "workload_read_model": workload_read_model,
+        "five_seat_enabled": fabric_enabled,
+        "five_seat_queue": fabric_queue,
+        "five_seat_authority": fabric_authority,
+        "five_seat_service": fabric_service,
+        "five_seat_reporter": fabric_reporter,
     }
     return mcp
 
