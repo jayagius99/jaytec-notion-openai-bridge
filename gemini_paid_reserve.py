@@ -60,6 +60,10 @@ def gemini_paid_reserve_errors(packet: Mapping[str, Any]) -> tuple[str, ...]:
 
     if context.get("cost_policy") != GEMINI_PAID_RESERVE_COST_POLICY:
         errors.append("gemini_paid_reserve_cost_policy_required")
+    if context.get("authority_controller") != "CHATGPT_OPENAI_LEAD":
+        errors.append("gemini_paid_reserve_chatgpt_authority_required")
+    if context.get("specialist_authority") != "SUBORDINATE":
+        errors.append("gemini_paid_reserve_specialist_must_be_subordinate")
 
     attempted = context.get("free_routes_attempted")
     if (
