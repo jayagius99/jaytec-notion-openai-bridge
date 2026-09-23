@@ -12,7 +12,7 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
         self.assertEqual(packet["task_id"], admission.PROBE_TASK_ID)
         self.assertEqual(
             admission.PROBE_TASK_ID,
-            "FS08-PRODUCTION-ADMISSION-003",
+            "FS08-PRODUCTION-ADMISSION-004",
         )
         self.assertEqual(
             packet["workflow_id"],
@@ -40,7 +40,7 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(
             first["idempotency_key"],
-            "fs08-production-admission-v3",
+            "fs08-production-admission-v4",
         )
 
     def test_seat_evidence_is_job_specific(self):
@@ -62,6 +62,17 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
         self.assertEqual(evidence["seats_touched"], ["WORKER-SEAT-1"])
         self.assertEqual(evidence["claim_count"], 1)
         self.assertEqual(evidence["release_count"], 1)
+
+    def test_exact_event_evidence_is_job_local_and_not_seat_aggregate(self):
+        evidence = admission._event_evidence([
+            {"event_type": "WORKER_SEAT_CLAIMED", "payload": {"seat_id": "WORKER-SEAT-1"}},
+            {"event_type": "WORKER_HANDOFF_COMMITTED_AND_SEAT_RELEASED", "payload": {"seat_id": "WORKER-SEAT-1"}},
+            {"event_type": "WATCH_REVIEW_DECISION", "payload": {}},
+        ])
+        self.assertEqual(evidence["seats_touched"], ["WORKER-SEAT-1"])
+        self.assertEqual(evidence["claim_count"], 1)
+        self.assertEqual(evidence["release_count"], 1)
+        self.assertEqual(evidence["recovery_event_count"], 0)
 
     def test_recovery_count_is_job_specific(self):
         report = {
@@ -187,6 +198,15 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
             admission,
             "submit_low_risk_task_packet",
             return_value={"job_id": "fabric-proof"},
+        ), mock.patch.object(
+            admission,
+            "_exact_job_event_evidence",
+            return_value={
+                "seats_touched": ["WORKER-SEAT-3"],
+                "claim_count": 1,
+                "release_count": 1,
+                "recovery_event_count": 0,
+            },
         ), mock.patch.object(
             admission,
             "_latest_handoff_evidence",
