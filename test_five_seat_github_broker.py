@@ -254,7 +254,8 @@ class TestFs09StaticIntegration(unittest.TestCase):
     def test_broker_is_explicit_opt_in(self):
         source = open("reliable_server.py", encoding="utf-8").read()
         self.assertIn('FIVE_SEAT_GITHUB_BROKER_ENABLED', source)
-        self.assertIn('os.environ.get("FIVE_SEAT_GITHUB_BROKER_ENABLED", "0")', source)
+        self.assertIn("FIVE_SEAT_GITHUB_BROKER_ENABLED = os.environ.get(", source)
+        self.assertIn('"FIVE_SEAT_GITHUB_BROKER_ENABLED", "0"', source)
         self.assertIn("if FIVE_SEAT_GITHUB_BROKER_ENABLED:", source)
 
     def test_no_merge_or_deploy_surface(self):
