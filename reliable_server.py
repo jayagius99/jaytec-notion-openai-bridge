@@ -18,8 +18,7 @@ from five_seat_queue import PostgresFabricQueue
 from five_seat_reporting import FiveSeatReporter
 from five_seat_service import (
     FiveSeatFabricService,
-    TASK_PACKET_CAPABILITY,
-    TASK_PACKET_WORKER_KIND,
+    submit_low_risk_task_packet,
 )
 from guardian_runtime import ReliabilityGuardian
 from idempotency_postgres import PostgresExecutionRegistry
@@ -556,77 +555,11 @@ def create_mcp_app():
                 "reason": "FIVE_SEAT_FABRIC_NOT_READY",
             })
         try:
-            packet, parse_errors = parse_packet_json(packet_json)
-            if packet is None:
-                raise PacketValidationError(";".join(parse_errors))
-            validation = validate_packet(packet)
-            if not validation.ok:
-                raise PacketValidationError(";".join(validation.errors))
-            if contains_secret_material(packet):
-                raise PacketValidationError("packet_contains_secret_material")
-
-            plan = [str(item).strip().lower() for item in packet.get("specialist_plan", [])]
-            if not plan or any(item not in {"codex", "gemini"} for item in plan):
-                raise PacketValidationError(
-                    "FIVE_SEAT_LOW_RISK_V1 permits only codex/gemini free-primary roles"
-                )
-            if list(packet.get("allowed_operations") or []):
-                raise PacketValidationError(
-                    "FIVE_SEAT_LOW_RISK_V1 forbids specialist side-effect operations"
-                )
-
-            bounded = copy.deepcopy(packet)
-            bounded["max_retries"] = 0
-            objective = str(
-                bounded.get("intent")
-                or bounded.get("request")
-                or "JAYTEC specialist packet"
-            )[:4000]
-            task_id = str(bounded.get("task_id") or "").strip()
-            subtask_id = str(bounded.get("subtask_id") or "").strip() or None
-            idempotency_key = str(bounded.get("idempotency_key") or "").strip()
-            if not task_id or not idempotency_key:
-                raise PacketValidationError("task_id/idempotency_key required")
-
-            snapshot = fabric_queue.submit(
-                task_id=task_id,
-                subtask_id=subtask_id,
-                objective=objective,
-                worker_kind=TASK_PACKET_WORKER_KIND,
-                idempotency_key="five-seat:" + idempotency_key,
+            snapshot = submit_low_risk_task_packet(
+                fabric_queue,
+                packet_json=packet_json,
                 source_shared_state_version=int(source_shared_state_version),
-                authority_class="READ_ONLY",
-                concurrency_class="A",
                 priority=int(priority),
-                max_attempts=3,
-                max_reworks=2,
-                required_capabilities={TASK_PACKET_CAPABILITY},
-                read_scope={f"specialist:{name}" for name in plan},
-                mutation_scope=set(),
-                resource_scope={"specialists": plan},
-                dependencies=set(),
-                collision_key="task-packet:" + task_id,
-                cost_policy={
-                    "mode": "ZERO_SPEND",
-                    "allow_paid": False,
-                    "max_cost_usd": 0,
-                    "provider_mode": "FREE_ONLY",
-                },
-                evidence_standard={
-                    "watch_review_required": True,
-                    "whole_packet_accept_required": True,
-                },
-                stop_conditions={
-                    "provider_fallback": "FAIL_CLOSED",
-                    "side_effect_request": "FAIL_CLOSED",
-                },
-                result_destination={
-                    "type": "WATCH_ATTESTED_TASK_PACKET",
-                    "task_id": task_id,
-                },
-                payload={
-                    "packet_json": json.dumps(bounded, ensure_ascii=False, sort_keys=True),
-                },
             )
             return _json({
                 "available": True,
