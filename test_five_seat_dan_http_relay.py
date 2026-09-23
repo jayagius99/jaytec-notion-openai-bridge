@@ -19,7 +19,9 @@ from dan_relay_store import (
 
 class TestDanRelayStore(unittest.TestCase):
     def setUp(self):
-        self.url = os.environ["DATABASE_URL"]
+        self.url = os.environ.get("DATABASE_URL", "").strip()
+        if not self.url:
+            self.skipTest("DATABASE_URL required")
         self.store = PostgresDanRelay(
             self.url,
             poll_interval_seconds=0.01,
