@@ -23,6 +23,10 @@ import uvicorn
 
 import server as legacy_server
 from meeting_bus import MeetingBusMiddleware
+from five_seat_authority import PostgresFabricAuthority
+from five_seat_queue import PostgresFabricQueue
+from five_seat_reporting import FiveSeatReporter
+from five_seat_service import FiveSeatFabricService, submit_low_risk_task_packet
 from circuit_breaker import CircuitBreaker
 from orchestration import ExecutionRegistry
 from notion_courier_policy import (
@@ -153,6 +157,35 @@ class JaytecCourierRuntime:
             openrouter_api_key_present=bool(legacy_server.OPENROUTER_API_KEY),
         )
 
+        self.fabric_enabled = legacy_server.five_seat_fabric_enabled()
+        self.fabric_queue = None
+        self.fabric_authority = None
+        self.fabric_reporter = None
+        self.fabric_service = None
+        if self.fabric_enabled:
+            if not legacy_server.DATABASE_URL:
+                raise RuntimeError(
+                    "FIVE_SEAT_FABRIC_ENABLED requires DATABASE_URL"
+                )
+            self.fabric_queue = PostgresFabricQueue(legacy_server.DATABASE_URL)
+            self.fabric_authority = PostgresFabricAuthority(legacy_server.DATABASE_URL)
+            self.fabric_reporter = FiveSeatReporter(legacy_server.DATABASE_URL)
+            self.fabric_service = FiveSeatFabricService(
+                legacy_server.DATABASE_URL,
+                self._execute_direct,
+                instance_id=os.environ.get("RENDER_INSTANCE_ID", "").strip() or "courier",
+                lease_seconds=int(os.environ.get("FIVE_SEAT_LEASE_S", "300")),
+                guardian_interval_seconds=float(
+                    os.environ.get("FIVE_SEAT_GUARDIAN_INTERVAL_S", "30")
+                ),
+                report_interval_seconds=float(
+                    os.environ.get("FIVE_SEAT_REPORT_INTERVAL_S", "3600")
+                ),
+            )
+            # Read-only schema gate. Startup never applies transformation DDL.
+            self.fabric_service.verify_ready()
+            self.fabric_service.start()
+
     def status(self) -> str:
         payload = json.loads(
             legacy_server._orchestration_status_json(
@@ -179,9 +212,24 @@ class JaytecCourierRuntime:
                 "sol_circuit": self.sol_circuit.snapshot(),
             }
         )
-        return json.dumps(payload, sort_keys=True)
+        if self.fabric_enabled and self.fabric_service and self.fabric_reporter:
+            report = self.fabric_reporter.last_60_minutes(window_minutes=60)
+            payload.update(
+                {
+                    "five_seat_fabric_enabled": True,
+                    "preferred_execution": "WATCH_CONTROLLED_FIVE_SEAT",
+                    "five_seat_service": self.fabric_service.status(),
+                    "watch": report.get("watch"),
+                    "watch_summary": report.get("summary"),
+                    "jay_action_required": report.get("jay_action_required"),
+                    "recent_owner_notifications": report.get("owner_notifications", [])[-20:],
+                }
+            )
+        else:
+            payload["five_seat_fabric_enabled"] = False
+        return json.dumps(payload, sort_keys=True, default=str)
 
-    def execute(self, packet_json: str) -> str:
+    def _execute_direct(self, packet_json: str) -> str:
         return legacy_server._execute_task_packet_json(
             packet_json,
             registry=self.registry,
@@ -190,6 +238,50 @@ class JaytecCourierRuntime:
             gemini_dispatch=self.gemini_dispatch,
             sol_dispatch=self.sol_dispatch,
         )
+
+    def execute(self, packet_json: str) -> str:
+        if not self.fabric_enabled:
+            return self._execute_direct(packet_json)
+        if self.fabric_queue is None or self.fabric_authority is None:
+            return json.dumps(
+                {
+                    "status": "FAILED_CLOSED",
+                    "reason": "FIVE_SEAT_FABRIC_NOT_READY",
+                },
+                sort_keys=True,
+            )
+        try:
+            authority = self.fabric_authority.current_state()
+            source_version = int(authority.get("current_shared_state_version") or 0)
+            if source_version <= 0:
+                raise RuntimeError("fabric_authority_state_uninitialized")
+            snapshot = submit_low_risk_task_packet(
+                self.fabric_queue,
+                packet_json=packet_json,
+                source_shared_state_version=source_version,
+                priority=100,
+            )
+            return json.dumps(
+                {
+                    "status": "ACCEPTED",
+                    "execution_mode": "WATCH_CONTROLLED_FIVE_SEAT",
+                    "job_id": snapshot.get("job_id"),
+                    "task_id": snapshot.get("task_id"),
+                    "fabric_state": snapshot.get("fabric_state"),
+                    "source_shared_state_version": source_version,
+                    "result_delivery": "WATCH_ATTESTED_DURABLE_OUTBOX",
+                },
+                sort_keys=True,
+                default=str,
+            )
+        except Exception as exc:
+            return json.dumps(
+                {
+                    "status": "FAILED_CLOSED",
+                    "reason": type(exc).__name__ + ":" + str(exc)[:800],
+                },
+                sort_keys=True,
+            )
 
 
 def create_mcp_app(runtime: CourierRuntime | None = None) -> FastMCP:
