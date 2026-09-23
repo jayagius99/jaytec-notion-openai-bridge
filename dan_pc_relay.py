@@ -262,6 +262,7 @@ def qwen_call(key: str, job: dict[str, Any]) -> tuple[dict[str, Any], str]:
         "objective": job.get("objective"),
         "worker_failure": job.get("worker_failure"),
         "watch_reason": job.get("watch_reason"),
+        "experience_context": experience_context(job),
     })
     payload = {
         "model": MODEL,
@@ -408,10 +409,14 @@ def cycle() -> int:
             validate_job(job)
             key = ensure_runtime()
             parsed, raw = qwen_call(key, job)
-            _, receipt = package_result(job, parsed, raw)
+            package, receipt = package_result(job, parsed, raw)
+            receipt["experience"] = record_experience(job, receipt)
+            (package / "receipt.json").write_text(
+                json.dumps(receipt, indent=2, sort_keys=True), encoding="utf-8"
+            )
             post_result(receipt)
         except Exception as exc:
-            post_result({
+            blocked = {
                 "schema": RESULT_MARKER,
                 "principal": job.get("principal"),
                 "status": "DAN_BLOCKED",
@@ -430,7 +435,27 @@ def cycle() -> int:
                 "limitations": [type(exc).__name__ + ":" + str(exc)[:1000]],
                 "recommended_next_action": "REVIEW_BLOCKER",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            module = experience_module()
+            if module is not None:
+                event = module.append_event({
+                    "type": "dan_execution_failure",
+                    "principal": job.get("principal"),
+                    "task_id": task_id,
+                    "assignment_name": job.get("assignment_name"),
+                    "original_job_id": job.get("original_job_id"),
+                    "original_handoff_id": job.get("original_handoff_id"),
+                    "error_class": type(exc).__name__,
+                    "error": str(exc)[:1000],
+                    "route_id": ROUTE_ID,
+                    "provider_spend_usd": 0,
+                })
+                blocked["experience"] = {
+                    "available": True,
+                    "event_id": event.get("event_id"),
+                    "repair_candidate_id": None,
+                }
+            post_result(blocked)
         done.add(task_id)
         changed = True
     if changed:
