@@ -51,6 +51,8 @@ def authorize_paid_reserve(p):
         ),
         "paid_reserve_authorized": True,
         "cost_policy": GEMINI_PAID_RESERVE_COST_POLICY,
+        "authority_controller": "CHATGPT_OPENAI_LEAD",
+        "specialist_authority": "SUBORDINATE",
     }
     return p
 
@@ -105,6 +107,14 @@ class TestGeminiPaidReservePolicy(unittest.TestCase):
         p["required_context"]["paid_reserve_authorized"] = False
         errors = gemini_paid_reserve_errors(p)
         self.assertIn("gemini_paid_reserve_paid_reserve_authorized_required", errors)
+
+    def test_chatgpt_control_authority_is_mandatory(self):
+        p = authorize_paid_reserve(packet())
+        p["required_context"]["authority_controller"] = "WORKER"
+        p["required_context"]["specialist_authority"] = "SELF_AUTHORIZED"
+        errors = gemini_paid_reserve_errors(p)
+        self.assertIn("gemini_paid_reserve_chatgpt_authority_required", errors)
+        self.assertIn("gemini_paid_reserve_specialist_must_be_subordinate", errors)
 
     def test_gemini_cannot_share_fanout_with_free_routes(self):
         p = authorize_paid_reserve(packet())
