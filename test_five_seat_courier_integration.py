@@ -20,6 +20,7 @@ class TestFiveSeatCourierIntegration(unittest.TestCase):
         self.assertIn('"watch_leader_matches_instance"', source)
         self.assertIn("seat_ids == expected_seats", source)
         self.assertIn("FIVE_SEAT_PROD_ADMISSION_PROBE", source)
+        self.assertIn("max_retries=0", source)
         self.assertIn("FIVE_SEAT_PROD_ADMISSION_DEADLINE", source)
         self.assertIn("run_production_admission_probe(", source)
         self.assertIn('name="fs08-production-admission-probe"', source)
