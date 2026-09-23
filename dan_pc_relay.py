@@ -27,6 +27,8 @@ GH = Path(r"C:\JAYTEC_BOOTSTRAP\Packages\GitHubCLI\bin\gh.exe")
 BASE = "http://127.0.0.1:18081"
 MODEL = r"C:\JAYTEC_BOOTSTRAP\Scratch\local-model-proof\qwen2.5-1.5b-instruct-q4_k_m.gguf"
 MODEL_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
+SERVER = Path(r"C:\\JAYTEC_BOOTSTRAP\\Scratch\\local-model-proof\\llama\\llama-server.exe")
+SERVER_SHA256 = "06f5c5463753a7a6fe729bb436a6d3ab5e71373527559339b42cec9fd7f1d27f"
 ROUTE_ID = "local-llama-127.0.0.1:18081"
 
 
@@ -36,6 +38,14 @@ def canonical(value: Any) -> str:
 
 def digest(value: Any) -> str:
     return hashlib.sha256(canonical(value).encode("utf-8")).hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def parse_time(value: str) -> datetime:
@@ -89,8 +99,12 @@ def save_state(state: dict[str, Any]) -> None:
 
 
 def ensure_runtime() -> str:
-    if not KEY_PATH.exists() or not START_SCRIPT.exists():
+    if not KEY_PATH.exists() or not START_SCRIPT.exists() or not SERVER.exists() or not Path(MODEL).exists():
         raise RuntimeError("QWEN_RUNTIME_CONFIG_MISSING")
+    if file_sha256(Path(MODEL)) != MODEL_SHA256:
+        raise RuntimeError("QWEN_MODEL_HASH_MISMATCH")
+    if file_sha256(SERVER) != SERVER_SHA256:
+        raise RuntimeError("QWEN_SERVER_HASH_MISMATCH")
     subprocess.run(
         ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(START_SCRIPT)],
         capture_output=True, text=True, timeout=30, check=True,
@@ -141,8 +155,15 @@ def qwen_call(key: str, job: dict[str, Any]) -> tuple[dict[str, Any], str]:
     raw = str((((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")).strip()
     if not raw:
         raise RuntimeError("QWEN_EMPTY_RESPONSE")
+    candidate = raw
+    if candidate.startswith("```"):
+        first_nl = candidate.find("\n")
+        if first_nl >= 0:
+            candidate = candidate[first_nl + 1:]
+        if candidate.rstrip().endswith("```"):
+            candidate = candidate.rstrip()[:-3].rstrip()
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(candidate)
         if not isinstance(parsed, dict):
             raise ValueError
     except Exception:
@@ -186,6 +207,7 @@ def package_result(job: dict[str, Any], parsed: dict[str, Any], raw: str) -> tup
         "route_id": ROUTE_ID,
         "exact_model_id": MODEL,
         "model_sha256": MODEL_SHA256,
+        "server_sha256": SERVER_SHA256,
         "provider_spend_usd": 0,
         "side_effects": "NONE",
         "package_path": str(root),
@@ -274,6 +296,7 @@ def cycle() -> int:
                 "route_id": ROUTE_ID,
                 "exact_model_id": MODEL,
                 "model_sha256": MODEL_SHA256,
+                "server_sha256": SERVER_SHA256,
                 "provider_spend_usd": 0,
                 "side_effects": "NONE",
                 "result": None,
@@ -291,18 +314,41 @@ def cycle() -> int:
     return 0
 
 
+def acquire_singleton():
+    if os.name != "nt":
+        return None
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.CreateMutexW(None, False, "Local\\JAYTEC_DAN_RECOVERY_SEAT_V1")
+    if not handle:
+        raise RuntimeError("DAN_RELAY_MUTEX_CREATE_FAILED")
+    if kernel32.GetLastError() == 183:
+        kernel32.CloseHandle(handle)
+        return 0
+    return handle
+
+
 def main() -> int:
     once = "--once" in sys.argv
+    mutex = acquire_singleton()
+    if mutex == 0:
+        print("DAN_RELAY_ALREADY_RUNNING", flush=True)
+        return 0
     RUNTIME.mkdir(parents=True, exist_ok=True)
     (ASSIGNMENTS / "Completed").mkdir(parents=True, exist_ok=True)
-    while True:
-        try:
-            cycle()
-        except Exception as exc:
-            print("DAN_RELAY_CYCLE_ERROR=" + type(exc).__name__ + ":" + str(exc)[:1000], flush=True)
-        if once:
-            return 0
-        time.sleep(5)
+    try:
+        while True:
+            try:
+                cycle()
+            except Exception as exc:
+                print("DAN_RELAY_CYCLE_ERROR=" + type(exc).__name__ + ":" + str(exc)[:1000], flush=True)
+            if once:
+                return 0
+            time.sleep(5)
+    finally:
+        if mutex and os.name == "nt":
+            import ctypes
+            ctypes.windll.kernel32.CloseHandle(mutex)
 
 
 if __name__ == "__main__":
