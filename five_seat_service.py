@@ -162,6 +162,41 @@ def build_task_packet_adapter(
         packet_json = payload.get("packet_json")
         if not isinstance(packet_json, str) or not packet_json.strip():
             raise RuntimeError("TASK_PACKET_PAYLOAD_MISSING")
+        fabric_context = payload.get("_fabric_context")
+        if isinstance(fabric_context, Mapping):
+            recovery = fabric_context.get("dan_recovery")
+            if isinstance(recovery, Mapping):
+                try:
+                    rebound = json.loads(packet_json)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("TASK_PACKET_RESULT_JSON_INVALID") from exc
+                if not isinstance(rebound, dict):
+                    raise RuntimeError("TASK_PACKET_RECOVERY_REBIND_INVALID")
+                required_context = rebound.get("required_context")
+                if required_context is None:
+                    required_context = {}
+                if not isinstance(required_context, Mapping):
+                    raise RuntimeError("TASK_PACKET_REQUIRED_CONTEXT_INVALID")
+                required_context = dict(required_context)
+                safe_recovery = {
+                    "source": "DAN_RECOVERY",
+                    "request_digest": recovery.get("request_digest"),
+                    "response_digest": recovery.get("response_digest"),
+                    "result": recovery.get("result"),
+                    "evidence": list(recovery.get("evidence") or [])[:20],
+                    "limitations": list(recovery.get("limitations") or [])[:20],
+                    "recommended_next_action": recovery.get("recommended_next_action"),
+                }
+                required_context["dan_recovery"] = safe_recovery
+                rebound["required_context"] = required_context
+                response_digest = str(recovery.get("response_digest") or "")
+                if len(response_digest) < 16:
+                    raise RuntimeError("DAN_RECOVERY_RESPONSE_DIGEST_INVALID")
+                base_idempotency = str(rebound.get("idempotency_key") or "")
+                rebound["idempotency_key"] = (
+                    base_idempotency[:175] + ":dan:" + response_digest[:16]
+                )[:200]
+                packet_json = json.dumps(rebound, ensure_ascii=False, sort_keys=True)
         raw = execute_packet(packet_json)
         if isinstance(raw, str):
             try:
