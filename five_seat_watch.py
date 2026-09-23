@@ -204,6 +204,7 @@ class PostgresWatchController:
                 cur.execute(
                     """
                     SELECT h.*,j.priority,j.fabric_state,j.checkpoint_ref,
+                           j.fabric_rework_count,j.fabric_max_reworks,
                            e.worker_kind,e.evidence_standard,e.result_destination
                     FROM jaytec_worker_handoffs h
                     JOIN jaytec_jobs j ON j.job_id=h.job_id
