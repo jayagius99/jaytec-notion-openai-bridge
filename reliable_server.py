@@ -14,6 +14,11 @@ from circuit_breaker import CircuitBreaker, CircuitOpenError
 from durable_tasks import contains_secret_material
 from durable_tasks_runtime import ReliableDurableTaskQueue, ReliableDurableTaskWorker
 from five_seat_authority import PostgresFabricAuthority
+from five_seat_github_broker import (
+    GitHubBranchPrBroker,
+    GitHubBrokerConfig,
+    submit_github_branch_pr_job,
+)
 from five_seat_queue import PostgresFabricQueue
 from five_seat_reporting import FiveSeatReporter
 from five_seat_service import (
@@ -63,6 +68,15 @@ MAX_PARALLEL_DURABLE_JOBS = int(os.environ.get("MAX_PARALLEL_DURABLE_JOBS", "4")
 FIVE_SEAT_LEASE_S = int(os.environ.get("FIVE_SEAT_LEASE_S", "300"))
 FIVE_SEAT_GUARDIAN_INTERVAL_S = float(os.environ.get("FIVE_SEAT_GUARDIAN_INTERVAL_S", "30"))
 FIVE_SEAT_REPORT_INTERVAL_S = float(os.environ.get("FIVE_SEAT_REPORT_INTERVAL_S", "3600"))
+FIVE_SEAT_GITHUB_BROKER_ENABLED = os.environ.get(
+    "FIVE_SEAT_GITHUB_BROKER_ENABLED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+JAYTEC_GITHUB_BROKER_TOKEN = os.environ.get("JAYTEC_GITHUB_BROKER_TOKEN", "").strip()
+JAYTEC_GITHUB_BROKER_REPOSITORIES = tuple(
+    item.strip()
+    for item in os.environ.get("JAYTEC_GITHUB_BROKER_REPOSITORIES", "").split(",")
+    if item.strip()
+)
 
 
 def _five_seat_enabled() -> bool:
@@ -331,6 +345,7 @@ def create_mcp_app():
     fabric_authority: Optional[PostgresFabricAuthority] = None
     fabric_service: Optional[FiveSeatFabricService] = None
     fabric_reporter: Optional[FiveSeatReporter] = None
+    github_broker: Optional[GitHubBranchPrBroker] = None
     fabric_enabled = _five_seat_enabled()
 
     if legacy_server.DATABASE_URL:
@@ -468,6 +483,13 @@ def create_mcp_app():
             fabric_queue = PostgresFabricQueue(legacy_server.DATABASE_URL)
             fabric_authority = PostgresFabricAuthority(legacy_server.DATABASE_URL)
             fabric_reporter = FiveSeatReporter(legacy_server.DATABASE_URL)
+            if FIVE_SEAT_GITHUB_BROKER_ENABLED:
+                github_broker = GitHubBranchPrBroker(
+                    GitHubBrokerConfig.build(
+                        JAYTEC_GITHUB_BROKER_TOKEN,
+                        JAYTEC_GITHUB_BROKER_REPOSITORIES,
+                    )
+                )
             fabric_service = FiveSeatFabricService(
                 legacy_server.DATABASE_URL,
                 _execute_durable,
@@ -475,6 +497,7 @@ def create_mcp_app():
                 lease_seconds=FIVE_SEAT_LEASE_S,
                 guardian_interval_seconds=FIVE_SEAT_GUARDIAN_INTERVAL_S,
                 report_interval_seconds=FIVE_SEAT_REPORT_INTERVAL_S,
+                github_broker=github_broker,
             )
             fabric_service.verify_ready()
             fabric_service.start()
@@ -576,6 +599,58 @@ def create_mcp_app():
             })
 
     @mcp.tool
+    def submit_github_branch_pr_five_seat(
+        spec_json: str,
+        source_shared_state_version: int,
+        priority: int = 100,
+    ) -> str:
+        """Submit one scoped branch/file/PR job; merge/deploy are not supported."""
+        if not fabric_enabled:
+            return _json({
+                "available": False,
+                "accepted": False,
+                "reason": "FIVE_SEAT_FABRIC_DISABLED",
+            })
+        if fabric_queue is None or fabric_authority is None or github_broker is None:
+            return _json({
+                "available": False,
+                "accepted": False,
+                "reason": "FIVE_SEAT_GITHUB_BROKER_DISABLED_OR_NOT_READY",
+            })
+        try:
+            spec = json.loads(spec_json)
+            if not isinstance(spec, dict):
+                raise ValueError("spec_json must decode to an object")
+            snapshot = submit_github_branch_pr_job(
+                fabric_queue,
+                task_id=str(spec.get("task_id") or ""),
+                subtask_id=str(spec.get("subtask_id") or "") or None,
+                objective=str(spec.get("objective") or ""),
+                idempotency_key=str(spec.get("idempotency_key") or ""),
+                source_shared_state_version=int(source_shared_state_version),
+                repository=str(spec.get("repository") or ""),
+                base_branch=str(spec.get("base_branch") or ""),
+                base_sha=str(spec.get("base_sha") or ""),
+                branch_slug=str(spec.get("branch_slug") or ""),
+                files=list(spec.get("files") or []),
+                pull_request=dict(spec.get("pull_request") or {}),
+                priority=int(priority),
+            )
+            return _json({
+                "available": True,
+                "accepted": True,
+                "preferred_poll_tool": "five_seat_job_status",
+                "snapshot": snapshot,
+            })
+        except (json.JSONDecodeError, ValueError, RuntimeError) as exc:
+            return _json({
+                "available": True,
+                "accepted": False,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
     def five_seat_job_status(job_id: str) -> str:
         """Read one five-seat job and its latest WATCH attestation."""
         if not fabric_enabled or fabric_service is None:
@@ -651,6 +726,8 @@ def create_mcp_app():
             "legacy_sync_execute_task_packet": "compatibility_only_bounded_single-attempt",
             "legacy_sync_provider_timeout_seconds": LEGACY_SYNC_PROVIDER_TIMEOUT_S,
             "five_seat_fabric_enabled": fabric_enabled,
+            "five_seat_github_broker_requested": FIVE_SEAT_GITHUB_BROKER_ENABLED,
+            "five_seat_github_broker_ready": github_broker is not None,
             "five_seat_service": fabric_service.status() if fabric_service else None,
             "legacy_durable_worker_suppressed_by_fabric": bool(fabric_enabled),
             "durable_worker_enabled": bool(DURABLE_WORKER_ENABLED and not fabric_enabled),
