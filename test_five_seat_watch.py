@@ -77,6 +77,17 @@ class TestFiveSeatWatchContract(unittest.TestCase):
         self.assertIn("pg_notify", watch)
         self.assertIn("Durable Postgres rows remain authority", signals)
 
+    def test_watch_leader_has_exact_fenced_release(self):
+        source = Path(__file__).with_name("five_seat_watch.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("def release_leader", source)
+        self.assertIn("AND lease_owner=%s", source)
+        self.assertIn("AND leader_epoch=%s", source)
+        self.assertIn("AND fence_token=%s", source)
+        self.assertIn("SET lease_owner=NULL", source)
+        self.assertIn("lease_expires_at=NULL", source)
+
 
 if __name__ == "__main__":
     unittest.main()
