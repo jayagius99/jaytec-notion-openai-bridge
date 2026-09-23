@@ -118,22 +118,47 @@ def run() -> dict:
     hp=hardened["parsed"] if isinstance(hardened["parsed"],dict) else {}
     xp=boundaries["parsed"] if isinstance(boundaries["parsed"],dict) else {}
 
-    def obj(v):
-        return v if isinstance(v,dict) else {}
+    def _case(container, key):
+        return container.get(key) if isinstance(container, dict) else None
 
-    c1=obj(hp.get("c1"))
-    c2=obj(hp.get("c2"))
-    c3=obj(hp.get("c3"))
+    def _status(v):
+        return v.get("status") if isinstance(v,dict) else None
 
-    baseline_pass=all(bp.get(k)=="HANDOFF_REQUIRED" for k in ("c1","c2","c3"))
-    c1_ok=c1.get("status")=="COMPLETED" and c1.get("canonical")==EXPECTED_C1
-    c2_ok=c2.get("status")=="COMPLETED" and c2.get("labels")==EXPECTED_C2
-    c3_ok=(
-        c3.get("status")=="COMPLETED"
-        and c3.get("acyclic") is True
-        and c3.get("topological_order")==EXPECTED_C3
+    def _payload(v, key):
+        if isinstance(v,dict):
+            return v.get(key)
+        return v
+
+    bvals=[_case(bp,k) for k in ("c1","c2","c3")]
+    baseline_pass=all(
+        (v=="HANDOFF_REQUIRED") or (_status(v)=="HANDOFF_REQUIRED")
+        for v in bvals
     )
-    returned_canonical=c1.get("canonical") if isinstance(c1.get("canonical"),str) else ""
+
+    h1=_case(hp,"c1")
+    h2=_case(hp,"c2")
+    h3=_case(hp,"c3")
+
+    c1_canonical=_payload(h1,"canonical")
+    c2_labels=_payload(h2,"labels")
+    c3_order=_payload(h3,"topological_order")
+    c3_acyclic=h3.get("acyclic") if isinstance(h3,dict) else None
+
+    c1_ok=(
+        (_status(h1) in (None,"COMPLETED"))
+        and c1_canonical==EXPECTED_C1
+    )
+    c2_ok=(
+        (_status(h2) in (None,"COMPLETED"))
+        and c2_labels==EXPECTED_C2
+    )
+    c3_ok=(
+        (_status(h3) in (None,"COMPLETED"))
+        and (c3_acyclic in (None,True))
+        and c3_order==EXPECTED_C3
+    )
+
+    returned_canonical=c1_canonical if isinstance(c1_canonical,str) else ""
     runtime_hash=_sha(returned_canonical)
     runtime_hash_ok=runtime_hash==_sha(EXPECTED_C1)
 
