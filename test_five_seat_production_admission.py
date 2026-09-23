@@ -11,6 +11,10 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
         )
         self.assertEqual(packet["task_id"], admission.PROBE_TASK_ID)
         self.assertEqual(
+            admission.PROBE_TASK_ID,
+            "FS08-PRODUCTION-ADMISSION-003",
+        )
+        self.assertEqual(
             packet["workflow_id"],
             "JAYTEC_ENGINEERING_FS08_PRODUCTION_ADMISSION_V1",
         )
@@ -36,7 +40,7 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(
             first["idempotency_key"],
-            "fs08-production-admission-v2",
+            "fs08-production-admission-v3",
         )
 
     def test_seat_evidence_is_job_specific(self):
