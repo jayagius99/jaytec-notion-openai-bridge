@@ -27,9 +27,21 @@ workflows, prompts, procedures and automation assets exposed through supported
 interfaces.
 
 ### Gemini
-May exist in explicit/legacy research routes elsewhere in JAYTEC, but is not in
-the default WATCH/Manus assistance trio unless the current owner/controller
-explicitly routes a task to it.
+Paid last-resort research/review reserve only. Gemini is never JAYTEC's default
+research route and is never a silent fallback. Normal research/review goes to
+DeepSeek first.
+
+A Gemini call is eligible only when ALL of these are true:
+- all suitable free routes are exhausted, including an attempted DeepSeek/reviewer route;
+- bounded evidence of that exhaustion is attached to the TaskPacket;
+- the remaining task specifically requires Gemini and records why;
+- paid-reserve authority is explicitly present;
+- cost policy is exactly PAID_BACKUP_ONLY;
+- Gemini is the only specialist in that terminal reserve packet;
+- retries are zero and side effects are none.
+
+If any condition is missing, JAYTEC fails closed and does not call Gemini.
+Provider availability or a configured API key never grants spend authority.
 
 ## WATCH/Manus assistance trio
 

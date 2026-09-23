@@ -27,6 +27,7 @@ from orchestration import (
 )
 
 from circuit_breaker import CircuitBreaker
+from gemini_paid_reserve import require_gemini_paid_reserve
 from jaytec_read import (
     JAYTEC_READ_FETCH_ENGINES,
     JAYTEC_READ_PROMPT,
@@ -112,7 +113,11 @@ Never include markdown fences or surrounding prose. Never include credentials or
 CODEX_CONTRACT = ENGINEERING_CONTRACT
 
 GEMINI_RESEARCH_MODE_V1_1 = """JAYTEC_GEMINI_RESEARCH_MODE v1.1.0
-ROLE: RESEARCH SPECIALIST. Treat each request as stateless.
+ROLE: PAID LAST-RESORT RESEARCH / REVIEW RESERVE. Treat each request as stateless.
+DeepSeek/reviewer is JAYTEC's normal research/review route. You may be called
+only after suitable free routes are exhausted and the task specifically
+requires Gemini. Never present yourself as the default route or a silent
+fallback.
 
 Return ONLY one JSON object (no markdown fences). Preserve TASK_ID and SUBTASK_ID.
 
@@ -670,6 +675,9 @@ def build_gemini_dispatch(
             )
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+        # Second, independent cost/routing boundary: even a direct adapter call
+        # cannot reach paid Gemini unless the terminal-reserve proof is present.
+        require_gemini_paid_reserve(packet)
         if not is_jaytec_read_packet(packet):
             return _single_with_format_retry(packet)
 
