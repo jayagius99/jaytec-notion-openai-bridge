@@ -132,6 +132,34 @@ class TestFiveSeatProductionServiceContract(unittest.TestCase):
         with self.assertRaises(RetryableAdapterError):
             build_task_packet_adapter(execute)({"packet_json": "{}"})
 
+    def test_watch_rolling_contention_is_transient_not_fabric_error(self):
+        from pathlib import Path
+
+        source = Path(__file__).with_name("five_seat_service.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("WatchLeaderUnavailable", source)
+        self.assertIn("except WatchLeaderUnavailable:", source)
+        self.assertIn("self._watch_contention_count += 1", source)
+        transient = source.index("except WatchLeaderUnavailable:")
+        generic = source.index("except Exception as exc:", transient)
+        self.assertLess(transient, generic)
+        block = source[transient:generic]
+        self.assertNotIn("self._errors.append", block)
+        self.assertIn("watch_transient_contention_count", source)
+        self.assertIn("watch_leader_owned_by_instance", source)
+
+    def test_watch_lease_is_independent_from_worker_lease(self):
+        from pathlib import Path
+
+        source = Path(__file__).with_name("five_seat_service.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("watch_lease_seconds: int = 30", source)
+        self.assertIn("self.watch_lease_seconds", source)
+        self.assertIn("lease_seconds=self.watch_lease_seconds", source)
+        self.assertIn("lease_seconds=self.lease_seconds", source)
+
     def test_service_source_uses_exactly_five_workers_and_no_schema_ddl(self):
         from pathlib import Path
 
