@@ -14,6 +14,11 @@ import psycopg2.extras
 from durable_tasks import SUCCESS_OVERALL_STATUSES, contains_secret_material
 from five_seat_adapters import AdapterRegistry, RetryableAdapterError
 from five_seat_guardian import FiveSeatGuardian
+from five_seat_github_broker import (
+    GITHUB_WORK_CAPABILITY,
+    GITHUB_WORKER_KIND,
+    GitHubBranchPrBroker,
+)
 from five_seat_queue import PostgresFabricQueue
 from five_seat_reporting import FiveSeatReporter
 from five_seat_runtime import PostgresFiveSeatScheduler
@@ -223,6 +228,7 @@ class FiveSeatFabricService:
         lease_seconds: int = 300,
         guardian_interval_seconds: float = 30.0,
         report_interval_seconds: float = 3600.0,
+        github_broker: GitHubBranchPrBroker | None = None,
     ):
         if not database_url:
             raise ValueError("database_url is required")
@@ -239,12 +245,19 @@ class FiveSeatFabricService:
         self.watch = PostgresWatchController(database_url)
         self.guardian = FiveSeatGuardian(database_url)
         self.reporter = FiveSeatReporter(database_url)
+        self.github_broker = github_broker
         self.registry = AdapterRegistry()
         self.registry.register(
             TASK_PACKET_WORKER_KIND,
             capabilities={TASK_PACKET_CAPABILITY},
             execute=build_task_packet_adapter(execute_packet),
         )
+        if self.github_broker is not None:
+            self.registry.register(
+                GITHUB_WORKER_KIND,
+                capabilities={GITHUB_WORK_CAPABILITY},
+                execute=self.github_broker.execute,
+            )
 
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -379,6 +392,8 @@ class FiveSeatFabricService:
                         or "FAILED_CLOSED"
                     ).upper()
 
+                    external_verification: dict[str, Any] = {}
+                    worker_kind = str(handoff.get("worker_kind") or "").upper()
                     if partial not in {
                         "NONE",
                         "VERIFIED_COMPLETE",
@@ -387,8 +402,30 @@ class FiveSeatFabricService:
                         decision = "BLOCK"
                         reason = "uncertain side-effect state requires quarantine"
                     elif overall == "SUCCESS" and not unresolved:
-                        decision = "ACCEPT"
-                        reason = "whole packet success independently verified"
+                        if worker_kind == GITHUB_WORKER_KIND:
+                            if self.github_broker is None:
+                                decision = "BLOCK"
+                                reason = "github mutation cannot be independently verified"
+                            else:
+                                try:
+                                    external_verification = dict(
+                                        self.github_broker.verify_result(result)
+                                    )
+                                except Exception as exc:
+                                    decision = "BLOCK"
+                                    reason = (
+                                        "github independent readback failed:"
+                                        + type(exc).__name__
+                                    )
+                                else:
+                                    decision = "ACCEPT"
+                                    reason = (
+                                        "github branch/PR/file state independently "
+                                        "read back by WATCH"
+                                    )
+                        else:
+                            decision = "ACCEPT"
+                            reason = "whole packet success independently verified"
                     elif overall in {"PARTIAL_SUCCESS", "NEEDS_VALIDATION"}:
                         decision = "REWORK"
                         reason = "bounded hardening/validation required"
@@ -401,11 +438,13 @@ class FiveSeatFabricService:
 
                     evidence = {
                         "service_id": FABRIC_SERVICE_ID,
+                        "worker_kind": worker_kind,
                         "whole_packet_status": overall,
                         "partial_side_effect_status": partial,
                         "unresolved_count": len(unresolved),
                         "result_sha256": result.get("result_sha256"),
                         "independent_watch_review": True,
+                        **external_verification,
                     }
                     self.watch.review(
                         token,
