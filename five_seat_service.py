@@ -18,7 +18,7 @@ from five_seat_queue import PostgresFabricQueue
 from five_seat_reporting import FiveSeatReporter
 from five_seat_runtime import PostgresFiveSeatScheduler
 from five_seat_signals import PostgresFabricSignal
-from five_seat_watch import PostgresWatchController, WatchStaleLeader
+from five_seat_watch import (\n    PostgresWatchController,\n    WatchLeaderUnavailable,\n    WatchLeaderToken,\n    WatchStaleLeader,\n)
 from five_seat_worker import FiveSeatWorker
 from orchestration import PacketValidationError, parse_packet_json, validate_packet
 from reliability_registry import transient_specialist_statuses
@@ -240,6 +240,8 @@ class FiveSeatFabricService:
         self._threads: list[threading.Thread] = []
         self._workers: list[FiveSeatWorker] = []
         self._errors: list[str] = []
+        self._watch_token: WatchLeaderToken | None = None
+        self._watch_token_lock = threading.Lock()
         self._started = False
 
     def verify_ready(self) -> dict[str, bool]:
@@ -286,6 +288,30 @@ class FiveSeatFabricService:
         self._stop.set()
         for worker in self._workers:
             worker.stop()
+        with self._watch_token_lock:
+            token = self._watch_token
+            self._watch_token = None
+        if token is not None:
+            try:
+                self.watch.release_leader(token)
+                print(
+                    "FIVE_SEAT_WATCH_LEADER_RELEASED="
+                    + json.dumps(
+                        {
+                            "owner": token.owner,
+                            "leader_epoch": token.leader_epoch,
+                            "fence_token": token.fence_token,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            except WatchStaleLeader:
+                pass
+            except Exception as exc:
+                self._errors.append(
+                    "watch_release:" + type(exc).__name__ + ":" + str(exc)[:500]
+                )
         self._started = False
 
     def _watch_loop(self) -> None:
@@ -299,12 +325,28 @@ class FiveSeatFabricService:
                         owner=owner,
                         lease_seconds=self.lease_seconds,
                     )
+                    with self._watch_token_lock:
+                        self._watch_token = token
                     last_heartbeat = time.time()
+                    print(
+                        "FIVE_SEAT_WATCH_LEADER_ACQUIRED="
+                        + json.dumps(
+                            {
+                                "owner": token.owner,
+                                "leader_epoch": token.leader_epoch,
+                                "fence_token": token.fence_token,
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
                 elif time.time() - last_heartbeat >= max(10.0, self.lease_seconds / 3):
                     token = self.watch.heartbeat(
                         token,
                         lease_seconds=self.lease_seconds,
                     )
+                    with self._watch_token_lock:
+                        self._watch_token = token
                     last_heartbeat = time.time()
 
                 for handoff in self.watch.pending_reviews(limit=100):
@@ -363,8 +405,14 @@ class FiveSeatFabricService:
                         reason=reason,
                         evidence=evidence,
                     )
+            except WatchLeaderUnavailable:
+                token = None
+                with self._watch_token_lock:
+                    self._watch_token = None
             except WatchStaleLeader:
                 token = None
+                with self._watch_token_lock:
+                    self._watch_token = None
             except Exception as exc:
                 self._errors.append(
                     "watch:" + type(exc).__name__ + ":" + str(exc)[:500]
