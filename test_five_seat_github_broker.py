@@ -28,6 +28,8 @@ class FakeGitHub:
         assert headers["Authorization"] == "Bearer test-token"
 
         if "/git/ref/heads/" in url and method == "GET":
+            if url.endswith("/git/ref/heads/main"):
+                return 200, {"object": {"sha": BASE_SHA}}
             if self.branch is None:
                 return 404, {"message": "not found"}
             return 200, {"object": {"sha": self.branch_head}}
@@ -36,6 +38,15 @@ class FakeGitHub:
             self.branch = body["ref"].split("refs/heads/", 1)[1]
             self.branch_head = body["sha"]
             return 201, {"object": {"sha": self.branch_head}}
+
+        if "/compare/" in url and method == "GET":
+            return 200, {
+                "merge_base_commit": {"sha": BASE_SHA},
+                "files": [
+                    {"filename": path, "status": "modified"}
+                    for path in sorted(self.files)
+                ],
+            }
 
         if "/contents/" in url and method == "GET":
             path = url.split("/contents/", 1)[1].split("?", 1)[0]
@@ -214,6 +225,18 @@ class TestFiveSeatGitHubBroker(unittest.TestCase):
             broker.execute(payload())
         self.assertIsNotNone(fake.branch)
         self.assertIsNone(fake.pr)
+
+    def test_existing_worker_branch_with_out_of_scope_diff_is_rejected(self):
+        broker, fake = self.broker()
+        fake.branch = "watch/worker-12-demo-safe-change"
+        fake.branch_head = COMMIT_SHA
+        fake.files["unexpected.py"] = {
+            "sha": FILE_SHA,
+            "content": "bad\n",
+        }
+        with self.assertRaises(PermanentAdapterError):
+            broker.execute(payload())
+        self.assertFalse(any(method == "PUT" for method, *_rest in fake.calls))
 
     def test_repository_allowlist_is_hard_boundary(self):
         broker, fake = self.broker()
