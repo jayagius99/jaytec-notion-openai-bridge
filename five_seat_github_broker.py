@@ -265,14 +265,18 @@ class GitHubBranchPrBroker:
         }
 
     def execute(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        (
-            repository,
-            base_branch,
-            base_sha,
-            branch,
-            files,
-            pr,
-        ) = self._policy(payload)
+        try:
+            (
+                repository,
+                base_branch,
+                base_sha,
+                branch,
+                files,
+                pr,
+            ) = self._policy(payload)
+        except GitHubBrokerPolicyError as exc:
+            raise PermanentAdapterError(str(exc)) from exc
+
         root = f"https://api.github.com/repos/{repository}"
         owner = repository.split("/", 1)[0]
         operations: list[dict[str, Any]] = []
