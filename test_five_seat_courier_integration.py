@@ -19,7 +19,7 @@ class TestFiveSeatCourierIntegration(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("def _execute_direct", source)
-        self.assertIn("if not self.fabric_enabled:", source)
+        self.assertIn('if not getattr(self, "fabric_enabled", False):', source)
         self.assertIn("return self._execute_direct(packet_json)", source)
         self.assertIn("submit_low_risk_task_packet(", source)
         self.assertIn('"execution_mode": "WATCH_CONTROLLED_FIVE_SEAT"', source)
