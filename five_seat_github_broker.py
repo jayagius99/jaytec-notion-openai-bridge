@@ -332,7 +332,7 @@ class GitHubBranchPrBroker:
         owner = repository.split("/", 1)[0]
         allowed_paths = {row["path"] for row in files}
         operations: list[dict[str, Any]] = []
-        side_effect_started = False
+        side_effect_present = False
 
         try:
             # Base freshness is checked before any mutation. A stale base turns
@@ -353,7 +353,7 @@ class GitHubBranchPrBroker:
                 )
                 if status not in {200, 201} or not isinstance(created, Mapping):
                     raise GitHubBrokerError("branch_create_failed:" + str(status))
-                side_effect_started = True
+                side_effect_present = True
                 branch_head = str(
                     ((created.get("object") or {}) if isinstance(created.get("object"), Mapping) else {}).get("sha")
                     or base_sha
@@ -368,6 +368,7 @@ class GitHubBranchPrBroker:
                     }
                 )
             elif status == 200 and isinstance(existing, Mapping):
+                side_effect_present = True
                 obj = existing.get("object") if isinstance(existing.get("object"), Mapping) else {}
                 branch_head = str(obj.get("sha") or "")
                 self._verify_diff_confined(
@@ -557,9 +558,14 @@ class GitHubBranchPrBroker:
             }
             return result
         except GitHubBrokerPolicyError as exc:
+            if side_effect_present:
+                raise UncertainSideEffectError(
+                    "github_broker_policy_failed_with_external_state:"
+                    + str(exc)[:500]
+                ) from exc
             raise PermanentAdapterError(str(exc)) from exc
         except Exception as exc:
-            if side_effect_started:
+            if side_effect_present:
                 raise UncertainSideEffectError(
                     "github_broker_uncertain_after_side_effect:"
                     + type(exc).__name__
@@ -592,10 +598,10 @@ class GitHubBranchPrBroker:
 
         root = f"https://api.github.com/repos/{repository}"
         allowed_paths = {_safe_path(path) for path in file_digests}
-        observed_base_sha = self._ref_head(root, base_branch)
         expected_base_sha = _sha(expected.get("base_sha"), name="watch_base_sha")
-        if observed_base_sha != expected_base_sha:
-            raise GitHubBrokerError("watch_base_branch_head_moved")
+        # The target branch may legitimately advance after worker completion.
+        # WATCH verifies ancestry against the exact attested base SHA instead of
+        # requiring the moving base ref to remain frozen.
         diff = self._verify_diff_confined(
             root,
             base_sha=expected_base_sha,
