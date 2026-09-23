@@ -41,6 +41,17 @@ class TestFiveSeatRecoveryPostgres(unittest.TestCase):
         with psycopg2.connect(self.url) as conn:
             with conn.cursor() as cur:
                 cur.execute(
+                    """
+                    UPDATE jaytec_fabric_authority_state
+                    SET current_shared_state_version=1,
+                        authority_epoch=authority_epoch+1,
+                        fence_token=fence_token+1,
+                        updated_by='FS06_RECOVERY_TEST',
+                        updated_at=now()
+                    WHERE authority_id='FABRIC'
+                    """
+                )
+                cur.execute(
                     """UPDATE jaytec_watch_leader
                        SET lease_owner=NULL,lease_expires_at=NULL,
                            version=version+1,updated_at=now()
