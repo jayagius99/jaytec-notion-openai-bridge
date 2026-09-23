@@ -117,7 +117,7 @@ class DanCognitionPolicyTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(captured["body"]["model"], req["model"])
-        self.assertFalse(captured["body"]["provider"]["allow_fallbacks"])
+        self.assertTrue(captured["body"]["provider"]["allow_fallbacks"])
         self.assertEqual(result["authority"], "COGNITIVE_CANDIDATE_ONLY")
         self.assertEqual(result["side_effects"], "NONE")
 

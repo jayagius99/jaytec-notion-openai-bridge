@@ -133,7 +133,7 @@ def _invoke_openrouter(req: Mapping[str, Any]) -> dict[str, Any]:
         "temperature": 0.2,
         "max_tokens": req["max_tokens"],
         "provider": {
-            "allow_fallbacks": False,
+            "allow_fallbacks": True,
         },
     }
     request = urllib.request.Request(
