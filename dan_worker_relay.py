@@ -320,9 +320,8 @@ class DanWorkerRelay:
                 "POST",
                 "/comments",
                 {
-                    "body": DAN_WORKER_REQUEST_MARKER + "\n\`\`\`json\n"
-                    + json.dumps(job, indent=2, ensure_ascii=False)
-                    + "\n\`\`\`",
+                    "body": DAN_WORKER_REQUEST_MARKER + "\n"
+                    + json.dumps(job, separators=(",", ":"), ensure_ascii=False),
                 },
             )
             if status != 201 or not isinstance(value, Mapping):
