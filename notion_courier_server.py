@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from typing import Any, Protocol
 
 from fastmcp import FastMCP
@@ -162,6 +163,7 @@ class JaytecCourierRuntime:
         self.fabric_authority = None
         self.fabric_reporter = None
         self.fabric_service = None
+        self.fabric_instance_id = None
         if self.fabric_enabled:
             if not legacy_server.DATABASE_URL:
                 raise RuntimeError(
@@ -170,10 +172,13 @@ class JaytecCourierRuntime:
             self.fabric_queue = PostgresFabricQueue(legacy_server.DATABASE_URL)
             self.fabric_authority = PostgresFabricAuthority(legacy_server.DATABASE_URL)
             self.fabric_reporter = FiveSeatReporter(legacy_server.DATABASE_URL)
+            self.fabric_instance_id = (
+                os.environ.get("RENDER_INSTANCE_ID", "").strip() or "courier"
+            )
             self.fabric_service = FiveSeatFabricService(
                 legacy_server.DATABASE_URL,
                 self._execute_direct,
-                instance_id=os.environ.get("RENDER_INSTANCE_ID", "").strip() or "courier",
+                instance_id=self.fabric_instance_id,
                 lease_seconds=int(os.environ.get("FIVE_SEAT_LEASE_S", "300")),
                 guardian_interval_seconds=float(
                     os.environ.get("FIVE_SEAT_GUARDIAN_INTERVAL_S", "30")
@@ -185,6 +190,93 @@ class JaytecCourierRuntime:
             # Read-only schema gate. Startup never applies transformation DDL.
             self.fabric_service.verify_ready()
             self.fabric_service.start()
+            if (
+                os.environ.get(
+                    "FIVE_SEAT_FABRIC_STARTUP_REPORT", "0"
+                ).strip()
+                == "1"
+            ):
+                self._emit_fabric_startup_report()
+
+    def _emit_fabric_startup_report(self) -> None:
+        """Emit a bounded read-only fabric/WATCH startup snapshot.
+
+        This diagnostic never changes queue, seat, WATCH, provider, or
+        authority state. It is intentionally non-fatal: the existing schema
+        gate remains the startup fail-closed mechanism while this report gives
+        operators concrete activation evidence without exposing credentials.
+        """
+        if not self.fabric_service or not self.fabric_reporter:
+            return
+
+        expected_seats = [
+            f"WORKER-SEAT-{index}" for index in range(1, 6)
+        ]
+        expected_leader = (
+            "five-seat-watch:" + str(self.fabric_instance_id or "courier")
+        )
+        deadline = time.monotonic() + 2.0
+        snapshot: dict[str, Any] = {
+            "schema_version": "JAYTEC_FIVE_SEAT_STARTUP_REPORT_V1",
+            "ready": False,
+        }
+        try:
+            while True:
+                service = self.fabric_service.status()
+                report = self.fabric_reporter.last_60_minutes(
+                    window_minutes=60
+                )
+                watch = dict(report.get("watch") or {})
+                summary = dict(report.get("summary") or {})
+                seats = list(report.get("seats") or [])
+                seat_ids = [
+                    str(item.get("seat_id") or "")
+                    for item in seats
+                    if isinstance(item, dict)
+                ]
+                errors = list(service.get("errors") or [])
+                snapshot = {
+                    "schema_version": "JAYTEC_FIVE_SEAT_STARTUP_REPORT_V1",
+                    "service_id": service.get("service_id"),
+                    "worker_threads_configured": int(
+                        service.get("worker_threads_configured") or 0
+                    ),
+                    "worker_threads_alive": int(
+                        service.get("worker_threads_alive") or 0
+                    ),
+                    "seat_count": int(service.get("seat_count") or 0),
+                    "seat_ids": seat_ids,
+                    "seats_free": int(summary.get("seats_free") or 0),
+                    "watch_healthy": bool(watch.get("healthy")),
+                    "watch_leader_present": bool(watch.get("leader")),
+                    "watch_leader_matches_instance": (
+                        str(watch.get("leader") or "") == expected_leader
+                    ),
+                    "fabric_error_count": len(errors),
+                }
+                snapshot["ready"] = bool(
+                    snapshot["worker_threads_configured"] == 5
+                    and snapshot["worker_threads_alive"] == 5
+                    and snapshot["seat_count"] == 5
+                    and seat_ids == expected_seats
+                    and snapshot["watch_healthy"]
+                    and snapshot["watch_leader_matches_instance"]
+                    and snapshot["fabric_error_count"] == 0
+                )
+                if snapshot["ready"] or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.1)
+        except Exception as exc:
+            snapshot = {
+                "schema_version": "JAYTEC_FIVE_SEAT_STARTUP_REPORT_V1",
+                "ready": False,
+                "error_class": type(exc).__name__,
+            }
+        print(
+            "FIVE_SEAT_FABRIC_STARTUP_REPORT="
+            + json.dumps(snapshot, sort_keys=True, default=str),
+            flush=True,
+        )
 
     def status(self) -> str:
         payload = json.loads(
