@@ -182,7 +182,20 @@ class FiveSeatWorker:
         result: dict[str, Any] | None = None
         failure: Exception | None = None
         try:
-            raw = adapter.execute(dict(claim.get("payload") or {}))
+            adapter_payload = dict(claim.get("payload") or {})
+            # Runtime-owned context is overwritten unconditionally so queued
+            # payload cannot forge its fence/scope/seat authority.
+            adapter_payload["_fabric_context"] = {
+                "job_id": claim.get("job_id"),
+                "job_fence_token": token.job_fence_token,
+                "seat_id": token.seat_id,
+                "seat_fence_token": token.seat_fence_token,
+                "mutation_scope": list(claim.get("mutation_scope") or []),
+                "read_scope": list(claim.get("read_scope") or []),
+                "resource_scope": dict(claim.get("resource_scope") or {}),
+                "authority_class": claim.get("authority_class"),
+            }
+            raw = adapter.execute(adapter_payload)
             if not isinstance(raw, Mapping):
                 raise UncertainSideEffectError("adapter_result_not_mapping")
             result = dict(raw)

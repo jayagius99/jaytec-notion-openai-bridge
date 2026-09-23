@@ -203,9 +203,11 @@ class PostgresWatchController:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT h.*,j.priority,j.fabric_state,j.checkpoint_ref
+                    SELECT h.*,j.priority,j.fabric_state,j.checkpoint_ref,
+                           e.worker_kind,e.evidence_standard
                     FROM jaytec_worker_handoffs h
                     JOIN jaytec_jobs j ON j.job_id=h.job_id
+                    JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
                     LEFT JOIN jaytec_watch_reviews r ON r.handoff_id=h.handoff_id
                     WHERE j.fabric_state IN ('HANDOFF_PENDING_REVIEW','QUARANTINED')
                       AND j.seat_id IS NULL
