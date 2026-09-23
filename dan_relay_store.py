@@ -13,6 +13,10 @@ import psycopg2.extras
 REQUEST_SCHEMA = "JAYTEC_DAN_JOB_V1"
 RESULT_SCHEMA = "JAYTEC_DAN_RESULT_V1"
 RECOVERY_PRINCIPAL = "DAN-RECOVERY-SEAT"
+EXPECTED_QWEN_MODEL = r"C:\\JAYTEC_BOOTSTRAP\\Scratch\\local-model-proof\\qwen2.5-1.5b-instruct-q4_k_m.gguf"
+EXPECTED_QWEN_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
+EXPECTED_QWEN_SERVER_SHA256 = "06f5c5463753a7a6fe729bb436a6d3ab5e71373527559339b42cec9fd7f1d27f"
+EXPECTED_QWEN_ROUTE = "local-llama-127.0.0.1:18081"
 
 
 class DanRelayStoreError(RuntimeError):
@@ -251,6 +255,12 @@ class PostgresDanRelay:
                 result.get("source_shared_state_version") or 0
             )
             == int(request["source_shared_state_version"]),
+            "model": str(result.get("exact_model_id") or "") == EXPECTED_QWEN_MODEL,
+            "model_sha": str(result.get("model_sha256") or "").lower()
+            == EXPECTED_QWEN_SHA256,
+            "server_sha": str(result.get("server_sha256") or "").lower()
+            == EXPECTED_QWEN_SERVER_SHA256,
+            "route": str(result.get("route_id") or "") == EXPECTED_QWEN_ROUTE,
             "zero_spend": float(result.get("provider_spend_usd") or 0) == 0,
             "no_side_effects": str(result.get("side_effects") or "").upper()
             == "NONE",
