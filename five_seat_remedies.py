@@ -263,8 +263,8 @@ class PostgresFabricRemedies:
                       AND lease_owner=%s
                       AND ownership_epoch=%s
                       AND fence_token=%s
-                      AND fabric_state='RUNNING'
-                      AND cancel_requested_at IS NULL
+                      AND fabric_state='CANCEL_REQUESTED'
+                      AND cancel_requested_at IS NOT NULL
                     RETURNING *
                     """,
                     (
