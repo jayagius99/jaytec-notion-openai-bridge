@@ -194,6 +194,8 @@ class FiveSeatWorker:
                 "read_scope": list(claim.get("read_scope") or []),
                 "resource_scope": dict(claim.get("resource_scope") or {}),
                 "authority_class": claim.get("authority_class"),
+                "last_watch_decision": claim.get("last_watch_decision"),
+                "last_watch_evidence": claim.get("last_watch_evidence"),
             }
             raw = adapter.execute(adapter_payload)
             if not isinstance(raw, Mapping):
