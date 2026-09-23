@@ -18,6 +18,7 @@ from dan_worker_relay import (
     DanWorkerRelayConfig,
     DanWorkerRelayError,
 )
+from dan_relay_store import PostgresDanRelay
 from durable_tasks import SUCCESS_OVERALL_STATUSES, contains_secret_material
 from five_seat_adapters import AdapterRegistry, RetryableAdapterError
 from five_seat_guardian import FiveSeatGuardian
@@ -336,7 +337,7 @@ class FiveSeatFabricService:
         report_interval_seconds: float = 3600.0,
         github_broker: GitHubBranchPrBroker | None = None,
         canonical_writer_queue: PostgresCanonicalWriterQueue | None = None,
-        dan_relay: DanWorkerRelay | None = None,
+        dan_relay: Any | None = None,
     ):
         if not database_url:
             raise ValueError("database_url is required")
@@ -357,7 +358,20 @@ class FiveSeatFabricService:
         self.canonical_writer_queue = canonical_writer_queue
         self.dan_relay = dan_relay
         self._dan_relay_startup_error: str | None = None
-        if self.dan_relay is None and _env_enabled("JAYTEC_DAN_WORKER_ENABLED"):
+        if self.dan_relay is None and _env_enabled("DAN_RELAY_HTTP_ENABLED"):
+            try:
+                self.dan_relay = PostgresDanRelay(
+                    database_url,
+                    timeout_seconds=float(
+                        os.environ.get("DAN_RELAY_RECOVERY_TIMEOUT_SECONDS", "180")
+                    ),
+                )
+                self.dan_relay.ensure_schema()
+            except Exception as exc:
+                self._dan_relay_startup_error = (
+                    type(exc).__name__ + ":" + str(exc)[:500]
+                )
+        elif self.dan_relay is None and _env_enabled("JAYTEC_DAN_WORKER_ENABLED"):
             try:
                 self.dan_relay = _dan_relay_from_env()
             except Exception as exc:
