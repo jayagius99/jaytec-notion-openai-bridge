@@ -83,6 +83,7 @@ class TestFiveSeatProductionServiceContract(unittest.TestCase):
         self.assertEqual(queue.kwargs["authority_class"], "READ_ONLY")
         self.assertEqual(queue.kwargs["concurrency_class"], "A")
         self.assertEqual(queue.kwargs["cost_policy"]["mode"], "ZERO_SPEND")
+        self.assertEqual(queue.kwargs["max_attempts"], 1)
         stored = json.loads(queue.kwargs["payload"]["packet_json"])
         self.assertEqual(stored["max_retries"], 0)
         self.assertEqual(stored["allowed_operations"], ["read", "analyze", "validate"])
