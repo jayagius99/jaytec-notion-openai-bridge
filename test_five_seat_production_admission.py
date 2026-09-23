@@ -9,7 +9,11 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
         packet = admission.build_probe_packet(
             deadline="2026-09-23T10:00:00Z"
         )
-        self.assertEqual(packet["task_id"], admission.PROBE_TASK_ID)\n        self.assertEqual(admission.PROBE_TASK_ID, "FS08-PRODUCTION-ADMISSION-003")
+        self.assertEqual(packet["task_id"], admission.PROBE_TASK_ID)
+        self.assertEqual(
+            admission.PROBE_TASK_ID,
+            "FS08-PRODUCTION-ADMISSION-003",
+        )
         self.assertEqual(
             packet["workflow_id"],
             "JAYTEC_ENGINEERING_FS08_PRODUCTION_ADMISSION_V1",
