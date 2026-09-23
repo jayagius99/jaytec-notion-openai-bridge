@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dan_role_elastic_runtime_proof  # bounded staging-only owner-authorized proof
 import dan_elastic_regression_v12  # bounded DAN/role-elastic regression v1.2
+import dan_elastic_hardening_consult  # JAYTEC:HELP independent hardening consultation
 
 import base64
 import gzip
