@@ -10,8 +10,6 @@ COPY . ./
 ENV PORT=8000
 EXPOSE 8000
 
-# Production Notion-facing endpoint is a courier only. All direct native tool
-# calls and free-form collaboration are rejected at the HTTP boundary; only
-# exact JAYTEC-authored status/task-packet pass-through commands survive.
-# This Dockerfile change intentionally pins CI to the complete courier stress-test head.
-CMD ["sh", "-c", "python five_seat_production_migrate.py && python jaytec_read_startup_selftest.py && exec python notion_courier_server.py"]
+# Optional FS08 cutover diagnostic is read-only and defaults OFF.
+# Migration remains separately identity-bound and defaults OFF.
+CMD ["sh", "-c", "python five_seat_active_job_diagnostic.py && python five_seat_production_migrate.py && python jaytec_read_startup_selftest.py && exec python notion_courier_server.py"]
