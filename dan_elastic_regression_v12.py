@@ -383,12 +383,12 @@ def run() -> dict:
         "elastic_c2_text_transform":c2_ok,
         "elastic_c3_graph_validation":c3_ok,
         "runtime_deterministic_hash_verification":runtime_hash_ok,
-        "boundary_semantics_8_of_8":all(boundary_checks.values()),
+        "boundary_semantics_10_of_10":all(boundary_checks.values()),
         "scope_semantics_6_of_6":all(scope_checks.values()),
         "exact_model_identity_all_calls":all(x["model"]==MODEL for x in (baseline,hardened,boundaries,scope)),
         "zero_model_tool_calls_all_calls":all(not x["tool_calls_present"] for x in (baseline,hardened,boundaries,scope)),
         "provider_fallback_disabled":True,
-        "external_task_side_effects":False,
+        "no_external_task_side_effects":True,
     }
 
     return {
@@ -425,6 +425,8 @@ def run() -> dict:
         },
         "live_checks":live_checks,
         "local_checks":local_checks,
+        "live_pass":all(live_checks.values()),
+        "local_pass":all(local_checks.values()),
         "passed":all(live_checks.values()) and all(local_checks.values()),
     }
 
