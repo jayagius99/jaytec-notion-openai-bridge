@@ -11,10 +11,10 @@ from five_seat_service import submit_low_risk_task_packet
 from specialist_adapters import EXPECTED_CODEX_MODEL
 
 
-PROBE_TASK_ID = "FS08-PRODUCTION-ADMISSION-003"
+PROBE_TASK_ID = "FS08-PRODUCTION-ADMISSION-004"
 PROBE_SUBTASK_ID = "NORMAL-LOW-RISK-001"
 PROBE_WORKFLOW_ID = "JAYTEC_ENGINEERING_FS08_PRODUCTION_ADMISSION_V1"
-PROBE_IDEMPOTENCY_KEY = "fs08-production-admission-v3"
+PROBE_IDEMPOTENCY_KEY = "fs08-production-admission-v4"
 PROBE_SCHEMA = "JAYTEC_FS08_PRODUCTION_ADMISSION_PROBE_V1"
 
 _TERMINAL_FAILURE_STATES = {
@@ -133,6 +133,41 @@ def _seat_evidence(report: Mapping[str, Any], job_id: str) -> dict[str, Any]:
     }
 
 
+def _event_evidence(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    seats: set[str] = set()
+    claims = 0
+    releases = 0
+    recoveries = 0
+    for row in rows:
+        event_type = str(row.get("event_type") or "").upper()
+        payload = row.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        if event_type == "WORKER_SEAT_CLAIMED":
+            claims += 1
+            if isinstance(payload, Mapping) and payload.get("seat_id"):
+                seats.add(str(payload["seat_id"]))
+        if event_type in {"WORKER_HANDOFF_COMMITTED_AND_SEAT_RELEASED", "WORKER_HANDOFF_QUARANTINED_AND_SEAT_RELEASED"}:
+            releases += 1
+            if isinstance(payload, Mapping) and payload.get("seat_id"):
+                seats.add(str(payload["seat_id"]))
+        if any(token in event_type for token in ("RECOVER", "RETRY", "EXPIRED_LEASE")):
+            recoveries += 1
+    return {"seats_touched": sorted(seats), "claim_count": claims, "release_count": releases, "recovery_event_count": recoveries}
+
+
+def _exact_job_event_evidence(database_url: str, job_id: str) -> dict[str, Any]:
+    with psycopg2.connect(database_url) as conn:
+        conn.set_session(readonly=True, autocommit=True)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT event_type,payload FROM jaytec_job_events WHERE job_id=%s ORDER BY event_id", (job_id,))
+            rows = [dict(row) for row in cur.fetchall()]
+    return _event_evidence(rows)
+
+
 def _recovery_count(report: Mapping[str, Any], job_id: str) -> int:
     events = report.get("recovery_and_safety_events") or []
     return sum(
@@ -224,8 +259,9 @@ def run_probe(
 
     report = reporter.last_60_minutes(window_minutes=60)
     handoff = _latest_handoff_evidence(database_url, job_id)
-    seat = _seat_evidence(report, job_id)
-    recovery_count = _recovery_count(report, job_id)
+    exact_events = _exact_job_event_evidence(database_url, job_id)
+    seat = exact_events
+    recovery_count = int(exact_events["recovery_event_count"])
     summary = report.get("summary") or {}
     watch = report.get("watch") or {}
     cost_policy = handoff.get("cost_policy") or {}
