@@ -45,6 +45,23 @@ class TestFiveSeatProductionServiceContract(unittest.TestCase):
         self.assertIn("nvidia/nemotron", result["provider_identity"])
         self.assertEqual(result["worker_completion_classification"], "CANDIDATE_COMPLETE")
 
+    def test_adapter_accepts_legacy_json_string_result(self):
+        def execute(_packet_json):
+            return json.dumps({
+                "overall_status": "SUCCESS",
+                "codex_result": {"model": "nvidia/nemotron-3-ultra-550b-a55b:free"},
+                "unresolved_items": [],
+            })
+
+        result = build_task_packet_adapter(execute)({"packet_json": "{}"})
+        self.assertEqual(result["whole_packet_status"], "SUCCESS")
+        self.assertEqual(result["partial_side_effect_status"], "NONE")
+        self.assertIn("nvidia/nemotron", result["provider_identity"])
+
+    def test_adapter_rejects_invalid_json_string_result(self):
+        with self.assertRaisesRegex(RuntimeError, "TASK_PACKET_RESULT_JSON_INVALID"):
+            build_task_packet_adapter(lambda _packet_json: "not-json")({"packet_json": "{}"})
+
     def test_low_risk_ingress_accepts_valid_safe_operations(self):
         class Queue:
             def __init__(self):
