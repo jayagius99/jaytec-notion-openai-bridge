@@ -148,6 +148,7 @@ def wait_for_local_watch(
     reporter: Any,
     expected_leader: str,
     timeout_seconds: float = 90.0,
+    stable_seconds: float = 0.0,
     sleep_fn: Callable[[float], None] = time.sleep,
     monotonic_fn: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
@@ -156,13 +157,22 @@ def wait_for_local_watch(
         raise ValueError("expected_leader is required")
     stop_at = monotonic_fn() + max(1.0, float(timeout_seconds))
     last_watch: dict[str, Any] = {}
+    stable_since: float | None = None
+    required_stable = max(0.0, float(stable_seconds))
     while True:
         report = reporter.last_60_minutes(window_minutes=60)
         watch = dict(report.get("watch") or {})
         last_watch = watch
-        if bool(watch.get("healthy")) and str(watch.get("leader") or "") == expected:
-            return watch
-        if monotonic_fn() >= stop_at:
+        now = monotonic_fn()
+        local_healthy = bool(watch.get("healthy")) and str(watch.get("leader") or "") == expected
+        if local_healthy:
+            if stable_since is None:
+                stable_since = now
+            if now - stable_since >= required_stable:
+                return watch
+        else:
+            stable_since = None
+        if now >= stop_at:
             raise RuntimeError("admission_probe_local_watch_not_ready")
         sleep_fn(0.25)
 

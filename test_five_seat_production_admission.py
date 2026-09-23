@@ -106,6 +106,29 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
         self.assertEqual(result["leader"], "five-seat-watch:current")
         self.assertEqual(reporter.calls, 2)
 
+    def test_wait_for_local_watch_requires_continuous_stability(self):
+        class Reporter:
+            def __init__(self):
+                self.calls = 0
+            def last_60_minutes(self, **_kwargs):
+                self.calls += 1
+                leaders = ["current", "previous", "current", "current", "current"]
+                leader = leaders[min(self.calls - 1, len(leaders) - 1)]
+                return {"watch": {"healthy": True, "leader": "five-seat-watch:" + leader}}
+
+        ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.1])
+        reporter = Reporter()
+        result = admission.wait_for_local_watch(
+            reporter=reporter,
+            expected_leader="five-seat-watch:current",
+            timeout_seconds=10,
+            stable_seconds=2,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=lambda: next(ticks),
+        )
+        self.assertEqual(result["leader"], "five-seat-watch:current")
+        self.assertEqual(reporter.calls, 5)
+
     def test_wait_for_local_watch_fails_closed_on_timeout(self):
         class Reporter:
             def last_60_minutes(self, **_kwargs):
