@@ -238,6 +238,48 @@ class TestFiveSeatRecoveryPostgres(unittest.TestCase):
         with self.assertRaises(WatchStaleLeader):
             watch.heartbeat(first, lease_seconds=60)
 
+    def test_watch_accept_emits_durable_owner_completion_event(self):
+        job = self._insert()
+        scheduler = PostgresFiveSeatScheduler(self.url)
+        claim = self._claim("worker-owner-event")
+        token = scheduler.token_from_claim(claim)
+        handoff_id = _uid("owner-event")
+        scheduler.release_for_review(
+            token,
+            handoff_ref=handoff_id,
+            handoff_payload=_handoff_payload(),
+        )
+
+        watch = PostgresWatchController(self.url)
+        leader = watch.claim_leader(owner="watch-owner-event", lease_seconds=60)
+        watch.review(
+            leader,
+            review_id=_uid("owner-event-review"),
+            handoff_id=handoff_id,
+            decision="ACCEPT",
+            reason="whole assignment accepted",
+            evidence={"independent": True},
+        )
+
+        with psycopg2.connect(self.url) as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT event_type,payload
+                    FROM jaytec_job_events
+                    WHERE job_id=%s
+                      AND event_type='OWNER_NOTIFICATION_REQUIRED'
+                    ORDER BY event_id DESC
+                    LIMIT 1
+                    """,
+                    (job,),
+                )
+                event = cur.fetchone()
+        self.assertIsNotNone(event)
+        self.assertEqual(event["event_type"], "OWNER_NOTIFICATION_REQUIRED")
+        self.assertEqual(event["payload"]["kind"], "WHOLE_JOB_COMPLETE")
+        self.assertEqual(event["payload"]["decision"], "ACCEPT")
+
     def test_rework_gets_fresh_worker_ownership(self):
         job = self._insert()
         scheduler = PostgresFiveSeatScheduler(self.url)
