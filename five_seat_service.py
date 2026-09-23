@@ -185,6 +185,32 @@ def submit_low_risk_task_packet(
     )
 
 
+def _bounded_dan_recovery_context(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    receipt = value.get("qwen_receipt")
+    if not isinstance(receipt, Mapping):
+        return None
+    candidate = receipt.get("candidate")
+    if not isinstance(candidate, Mapping):
+        return None
+    return {
+        "identity": str(value.get("identity") or "")[:80],
+        "attempt_id": str(value.get("attempt_id") or "")[:160],
+        "source_state_version": value.get("source_state_version"),
+        "ownership_fence": str(value.get("ownership_fence") or "")[:240],
+        "model_id": str(receipt.get("model_id") or "")[:500],
+        "response_sha256": str(receipt.get("response_sha256") or "")[:128],
+        "result": str(candidate.get("result") or "")[:6000],
+        "evidence": [str(item)[:1200] for item in list(candidate.get("evidence") or [])[:10]],
+        "limitations": str(candidate.get("limitations") or "")[:3000],
+        "recommended_next_action": str(
+            candidate.get("recommended_next_action") or ""
+        )[:3000],
+        "acceptance": "WATCH_RECOVERY_CONTEXT_ONLY",
+    }
+
+
 def build_task_packet_adapter(
     execute_packet: Callable[[str], Mapping[str, Any]],
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
@@ -199,6 +225,31 @@ def build_task_packet_adapter(
         packet_json = payload.get("packet_json")
         if not isinstance(packet_json, str) or not packet_json.strip():
             raise RuntimeError("TASK_PACKET_PAYLOAD_MISSING")
+
+        fabric_context = payload.get("_fabric_context")
+        if isinstance(fabric_context, Mapping):
+            watch_evidence = fabric_context.get("last_watch_evidence")
+            if isinstance(watch_evidence, Mapping):
+                dan_context = _bounded_dan_recovery_context(
+                    watch_evidence.get("dan_worker_recovery")
+                )
+                if dan_context is not None:
+                    packet_obj = json.loads(packet_json)
+                    if not isinstance(packet_obj, dict):
+                        raise RuntimeError("TASK_PACKET_JSON_NOT_OBJECT")
+                    required_context = packet_obj.get("required_context")
+                    if not isinstance(required_context, dict):
+                        required_context = {}
+                    else:
+                        required_context = dict(required_context)
+                    required_context["dan_worker_recovery"] = dan_context
+                    packet_obj["required_context"] = required_context
+                    packet_json = json.dumps(
+                        packet_obj,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+
         raw = execute_packet(packet_json)
         if isinstance(raw, str):
             try:
