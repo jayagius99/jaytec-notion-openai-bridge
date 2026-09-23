@@ -394,6 +394,17 @@ class FiveSeatFabricService:
             return
         self.verify_ready()
         self._stop.clear()
+        print(
+            "FIVE_SEAT_DAN_WORKER_RECOVERY="
+            + json.dumps(
+                {
+                    "enabled": self.dan_relay is not None,
+                    "startup_error": self._dan_relay_startup_error,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
 
         for index in range(1, 6):
             worker = FiveSeatWorker(
