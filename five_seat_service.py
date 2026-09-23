@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import socket
 import threading
 import time
@@ -12,6 +13,11 @@ import psycopg2
 import psycopg2.extras
 
 from canonical_writer import PostgresCanonicalWriterQueue
+from dan_worker_relay import (
+    DanWorkerRelay,
+    DanWorkerRelayConfig,
+    DanWorkerRelayError,
+)
 from durable_tasks import SUCCESS_OVERALL_STATUSES, contains_secret_material
 from five_seat_adapters import AdapterRegistry, RetryableAdapterError
 from five_seat_guardian import FiveSeatGuardian
@@ -39,6 +45,38 @@ TASK_PACKET_WORKER_KIND = "TASK_PACKET"
 TASK_PACKET_CAPABILITY = "jaytec.task_packet.execute"
 FABRIC_SERVICE_ID = "JAYTEC_FIVE_SEAT_PRODUCTION_HOST_V1"
 WATCH_OWNER_PREFIX = "five-seat-watch"
+DAN_RECOVERY_SAFE_PARTIAL = frozenset(
+    {"NONE", "VERIFIED_COMPLETE", "VERIFIED_NOT_DONE"}
+)
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dan_relay_from_env() -> DanWorkerRelay | None:
+    if not _env_enabled("JAYTEC_DAN_WORKER_ENABLED"):
+        return None
+    token = (
+        os.environ.get("JAYTEC_DAN_GITHUB_TOKEN", "").strip()
+        or os.environ.get("JAYTEC_GITHUB_BROKER_TOKEN", "").strip()
+    )
+    repository = os.environ.get(
+        "JAYTEC_DAN_RELAY_REPOSITORY",
+        "jayagius99/jaytec-work-engine-v2-g1",
+    ).strip()
+    issue_number = int(os.environ.get("JAYTEC_DAN_RELAY_ISSUE", "128"))
+    timeout_seconds = float(
+        os.environ.get("JAYTEC_DAN_RECOVERY_TIMEOUT_SECONDS", "180")
+    )
+    return DanWorkerRelay(
+        DanWorkerRelayConfig.build(
+            token,
+            repository,
+            issue_number,
+            timeout_seconds=timeout_seconds,
+        )
+    )
 
 
 def _canonical(value: Any) -> bytes:
@@ -231,6 +269,7 @@ class FiveSeatFabricService:
         report_interval_seconds: float = 3600.0,
         github_broker: GitHubBranchPrBroker | None = None,
         canonical_writer_queue: PostgresCanonicalWriterQueue | None = None,
+        dan_relay: DanWorkerRelay | None = None,
     ):
         if not database_url:
             raise ValueError("database_url is required")
@@ -249,6 +288,15 @@ class FiveSeatFabricService:
         self.reporter = FiveSeatReporter(database_url)
         self.github_broker = github_broker
         self.canonical_writer_queue = canonical_writer_queue
+        self.dan_relay = dan_relay
+        self._dan_relay_startup_error: str | None = None
+        if self.dan_relay is None and _env_enabled("JAYTEC_DAN_WORKER_ENABLED"):
+            try:
+                self.dan_relay = _dan_relay_from_env()
+            except Exception as exc:
+                self._dan_relay_startup_error = (
+                    type(exc).__name__ + ":" + str(exc)[:500]
+                )
         self.registry = AdapterRegistry()
         self.registry.register(
             TASK_PACKET_WORKER_KIND,
@@ -575,4 +623,6 @@ class FiveSeatFabricService:
             "seats": seats,
             "errors": list(self._errors[-20:]),
             "canonical_writer_queue_enabled": self.canonical_writer_queue is not None,
+            "dan_worker_recovery_enabled": self.dan_relay is not None,
+            "dan_worker_recovery_error": self._dan_relay_startup_error,
         }
