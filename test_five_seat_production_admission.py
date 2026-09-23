@@ -200,6 +200,15 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
             return_value={"job_id": "fabric-proof"},
         ), mock.patch.object(
             admission,
+            "_exact_job_event_evidence",
+            return_value={
+                "seats_touched": ["WORKER-SEAT-3"],
+                "claim_count": 1,
+                "release_count": 1,
+                "recovery_event_count": 0,
+            },
+        ), mock.patch.object(
+            admission,
             "_latest_handoff_evidence",
             return_value={
                 "provider_identity": admission.EXPECTED_CODEX_MODEL,
