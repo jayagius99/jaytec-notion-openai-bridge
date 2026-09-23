@@ -116,7 +116,7 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
                 leader = leaders[min(self.calls - 1, len(leaders) - 1)]
                 return {"watch": {"healthy": True, "leader": "five-seat-watch:" + leader}}
 
-        ticks = iter([0.0, 1.0, 2.0, 3.0, 4.1])
+        ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.1])
         reporter = Reporter()
         result = admission.wait_for_local_watch(
             reporter=reporter,
