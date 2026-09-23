@@ -131,6 +131,49 @@ HANDOFF_REQUIRED_FIELDS = (
 )
 
 
+def _task_packet_deadline_allows_claim(
+    candidate: Mapping[str, Any],
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Fail closed when a TASK_PACKET deadline is missing, malformed, or expired."""
+    if str(candidate.get("worker_kind") or "").upper() != "TASK_PACKET":
+        return True
+    payload = candidate.get("payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(payload, Mapping):
+        return False
+    packet_json = payload.get("packet_json")
+    if not isinstance(packet_json, str) or not packet_json.strip():
+        return False
+    try:
+        packet = json.loads(packet_json)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(packet, Mapping):
+        return False
+    raw_deadline = str(packet.get("deadline") or "").strip()
+    if not raw_deadline:
+        return False
+    try:
+        deadline = datetime.fromisoformat(
+            raw_deadline.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return False
+    if deadline.tzinfo is None:
+        return False
+    current = now or datetime.now(timezone.utc)
+    return (
+        deadline.astimezone(timezone.utc)
+        > current.astimezone(timezone.utc)
+    )
+
+
 def _row(row: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
@@ -457,6 +500,10 @@ class PostgresFiveSeatScheduler:
                 queued = [dict(row) for row in cur.fetchall()]
 
                 for candidate in queued:
+                    # Deadline is an admission boundary, not merely packet metadata.
+                    # A fabric restart must never resurrect an expired TaskPacket.
+                    if not _task_packet_deadline_allows_claim(candidate):
+                        continue
                     self._assert_current_authority(cur, str(candidate["job_id"]))
                     worker_kind = str(candidate.get("worker_kind") or "").upper()
                     if worker_kind not in supported:
