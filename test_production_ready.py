@@ -84,9 +84,9 @@ class TestProductionReady(unittest.TestCase):
             )
         )
 
-    def test_production_ready_false_when_openrouter_provider_locked(self):
+    def test_production_ready_does_not_require_paid_gemini_door_active(self):
         server = self._reload()
-        self.assertFalse(
+        self.assertTrue(
             server.compute_production_ready(
                 runtime_mode="production",
                 idempotency_store="postgres",
