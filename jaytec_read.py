@@ -20,6 +20,8 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 JAYTEC_READ_WORKFLOW_ID = "JAYTEC_READ"
+JAYTEC_READ_SPECIALIST = "reviewer"
+EXPECTED_READ_REVIEWER_MODEL = "deepseek/deepseek-v4-flash-0731:free"
 JAYTEC_READ_ALLOWED_OPERATIONS = frozenset(
     {"read", "research", "analyze", "validate", "web_fetch"}
 )
@@ -207,7 +209,7 @@ def build_jaytec_read_packet(
         "intent": "Recover source-specific content from a public URL for JAYTEC continuity.",
         "workflow_id": JAYTEC_READ_WORKFLOW_ID,
         "risk_level": "LOW",
-        "specialist_plan": ["gemini"],
+        "specialist_plan": [JAYTEC_READ_SPECIALIST],
         "allowed_operations": ["read", "research", "analyze", "validate", "web_fetch"],
         "expected_output": "A standardized conclusion.READ_REPORT with source-specific evidence.",
         "validation_requirements": validations,
