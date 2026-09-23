@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -5,6 +6,7 @@ from unittest.mock import patch
 
 import dan_pc_relay
 import dan_recovery
+from five_seat_service import build_task_packet_adapter
 
 
 class TestDanRecoveryEligibility(unittest.TestCase):
@@ -97,6 +99,35 @@ class TestDanPcRelayEnvelope(unittest.TestCase):
 
 
 class TestDanFiveSeatWiring(unittest.TestCase):
+    def test_recovered_worker_receives_dan_context_with_fresh_idempotency(self):
+        captured = {}
+        def fake_execute(packet_json):
+            captured["packet"] = json.loads(packet_json)
+            return {"overall_status": "SUCCESS", "unresolved_items": []}
+
+        adapter = build_task_packet_adapter(fake_execute)
+        adapter({
+            "packet_json": json.dumps({
+                "idempotency_key": "original-idem",
+                "required_context": {"existing": True},
+            }),
+            "_fabric_context": {
+                "dan_recovery": {
+                    "request_digest": "b" * 64,
+                    "response_digest": "a" * 64,
+                    "result": "bounded recovery evidence",
+                    "evidence": ["proof"],
+                    "limitations": [],
+                    "recommended_next_action": "resume original worker",
+                }
+            },
+        })
+        rebound = captured["packet"]
+        self.assertEqual(rebound["required_context"]["existing"], True)
+        self.assertEqual(rebound["required_context"]["dan_recovery"]["source"], "DAN_RECOVERY")
+        self.assertNotEqual(rebound["idempotency_key"], "original-idem")
+        self.assertTrue(rebound["idempotency_key"].endswith(":dan:" + "a" * 16))
+
     def test_dan_is_out_of_band_not_a_sixth_normal_worker(self):
         source = open("five_seat_service.py", encoding="utf-8").read()
         self.assertIn("for index in range(1, 6):", source)
