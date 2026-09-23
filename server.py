@@ -22,10 +22,12 @@ from orchestration import (
 )
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
+    EXPECTED_REVIEWER_MODEL,
     EXPECTED_GEMINI_MODEL,
     EXPECTED_SOL_MODEL,
     SOL_GATEWAY_BASE_URL,
     build_codex_dispatch,
+    build_reviewer_dispatch,
     build_gemini_dispatch,
     build_sol_reserve_dispatch,
     fetch_vercel_gateway_credit_balance,
@@ -40,11 +42,16 @@ CODEX_MODEL = os.environ.get("CODEX_MODEL", EXPECTED_CODEX_MODEL).strip()
 ENGINEERING_PROVIDER_MODE = os.environ.get("ENGINEERING_PROVIDER_MODE", "OPENROUTER_FREE_PRIMARY").strip().upper()
 ENGINEERING_OUTPUT_TOKEN_CAP = int(os.environ.get("ENGINEERING_OUTPUT_TOKEN_CAP", os.environ.get("ENGINEERING_SOL_OUTPUT_TOKEN_CAP", "2000")))
 ENGINEERING_MAX_PACKET_RETRIES = int(os.environ.get("ENGINEERING_MAX_PACKET_RETRIES", os.environ.get("ENGINEERING_SOL_MAX_PACKET_RETRIES", "1")))
+REVIEWER_MODEL = os.environ.get(
+    "DEEPSEEK_REVIEWER_MODEL", EXPECTED_REVIEWER_MODEL
+).strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 
-# OpenRouter route for Gemini research (optional; disabled unless configured).
+# Shared OpenRouter credential: free DeepSeek reviewer is normal; Gemini is
+# reachable only through the paid-reserve TaskPacket gate.
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+REVIEWER_TIMEOUT_S = float(os.environ.get("DEEPSEEK_REVIEWER_TIMEOUT_S", "90"))
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
 
 # Optional GPT-5.6 Sol reserve. Disabled by default and fail-closed unless the
@@ -110,7 +117,7 @@ def _require_startup_prereqs() -> None:
             "MCP_AUTH_TOKEN is not set. Refusing to start an unauthenticated remote MCP server."
         )
     if not OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is not set; primary engineering and Gemini routes are unavailable.")
+        raise RuntimeError("OPENROUTER_API_KEY is not set; primary engineering and DeepSeek reviewer routes are unavailable.")
 
     # Fail closed: production requires durable idempotency.
     if RUNTIME_MODE == "production":
@@ -127,6 +134,7 @@ def compute_production_ready(
     idempotency_store: str,
     codex_model: str,
     gemini_model: str,
+    reviewer_model: str = EXPECTED_REVIEWER_MODEL,
     mcp_auth_token_present: bool,
     openai_api_key_present: bool,
     openrouter_api_key_present: bool,
@@ -138,9 +146,10 @@ def compute_production_ready(
     Required conditions:
     - RUNTIME_MODE == 'production'
     - durable idempotency store is 'postgres'
-    - exact specialist model identities match the required locks
+    - exact required free specialist model identities match their locks
     - MCP auth + provider startup prerequisites are satisfied
-    - OpenRouter is configured for both primary engineering and Gemini
+    - OpenRouter is configured for primary engineering + DeepSeek reviewer
+    - paid Gemini is optional reserve and is NOT a production-readiness dependency
     - OpenAI API is optional premium reserve only
 
     NOTE: Startup may still be allowed in some partially-configured states; this flag
@@ -152,8 +161,10 @@ def compute_production_ready(
         return False
     if codex_model != EXPECTED_CODEX_MODEL:
         return False
-    if gemini_model != EXPECTED_GEMINI_MODEL:
+    if reviewer_model != EXPECTED_REVIEWER_MODEL:
         return False
+    # Paid Gemini is a terminal reserve; its availability is not required for
+    # ordinary production readiness.
     if not mcp_auth_token_present:
         return False
     if not openrouter_api_key_present:
@@ -232,8 +243,10 @@ def _orchestration_status_json(
     *,
     runtime_mode: str,
     codex_model: str,
+    reviewer_model: str,
     gemini_model: str,
     codex_circuit: Any,
+    reviewer_circuit: Any,
     gemini_circuit: Any,
     idempotency_store: str,
     production_ready: bool,
@@ -245,7 +258,15 @@ def _orchestration_status_json(
             "engineering_model": codex_model,
             "codex_model": codex_model,
             "engineering_provider_mode": ENGINEERING_PROVIDER_MODE,
+            "default_research_reviewer": "deepseek",
+            "reviewer_model": reviewer_model,
+            "reviewer_circuit": reviewer_circuit,
             "gemini_model": gemini_model,
+            "gemini_role": "paid_backup_only",
+            "gemini_default_route": False,
+            "gemini_requires_free_routes_exhausted": True,
+            "gemini_requires_specific_need": True,
+            "gemini_requires_paid_reserve_authority": True,
             "codex_circuit": codex_circuit,
             "gemini_circuit": gemini_circuit,
             "idempotency_store": idempotency_store,
@@ -264,6 +285,7 @@ def _execute_task_packet_json(
     idempotency_store: str,
     codex_dispatch: Any,
     gemini_dispatch: Any,
+    reviewer_dispatch: Any = None,
     sol_dispatch: Any = None,
 ) -> str:
     packet, parse_errors = parse_packet_json(packet_json)
@@ -310,7 +332,12 @@ def _execute_task_packet_json(
 
     result = execute_task_packet_core(
         packet,
-        {"codex": codex_dispatch, "gemini": gemini_dispatch, "sol": sol_dispatch},
+        {
+            "codex": codex_dispatch,
+            "reviewer": reviewer_dispatch,
+            "gemini": gemini_dispatch,
+            "sol": sol_dispatch,
+        },
         registry_adapter,
     )
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -432,12 +459,17 @@ def create_mcp_app() -> FastMCP:
         idempotency_store=idempotency_store,
         codex_model=CODEX_MODEL,
         gemini_model=GEMINI_MODEL,
+        reviewer_model=REVIEWER_MODEL,
         mcp_auth_token_present=bool(MCP_AUTH_TOKEN),
         openai_api_key_present=bool(OPENAI_API_KEY),
         openrouter_api_key_present=bool(OPENROUTER_API_KEY),
     )
 
     codex_circuit = CircuitBreaker(
+        failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+        reset_after_seconds=CIRCUIT_RESET_SECONDS,
+    )
+    reviewer_circuit = CircuitBreaker(
         failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
         reset_after_seconds=CIRCUIT_RESET_SECONDS,
     )
@@ -463,6 +495,12 @@ def create_mcp_app() -> FastMCP:
         )
 
     if openrouter_client is not None:
+        reviewer_dispatch = build_reviewer_dispatch(
+            openrouter_client=openrouter_client,
+            gemini_model=REVIEWER_MODEL,
+            gemini_timeout_s=REVIEWER_TIMEOUT_S,
+            circuit=reviewer_circuit,
+        )
         gemini_dispatch = build_gemini_dispatch(
             openrouter_client=openrouter_client,
             gemini_model=GEMINI_MODEL,
@@ -470,6 +508,9 @@ def create_mcp_app() -> FastMCP:
             circuit=gemini_circuit,
         )
     else:
+        reviewer_dispatch = reviewer_circuit.guard(
+            lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
+        )
         gemini_dispatch = gemini_circuit.guard(
             lambda _packet: (_ for _ in ()).throw(RuntimeError("OPENROUTER_API_KEY is not configured on this bridge"))
         )
@@ -502,8 +543,10 @@ def create_mcp_app() -> FastMCP:
         return _orchestration_status_json(
             runtime_mode=RUNTIME_MODE,
             codex_model=CODEX_MODEL,
+            reviewer_model=REVIEWER_MODEL,
             gemini_model=GEMINI_MODEL,
             codex_circuit=codex_circuit.snapshot(),
+            reviewer_circuit=reviewer_circuit.snapshot(),
             gemini_circuit=gemini_circuit.snapshot(),
             idempotency_store=idempotency_store,
             production_ready=production_ready,
@@ -515,6 +558,7 @@ def create_mcp_app() -> FastMCP:
             registry=registry,
             idempotency_store=idempotency_store,
             codex_dispatch=codex_dispatch,
+            reviewer_dispatch=reviewer_dispatch,
             gemini_dispatch=gemini_dispatch,
             sol_dispatch=sol_dispatch,
         )
@@ -536,7 +580,7 @@ def create_mcp_app() -> FastMCP:
             "Notion Agent/free-form collaboration tools are hard-disabled. "
             f"Notion policy: {NOTION_USAGE_POLICY}. "
             f"Primary engineering model: {CODEX_MODEL} via OpenRouter. "
-            f"Independent reviewer: {GEMINI_MODEL}. "
+            f"Independent reviewer: {REVIEWER_MODEL} (DeepSeek free). " + f"Gemini paid reserve: {GEMINI_MODEL}. "
             f"Sol reserve model: {EXPECTED_SOL_MODEL}; "
             f"Sol zero-spend reserve enabled: {bool(AI_GATEWAY_API_KEY and SOL_RESERVE_ENABLED and SOL_FREE_CREDIT_ONLY_ATTESTED)}"
         )
@@ -563,9 +607,9 @@ def create_mcp_app() -> FastMCP:
 
     @mcp.tool
     def jaytec_read(url: str) -> str:
-        """Read one public URL through the Gemini-only JAYTEC:READ route.
+        """Read one public URL through the DeepSeek reviewer JAYTEC:READ route.
 
-        This tool is hard-locked to Gemini + OpenRouter web_fetch. It does not
+        This tool is hard-locked to the free reviewer + OpenRouter web_fetch. It does not
         call Notion and it has no Notion fallback. Retrieval or verification
         failure is returned as FAILED_CLOSED.
         """
