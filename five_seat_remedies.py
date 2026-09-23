@@ -591,7 +591,7 @@ class PostgresFabricRemedies:
                     SELECT s.*,j.status AS job_status,j.fabric_state,
                            j.fabric_attempt_count,j.fabric_max_attempts,
                            j.cancel_requested_at,j.source_shared_state_version,
-                           e.worker_kind
+                           e.worker_kind,e.payload AS envelope_payload
                     FROM jaytec_worker_seats s
                     LEFT JOIN jaytec_jobs j ON j.job_id=s.current_job_id
                     LEFT JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
@@ -661,6 +661,34 @@ class PostgresFabricRemedies:
                     )
                     attempts = int(job.get("fabric_attempt_count") or 0)
                     max_attempts = int(job.get("fabric_max_attempts") or 1)
+                    worker_kind = str(seat.get("worker_kind") or "").upper()
+                    if worker_kind == "TASK_PACKET":
+                        envelope_payload = seat.get("envelope_payload") or {}
+                        if isinstance(envelope_payload, str):
+                            try:
+                                envelope_payload = json.loads(envelope_payload)
+                            except Exception:
+                                envelope_payload = {}
+                        packet_json = (
+                            envelope_payload.get("packet_json")
+                            if isinstance(envelope_payload, Mapping)
+                            else None
+                        )
+                        if isinstance(packet_json, str):
+                            try:
+                                packet = json.loads(packet_json)
+                            except Exception:
+                                packet = {}
+                            retry_budget = (
+                                packet.get("max_retries")
+                                if isinstance(packet, Mapping)
+                                else None
+                            )
+                            if type(retry_budget) is int and retry_budget >= 0:
+                                max_attempts = min(
+                                    max_attempts,
+                                    retry_budget + 1,
+                                )
 
                     if stale_source:
                         new_status = "BLOCKED"
@@ -751,7 +779,6 @@ class PostgresFabricRemedies:
                             ),
                         ),
                     )
-                    worker_kind = str(seat.get("worker_kind") or "").upper()
                     if worker_kind:
                         cur.execute(
                             """
