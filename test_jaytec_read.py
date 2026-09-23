@@ -19,7 +19,7 @@ def read_packet(**overrides):
         "intent": "Verified URL retrieval.",
         "workflow_id": "JAYTEC_READ",
         "risk_level": "LOW",
-        "specialist_plan": ["gemini"],
+        "specialist_plan": ["reviewer"],
         "allowed_operations": ["read", "research", "analyze", "validate", "web_fetch"],
         "expected_output": "Verified READ_REPORT.",
         "validation_requirements": ["exact page evidence"],
@@ -125,9 +125,9 @@ class TestJaytecReadPolicy(unittest.TestCase):
         good = validate_packet(read_packet())
         self.assertTrue(good.ok, good.errors)
 
-        bad = validate_packet(read_packet(specialist_plan=["codex", "gemini"], max_fanout=2))
+        bad = validate_packet(read_packet(specialist_plan=["codex", "reviewer"], max_fanout=2))
         self.assertFalse(bad.ok)
-        self.assertIn("jaytec_read_requires_gemini_only", bad.errors)
+        self.assertIn("jaytec_read_requires_reviewer_only", bad.errors)
 
     def test_read_packet_forbids_side_effect_operations(self):
         bad = validate_packet(
