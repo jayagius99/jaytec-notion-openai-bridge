@@ -240,7 +240,9 @@ class JaytecCourierRuntime:
         )
 
     def execute(self, packet_json: str) -> str:
-        if not self.fabric_enabled:
+        # Compatibility/test runtimes built without __init__ fail safely to the
+        # legacy direct path rather than pretending the five-seat fabric is on.
+        if not getattr(self, "fabric_enabled", False):
             return self._execute_direct(packet_json)
         if self.fabric_queue is None or self.fabric_authority is None:
             return json.dumps(
