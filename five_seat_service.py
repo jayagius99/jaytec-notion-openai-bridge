@@ -416,7 +416,7 @@ class FiveSeatFabricService:
                     """
                     SELECT j.job_id,j.task_id,j.subtask_id,j.objective,j.status,
                            j.fabric_state,j.priority,j.source_shared_state_version,
-                           j.seat_id,j.worker_id,j.lease_owner,j.lease_expires_at,
+                           j.seat_id,s.worker_id,j.lease_owner,j.lease_expires_at,
                            j.ownership_epoch,j.fence_token,j.checkpoint_ref,
                            j.blockers,j.health,j.created_at,j.updated_at,
                            e.worker_kind,e.authority_class,e.cost_policy,
@@ -424,6 +424,8 @@ class FiveSeatFabricService:
                            r.reason AS watch_reason,r.created_at AS watch_reviewed_at
                     FROM jaytec_jobs j
                     JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
+                    LEFT JOIN jaytec_worker_seats s
+                      ON s.seat_id=j.seat_id AND s.current_job_id=j.job_id
                     LEFT JOIN jaytec_watch_reviews r ON r.job_id=j.job_id
                     WHERE j.job_id=%s
                     ORDER BY r.created_at DESC NULLS LAST
