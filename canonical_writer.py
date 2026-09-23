@@ -846,6 +846,56 @@ class PostgresCanonicalWriterQueue:
                     contained.append(write_id)
         return contained
 
+    def verify_ready(self) -> dict[str, Any]:
+        required = (
+            "jaytec_canonical_writer_state",
+            "jaytec_canonical_write_queue",
+            "jaytec_canonical_write_ledger",
+        )
+        with self._connect() as conn:
+            conn.set_session(readonly=True, autocommit=True)
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                missing = []
+                for table in required:
+                    cur.execute("SELECT to_regclass(%s) AS name", (table,))
+                    row = cur.fetchone()
+                    if row is None or row["name"] is None:
+                        missing.append(table)
+                if missing:
+                    raise CanonicalWriterError(
+                        "canonical_writer_schema_missing:" + ",".join(missing)
+                    )
+                cur.execute(
+                    """
+                    SELECT count(*) AS n
+                    FROM jaytec_canonical_writer_state
+                    WHERE writer_id='CANONICAL'
+                    """
+                )
+                if int(cur.fetchone()["n"]) != 1:
+                    raise CanonicalWriterError("canonical_writer_singleton_missing")
+                cur.execute(
+                    """
+                    SELECT count(*) AS n
+                    FROM jaytec_canonical_write_queue
+                    WHERE state='IN_FLIGHT'
+                    """
+                )
+                inflight = int(cur.fetchone()["n"])
+                if inflight > 1:
+                    raise CanonicalWriterError(
+                        "multiple_canonical_writes_in_flight"
+                    )
+        ledger = self.verify_ledger_chain()
+        if ledger.get("valid") is not True:
+            raise CanonicalWriterError("canonical_writer_ledger_invalid")
+        return {
+            "ready": True,
+            "writer_id": CANONICAL_WRITER_ID,
+            "inflight_count": inflight,
+            "ledger": ledger,
+        }
+
     def writer_state(self) -> dict[str, Any]:
         with self._connect() as conn:
             conn.set_session(readonly=True, autocommit=True)
