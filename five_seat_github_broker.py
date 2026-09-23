@@ -264,6 +264,57 @@ class GitHubBranchPrBroker:
             "body": body,
         }
 
+    def _ref_head(self, root: str, branch: str) -> str:
+        status, value = self._request(
+            "GET",
+            f"{root}/git/ref/heads/{urllib.parse.quote(branch, safe='')}",
+        )
+        if status != 200 or not isinstance(value, Mapping):
+            raise GitHubBrokerError("git_ref_read_failed:" + branch)
+        obj = value.get("object") if isinstance(value.get("object"), Mapping) else {}
+        return _sha(obj.get("sha"), name="git_ref_head")
+
+    def _verify_diff_confined(
+        self,
+        root: str,
+        *,
+        base_sha: str,
+        branch: str,
+        allowed_paths: set[str],
+    ) -> Mapping[str, Any]:
+        status, compare = self._request(
+            "GET",
+            f"{root}/compare/{base_sha}...{urllib.parse.quote(branch, safe='')}",
+        )
+        if status != 200 or not isinstance(compare, Mapping):
+            raise GitHubBrokerError("github_compare_failed")
+        merge_base = (
+            compare.get("merge_base_commit")
+            if isinstance(compare.get("merge_base_commit"), Mapping)
+            else {}
+        )
+        if str(merge_base.get("sha") or "") != base_sha:
+            raise GitHubBrokerPolicyError("worker_branch_not_descended_from_attested_base")
+        changed: set[str] = set()
+        for row in list(compare.get("files") or []):
+            if not isinstance(row, Mapping):
+                raise GitHubBrokerError("github_compare_file_invalid")
+            path = _safe_path(row.get("filename"))
+            status_name = str(row.get("status") or "")
+            if status_name not in {"added", "modified"}:
+                raise GitHubBrokerPolicyError(
+                    "worker_branch_change_type_forbidden:" + status_name
+                )
+            changed.add(path)
+        if not changed.issubset(allowed_paths):
+            raise GitHubBrokerPolicyError(
+                "worker_branch_scope_escape:" + ",".join(sorted(changed - allowed_paths))
+            )
+        return {
+            "merge_base_sha": base_sha,
+            "changed_paths": sorted(changed),
+        }
+
     def execute(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
             (
@@ -279,10 +330,17 @@ class GitHubBranchPrBroker:
 
         root = f"https://api.github.com/repos/{repository}"
         owner = repository.split("/", 1)[0]
+        allowed_paths = {row["path"] for row in files}
         operations: list[dict[str, Any]] = []
         side_effect_started = False
 
         try:
+            # Base freshness is checked before any mutation. A stale base turns
+            # into a new planning/rebase job rather than an implicit mutation.
+            observed_base_sha = self._ref_head(root, base_branch)
+            if observed_base_sha != base_sha:
+                raise GitHubBrokerPolicyError("base_branch_head_moved")
+
             encoded_branch = urllib.parse.quote(branch, safe="")
             status, existing = self._request(
                 "GET", f"{root}/git/ref/heads/{encoded_branch}"
@@ -312,6 +370,12 @@ class GitHubBranchPrBroker:
             elif status == 200 and isinstance(existing, Mapping):
                 obj = existing.get("object") if isinstance(existing.get("object"), Mapping) else {}
                 branch_head = str(obj.get("sha") or "")
+                self._verify_diff_confined(
+                    root,
+                    base_sha=base_sha,
+                    branch=branch,
+                    allowed_paths=allowed_paths,
+                )
                 operations.append(
                     {
                         "operation": "create_branch",
@@ -438,6 +502,13 @@ class GitHubBranchPrBroker:
                     }
                 )
 
+            final_diff = self._verify_diff_confined(
+                root,
+                base_sha=base_sha,
+                branch=branch,
+                allowed_paths=allowed_paths,
+            )
+
             result = {
                 "operations": operations,
                 "artifacts": [
@@ -463,6 +534,7 @@ class GitHubBranchPrBroker:
                         "file_digests": {
                             row["path"]: row["content_sha256"] for row in files
                         },
+                        "diff": final_diff,
                     }
                 ],
                 "provider_identity": "JAYTEC_GITHUB_BROKER",
@@ -519,6 +591,18 @@ class GitHubBranchPrBroker:
             raise GitHubBrokerPolicyError("watch_verification_contract_invalid")
 
         root = f"https://api.github.com/repos/{repository}"
+        allowed_paths = {_safe_path(path) for path in file_digests}
+        observed_base_sha = self._ref_head(root, base_branch)
+        expected_base_sha = _sha(expected.get("base_sha"), name="watch_base_sha")
+        if observed_base_sha != expected_base_sha:
+            raise GitHubBrokerError("watch_base_branch_head_moved")
+        diff = self._verify_diff_confined(
+            root,
+            base_sha=expected_base_sha,
+            branch=branch,
+            allowed_paths=allowed_paths,
+        )
+
         status, ref = self._request(
             "GET", f"{root}/git/ref/heads/{urllib.parse.quote(branch, safe='')}"
         )
@@ -567,6 +651,8 @@ class GitHubBranchPrBroker:
             "head_sha": expected_head,
             "pr_number": pr_number,
             "base_branch": base_branch,
+            "base_sha": expected_base_sha,
+            "diff": diff,
             "files": verified_files,
         }
 
