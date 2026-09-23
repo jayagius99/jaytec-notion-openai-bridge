@@ -412,7 +412,7 @@ class PostgresCanonicalWriterQueue:
                     FROM jaytec_canonical_write_queue q
                     JOIN jaytec_fabric_authority_state a ON a.authority_id='FABRIC'
                     WHERE q.state='APPROVED'
-                    ORDER BY q.priority DESC,q.created_at ASC,q.write_id ASC
+                    ORDER BY q.priority ASC,q.created_at ASC,q.write_id ASC
                     LIMIT 1 FOR UPDATE OF q,a
                     """
                 )
@@ -427,7 +427,7 @@ class PostgresCanonicalWriterQueue:
                         UPDATE jaytec_canonical_write_queue
                         SET state='SUPERSEDED',
                             last_error='shared_state_version_moved',
-                            updated_at=now()
+                            completed_at=now(),updated_at=now()
                         WHERE write_id=%s
                         """,
                         (item["write_id"],),
@@ -439,7 +439,7 @@ class PostgresCanonicalWriterQueue:
                         actor=owner,
                         payload={"reason": "shared_state_version_moved"},
                     )
-                    raise CanonicalWriterStale("shared_state_version_moved")
+                    return None
                 cur.execute(
                     """
                     UPDATE jaytec_canonical_writer_state
@@ -493,6 +493,96 @@ class PostgresCanonicalWriterQueue:
                     write_id=item["write_id"],
                 )
 
+    def heartbeat(
+        self,
+        token: CanonicalWriterToken,
+        *,
+        lease_seconds: int = 300,
+    ) -> CanonicalWriterToken:
+        lease_seconds = max(30, min(int(lease_seconds), 1800))
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_QUEUE_LOCK_KEY,))
+                cur.execute(
+                    """
+                    UPDATE jaytec_canonical_writer_state
+                    SET lease_expires_at=now()+(%s*interval '1 second'),
+                        version=version+1,updated_at=now()
+                    WHERE writer_id='CANONICAL'
+                      AND lease_owner=%s
+                      AND writer_epoch=%s
+                      AND fence_token=%s
+                      AND active_write_id=%s
+                      AND lease_expires_at > now()
+                    RETURNING *
+                    """,
+                    (
+                        lease_seconds,
+                        token.owner,
+                        token.writer_epoch,
+                        token.fence_token,
+                        token.write_id,
+                    ),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise CanonicalWriterStale("canonical_writer_fence_stale")
+                cur.execute(
+                    """
+                    UPDATE jaytec_canonical_write_queue
+                    SET writer_lease_expires_at=%s,updated_at=now()
+                    WHERE write_id=%s AND state='IN_FLIGHT'
+                    """,
+                    (row["lease_expires_at"], token.write_id),
+                )
+                self._append_ledger(
+                    cur,
+                    write_id=token.write_id,
+                    event_type="WRITER_HEARTBEAT",
+                    actor=token.owner,
+                    payload={
+                        "writer_epoch": token.writer_epoch,
+                        "fence_token": token.fence_token,
+                    },
+                )
+                return CanonicalWriterToken(
+                    owner=token.owner,
+                    writer_epoch=token.writer_epoch,
+                    fence_token=token.fence_token,
+                    lease_expires_at=row["lease_expires_at"],
+                    write_id=token.write_id,
+                )
+
+    def active_ticket(self, token: CanonicalWriterToken) -> dict[str, Any]:
+        with self._connect() as conn:
+            conn.set_session(readonly=True, autocommit=True)
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT q.*
+                    FROM jaytec_canonical_writer_state s
+                    JOIN jaytec_canonical_write_queue q
+                      ON q.write_id=s.active_write_id
+                    WHERE s.writer_id='CANONICAL'
+                      AND s.lease_owner=%s
+                      AND s.writer_epoch=%s
+                      AND s.fence_token=%s
+                      AND s.active_write_id=%s
+                      AND s.lease_expires_at > now()
+                      AND q.state='IN_FLIGHT'
+                    """,
+                    (
+                        token.owner,
+                        token.writer_epoch,
+                        token.fence_token,
+                        token.write_id,
+                    ),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise CanonicalWriterStale("canonical_writer_fence_stale")
+                return dict(row)
+
     def complete(
         self,
         token: CanonicalWriterToken,
@@ -510,8 +600,17 @@ class PostgresCanonicalWriterQueue:
             canonical_commit_sha = _sha(
                 canonical_commit_sha, "canonical_commit_sha"
             )
-            if not evidence or evidence.get("healthy") is not True:
-                raise ValueError("healthy_verification_evidence_required")
+            required_true = (
+                "healthy",
+                "candidate_head_verified",
+                "expected_base_verified",
+                "canonical_ref_verified",
+            )
+            missing = [key for key in required_true if evidence.get(key) is not True]
+            if missing:
+                raise ValueError(
+                    "canonical_verification_evidence_missing:" + ",".join(missing)
+                )
         elif canonical_commit_sha:
             canonical_commit_sha = _sha(
                 canonical_commit_sha, "canonical_commit_sha"
@@ -543,6 +642,19 @@ class PostgresCanonicalWriterQueue:
                     or row["queue_state"] != "IN_FLIGHT"
                 ):
                     raise CanonicalWriterStale("canonical_writer_fence_stale")
+                if outcome == "VERIFIED_COMPLETE":
+                    cur.execute(
+                        """
+                        SELECT deployment_target
+                        FROM jaytec_canonical_write_queue
+                        WHERE write_id=%s
+                        """,
+                        (token.write_id,),
+                    )
+                    target_row = cur.fetchone()
+                    target = dict((target_row or {}).get("deployment_target") or {})
+                    if target and evidence.get("deployment_verified") is not True:
+                        raise ValueError("deployment_verification_evidence_required")
                 cur.execute(
                     """
                     UPDATE jaytec_canonical_write_queue
@@ -677,23 +789,31 @@ class PostgresCanonicalWriterQueue:
                 cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_QUEUE_LOCK_KEY,))
                 cur.execute(
                     """
-                    SELECT s.*,q.state AS queue_state
-                    FROM jaytec_canonical_writer_state s
-                    LEFT JOIN jaytec_canonical_write_queue q
-                      ON q.write_id=s.active_write_id
-                    WHERE s.writer_id='CANONICAL'
-                    FOR UPDATE OF s,q
+                    SELECT * FROM jaytec_canonical_writer_state
+                    WHERE writer_id='CANONICAL'
+                    FOR UPDATE
                     """
                 )
                 state = cur.fetchone()
                 if (
                     state
                     and state.get("active_write_id")
-                    and state.get("queue_state") == "IN_FLIGHT"
                     and state.get("lease_expires_at") is not None
                     and state["lease_expires_at"] <= datetime.now(timezone.utc)
                 ):
                     write_id = str(state["active_write_id"])
+                    cur.execute(
+                        """
+                        SELECT state FROM jaytec_canonical_write_queue
+                        WHERE write_id=%s FOR UPDATE
+                        """,
+                        (write_id,),
+                    )
+                    queue_row = cur.fetchone()
+                    if queue_row is None or queue_row["state"] != "IN_FLIGHT":
+                        raise CanonicalWriterStale(
+                            "writer_state_queue_state_mismatch"
+                        )
                     cur.execute(
                         """
                         UPDATE jaytec_canonical_write_queue
@@ -764,7 +884,7 @@ class PostgresCanonicalWriterQueue:
                         WHEN 'PENDING_CHATGPT_APPROVAL' THEN 2
                         ELSE 3
                       END,
-                      priority DESC,created_at ASC
+                      priority ASC,created_at ASC
                     LIMIT %s
                     """,
                     (limit,),
@@ -795,3 +915,39 @@ class PostgresCanonicalWriterQueue:
                         (limit,),
                     )
                 return [dict(row) for row in cur.fetchall()]
+
+
+    def verify_ledger_chain(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            conn.set_session(readonly=True, autocommit=True)
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT event_id,write_id,event_type,actor,payload,
+                           prev_hash,event_hash
+                    FROM jaytec_canonical_write_ledger
+                    ORDER BY event_id ASC
+                    """
+                )
+                rows = [dict(row) for row in cur.fetchall()]
+        previous = "GENESIS"
+        for row in rows:
+            body = {
+                "write_id": row["write_id"],
+                "event_type": row["event_type"],
+                "actor": row["actor"],
+                "payload": dict(row.get("payload") or {}),
+            }
+            expected = _ledger_hash(previous, body)
+            if row["prev_hash"] != previous or row["event_hash"] != expected:
+                return {
+                    "valid": False,
+                    "event_id": int(row["event_id"]),
+                    "reason": "ledger_hash_chain_mismatch",
+                }
+            previous = row["event_hash"]
+        return {
+            "valid": True,
+            "event_count": len(rows),
+            "head_hash": previous,
+        }
