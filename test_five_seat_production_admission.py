@@ -36,7 +36,7 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(
             first["idempotency_key"],
-            "fs08-production-admission-v1",
+            "fs08-production-admission-v2",
         )
 
     def test_seat_evidence_is_job_specific(self):
