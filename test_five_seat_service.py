@@ -144,6 +144,11 @@ class TestFiveSeatProductionServiceContract(unittest.TestCase):
         self.assertNotIn("CREATE TABLE", source)
         self.assertNotIn("ALTER TABLE", source)
 
+        self.assertIn("WatchLeaderUnavailable", source)
+        self.assertIn("self.watch.release_leader(token)", source)
+        self.assertIn("FIVE_SEAT_WATCH_LEADER_ACQUIRED", source)
+        self.assertIn("FIVE_SEAT_WATCH_LEADER_RELEASED", source)
+
 
 
 @unittest.skipUnless(os.environ.get("DATABASE_URL"), "DATABASE_URL required")

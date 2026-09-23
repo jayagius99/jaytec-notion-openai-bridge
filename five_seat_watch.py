@@ -171,6 +171,32 @@ class PostgresWatchController:
                     lease_expires_at=row["lease_expires_at"],
                 )
 
+    def release_leader(self, token: WatchLeaderToken) -> None:
+        """Release only the exact WATCH generation currently owned by token."""
+        with self._connect() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    UPDATE jaytec_watch_leader
+                    SET lease_owner=NULL,
+                        lease_expires_at=NULL,
+                        version=version+1,
+                        updated_at=now()
+                    WHERE controller_id='WATCH'
+                      AND lease_owner=%s
+                      AND leader_epoch=%s
+                      AND fence_token=%s
+                    RETURNING controller_id
+                    """,
+                    (
+                        token.owner,
+                        token.leader_epoch,
+                        token.fence_token,
+                    ),
+                )
+                if cur.fetchone() is None:
+                    raise WatchStaleLeader(token.owner)
+
     def pending_reviews(self, *, limit: int = 100) -> list[Dict[str, Any]]:
         bounded = max(1, min(int(limit), 500))
         with self._connect() as conn:
