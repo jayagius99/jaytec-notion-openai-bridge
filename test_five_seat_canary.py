@@ -14,7 +14,9 @@ os.environ.setdefault("FIVE_SEAT_CANARY_RUN_ID", "unit-import")
 from five_seat_canary_server import (
     CanaryAdapter,
     CanaryRuntime,
+    RetiredCanaryRuntime,
     _apply_canary_migration,
+    _build_runtime,
     _canary_worker_kind,
 )
 
@@ -62,6 +64,29 @@ class TestFiveSeatCanaryRuntime(unittest.TestCase):
                            version=version+1,updated_at=now()
                        WHERE controller_id='WATCH'"""
                 )
+
+    def test_retired_runtime_is_inert_and_needs_no_database(self):
+        previous = os.environ.get("FIVE_SEAT_CANARY_RETIRED")
+        os.environ["FIVE_SEAT_CANARY_RETIRED"] = "1"
+        try:
+            with patch(
+                "five_seat_canary_server.CanaryRuntime"
+            ) as live_runtime:
+                runtime = _build_runtime()
+                live_runtime.assert_not_called()
+            self.assertIsInstance(runtime, RetiredCanaryRuntime)
+            status = runtime.status()
+            self.assertTrue(status["retired"])
+            self.assertEqual(status["operational_state"], "RETIRED_INERT")
+            self.assertFalse(status["controller_active"])
+            self.assertEqual(status["worker_threads"], 0)
+            self.assertFalse(status["database_connected"])
+            self.assertTrue(status["pass"])
+        finally:
+            if previous is None:
+                os.environ.pop("FIVE_SEAT_CANARY_RETIRED", None)
+            else:
+                os.environ["FIVE_SEAT_CANARY_RETIRED"] = previous
 
     def test_runtime_migration_flag_fails_before_any_database_connect(self):
         previous = os.environ.get("FIVE_SEAT_CANARY_APPLY_MIGRATION")
