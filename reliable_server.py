@@ -761,6 +761,7 @@ def create_mcp_app():
         expected_candidate_digest: str,
         expected_base_sha: str,
         expected_source_shared_state_version: int,
+        preflight_evidence_json: str,
         authority: str = "CHATGPT",
     ) -> str:
         """Approve one WATCH-accepted canonical candidate. No merge occurs here."""
@@ -770,6 +771,9 @@ def create_mcp_app():
                 "reason": "CANONICAL_WRITER_DISABLED_OR_NOT_READY",
             })
         try:
+            preflight = json.loads(preflight_evidence_json or "{}")
+            if not isinstance(preflight, dict):
+                raise ValueError("preflight_evidence_json must decode to an object")
             approved = canonical_writer_queue.approve(
                 write_id,
                 approved_by=authority,
@@ -779,6 +783,7 @@ def create_mcp_app():
                 expected_source_shared_state_version=int(
                     expected_source_shared_state_version
                 ),
+                preflight_evidence=preflight,
             )
             return _json({"available": True, "approved": approved})
         except Exception as exc:
