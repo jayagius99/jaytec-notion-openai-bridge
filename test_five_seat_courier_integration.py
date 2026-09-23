@@ -19,6 +19,10 @@ class TestFiveSeatCourierIntegration(unittest.TestCase):
         self.assertIn('"worker_threads_alive"', source)
         self.assertIn('"watch_leader_matches_instance"', source)
         self.assertIn("seat_ids == expected_seats", source)
+        self.assertIn("FIVE_SEAT_PROD_ADMISSION_PROBE", source)
+        self.assertIn("FIVE_SEAT_PROD_ADMISSION_DEADLINE", source)
+        self.assertIn("run_production_admission_probe(", source)
+        self.assertIn('name="fs08-production-admission-probe"', source)
 
     def test_enabled_courier_routes_packets_to_shared_ingress_not_direct_execution(self):
         source = Path(__file__).with_name("notion_courier_server.py").read_text(
