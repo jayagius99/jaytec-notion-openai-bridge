@@ -1,4 +1,6 @@
+import json
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from five_seat_runtime import (
@@ -6,6 +8,7 @@ from five_seat_runtime import (
     WORKER_SEAT_IDS,
     FiveSeatRuntimeError,
     PostgresFiveSeatScheduler,
+    _task_packet_deadline_allows_claim,
 )
 
 
@@ -49,6 +52,53 @@ class TestFiveSeatRuntimeContract(unittest.TestCase):
         }
         with self.assertRaises(FiveSeatRuntimeError):
             PostgresFiveSeatScheduler.token_from_claim(claim)
+
+    def test_task_packet_deadline_guard_rejects_expired_packet(self):
+        candidate = {
+            "worker_kind": "TASK_PACKET",
+            "payload": {
+                "packet_json": json.dumps(
+                    {"deadline": "2026-09-23T11:40:00Z"}
+                )
+            },
+        }
+        now = datetime(
+            2026, 9, 23, 13, 11, 49, tzinfo=timezone.utc
+        )
+        self.assertFalse(
+            _task_packet_deadline_allows_claim(candidate, now=now)
+        )
+
+    def test_task_packet_deadline_guard_accepts_future_packet(self):
+        candidate = {
+            "worker_kind": "TASK_PACKET",
+            "payload": {
+                "packet_json": json.dumps(
+                    {"deadline": "2026-09-23T13:40:00Z"}
+                )
+            },
+        }
+        now = datetime(
+            2026, 9, 23, 13, 11, 49, tzinfo=timezone.utc
+        )
+        self.assertTrue(
+            _task_packet_deadline_allows_claim(candidate, now=now)
+        )
+
+    def test_task_packet_deadline_guard_fails_closed_on_bad_deadline(self):
+        packets = (
+            {},
+            {"deadline": "not-a-time"},
+            {"deadline": "2026-09-23T13:40:00"},
+        )
+        for packet in packets:
+            candidate = {
+                "worker_kind": "TASK_PACKET",
+                "payload": {"packet_json": json.dumps(packet)},
+            }
+            self.assertFalse(
+                _task_packet_deadline_allows_claim(candidate)
+            )
 
     def test_schema_is_additive_and_seeds_exact_seats(self):
         schema = Path(__file__).with_name("five_seat_schema.sql").read_text(encoding="utf-8")
