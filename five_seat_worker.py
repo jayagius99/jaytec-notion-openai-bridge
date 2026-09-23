@@ -183,6 +183,37 @@ class FiveSeatWorker:
         failure: Exception | None = None
         try:
             adapter_payload = dict(claim.get("payload") or {})
+            blockers = claim.get("blockers") or []
+            if isinstance(blockers, str):
+                try:
+                    blockers = json.loads(blockers)
+                except json.JSONDecodeError:
+                    blockers = []
+            dan_context = None
+            if isinstance(blockers, list):
+                for item in reversed(blockers):
+                    if isinstance(item, Mapping) and item.get("source") == "DAN_RECOVERY":
+                        dan_context = dict(item)
+                        break
+            if dan_context is not None:
+                adapter_payload["_dan_recovery_context"] = dan_context
+                packet_json = adapter_payload.get("packet_json")
+                if isinstance(packet_json, str) and packet_json.strip():
+                    try:
+                        packet = json.loads(packet_json)
+                    except json.JSONDecodeError:
+                        packet = None
+                    if isinstance(packet, dict):
+                        required_context = packet.get("required_context")
+                        required_context = dict(required_context) if isinstance(required_context, Mapping) else {}
+                        required_context["dan_recovery"] = dan_context
+                        packet["required_context"] = required_context
+                        original_key = str(packet.get("idempotency_key") or "")
+                        receipt = str(dan_context.get("response_digest") or dan_context.get("request_digest") or "")
+                        packet["idempotency_key"] = "dan-recovery-" + hashlib.sha256(
+                            (original_key + "|" + receipt).encode("utf-8")
+                        ).hexdigest()[:40]
+                        adapter_payload["packet_json"] = json.dumps(packet, ensure_ascii=False, sort_keys=True)
             # Runtime-owned context is overwritten unconditionally so queued
             # payload cannot forge its fence/scope/seat authority.
             adapter_payload["_fabric_context"] = {
