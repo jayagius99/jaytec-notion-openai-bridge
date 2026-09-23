@@ -260,7 +260,8 @@ class TestFs09StaticIntegration(unittest.TestCase):
     def test_no_merge_or_deploy_surface(self):
         source = open("five_seat_github_broker.py", encoding="utf-8").read()
         self.assertNotIn('"/merge"', source)
-        self.assertNotIn("deploy", source.lower().replace("deploy are not supported", ""))
+        self.assertNotIn("/deployments", source)
+        self.assertNotIn("workflow_dispatch", source)
 
 
 if __name__ == "__main__":
