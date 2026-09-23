@@ -14,6 +14,8 @@ class TestFiveSeatCourierIntegration(unittest.TestCase):
         self.assertIn("self.fabric_service.verify_ready()", source)
         self.assertIn("self.fabric_service.start()", source)
         self.assertIn("atexit.register(self.fabric_service.stop)", source)
+        self.assertIn("from five_seat_admission_probe import start_probe", source)
+        self.assertIn("start_probe(self)", source)
         self.assertIn("FIVE_SEAT_FABRIC_STARTUP_REPORT", source)
         self.assertIn("JAYTEC_FIVE_SEAT_STARTUP_REPORT_V1", source)
         self.assertIn('"worker_threads_alive"', source)
