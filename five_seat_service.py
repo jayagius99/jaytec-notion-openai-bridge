@@ -13,6 +13,7 @@ import psycopg2.extras
 
 from canonical_writer import PostgresCanonicalWriterQueue
 from durable_tasks import SUCCESS_OVERALL_STATUSES, contains_secret_material
+from dan_recovery import DanRecoveryManager
 from five_seat_adapters import AdapterRegistry, RetryableAdapterError
 from five_seat_guardian import FiveSeatGuardian
 from five_seat_github_broker import (
@@ -249,6 +250,7 @@ class FiveSeatFabricService:
         self.reporter = FiveSeatReporter(database_url)
         self.github_broker = github_broker
         self.canonical_writer_queue = canonical_writer_queue
+        self.dan_recovery = DanRecoveryManager.from_env(database_url)
         self.registry = AdapterRegistry()
         self.registry.register(
             TASK_PACKET_WORKER_KIND,
@@ -457,6 +459,24 @@ class FiveSeatFabricService:
                         reason=reason,
                         evidence=evidence,
                     )
+                    if decision == "BLOCK" and self.dan_recovery is not None:
+                        try:
+                            dispatched = self.dan_recovery.dispatch_watch_block(
+                                handoff,
+                                result,
+                                decision=decision,
+                                reason=reason,
+                            )
+                            if dispatched.get("dispatched"):
+                                print(
+                                    "DAN_RECOVERY_DISPATCHED="
+                                    + json.dumps(dispatched, sort_keys=True, default=str),
+                                    flush=True,
+                                )
+                        except Exception as exc:
+                            self._errors.append(
+                                "dan_dispatch:" + type(exc).__name__ + ":" + str(exc)[:500]
+                            )
                     destination = handoff.get("result_destination") or {}
                     if isinstance(destination, str):
                         destination = json.loads(destination)
@@ -500,6 +520,19 @@ class FiveSeatFabricService:
         while not self._stop.wait(self.guardian_interval_seconds):
             try:
                 self.guardian.run_once()
+                if self.dan_recovery is not None:
+                    try:
+                        recovered = self.dan_recovery.poll_results_and_requeue()
+                        if recovered.get("accepted"):
+                            print(
+                                "DAN_RECOVERY_REQUEUED="
+                                + json.dumps(recovered, sort_keys=True, default=str),
+                                flush=True,
+                            )
+                    except Exception as exc:
+                        self._errors.append(
+                            "dan_poll:" + type(exc).__name__ + ":" + str(exc)[:500]
+                        )
             except Exception as exc:
                 self._errors.append(
                     "guardian:" + type(exc).__name__ + ":" + str(exc)[:500]
@@ -575,4 +608,5 @@ class FiveSeatFabricService:
             "seats": seats,
             "errors": list(self._errors[-20:]),
             "canonical_writer_queue_enabled": self.canonical_writer_queue is not None,
+            "dan_recovery_enabled": self.dan_recovery is not None,
         }
