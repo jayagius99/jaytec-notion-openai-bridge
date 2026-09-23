@@ -192,6 +192,8 @@ class JaytecCourierRuntime:
             self.fabric_service.verify_ready()
             self.fabric_service.start()
             atexit.register(self.fabric_service.stop)
+            from five_seat_admission_probe import start_probe
+            start_probe(self)
             if (
                 os.environ.get(
                     "FIVE_SEAT_FABRIC_STARTUP_REPORT", "0"
