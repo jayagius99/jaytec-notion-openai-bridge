@@ -274,6 +274,12 @@ class JaytecCourierRuntime:
                         "90",
                     )
                 ),
+                stable_seconds=float(
+                    os.environ.get(
+                        "FIVE_SEAT_PROD_ADMISSION_WATCH_STABLE_S",
+                        "15",
+                    )
+                ),
             )
             result = run_production_admission_probe(
                 database_url=legacy_server.DATABASE_URL,
