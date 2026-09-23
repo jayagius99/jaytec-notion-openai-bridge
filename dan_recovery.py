@@ -23,7 +23,9 @@ DAN_RELAY_REPO_DEFAULT = "jayagius99/jaytec-work-engine-v2-g1"
 DAN_RELAY_ISSUE_DEFAULT = 130
 EXPECTED_QWEN_MODEL = r"C:\JAYTEC_BOOTSTRAP\Scratch\local-model-proof\qwen2.5-1.5b-instruct-q4_k_m.gguf"
 EXPECTED_QWEN_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
+EXPECTED_QWEN_SERVER_SHA256 = "06f5c5463753a7a6fe729bb436a6d3ab5e71373527559339b42cec9fd7f1d27f"
 EXPECTED_QWEN_ROUTE = "local-llama-127.0.0.1:18081"
+MAX_DAN_RECOVERIES_PER_JOB = 2
 _HARD_BOUNDARY_TERMS = (
     "policy", "permission", "secret", "credential", "privacy", "spend",
     "owner approval", "hold", "stop", "canonical authority", "unsafe",
@@ -169,6 +171,7 @@ class DanRecoveryManager:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     """SELECT j.task_id,j.objective,j.source_shared_state_version,j.fabric_state,
+                              j.fabric_rework_count,j.fabric_max_reworks,
                               e.worker_kind,e.payload
                        FROM jaytec_jobs j JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
                        WHERE j.job_id=%s""",
@@ -185,6 +188,16 @@ class DanRecoveryManager:
                 )
                 if cur.fetchone() is not None:
                     return {"dispatched": False, "reason": "already_dispatched"}
+                if int(row.get("fabric_rework_count") or 0) >= int(row.get("fabric_max_reworks") or 0):
+                    return {"dispatched": False, "reason": "rework_budget_exhausted"}
+                cur.execute(
+                    """SELECT count(*) AS n FROM jaytec_job_events
+                       WHERE job_id=%s AND event_type='DAN_RECOVERY_DISPATCHED'""",
+                    (job_id,),
+                )
+                prior_recoveries = int((cur.fetchone() or {}).get("n") or 0)
+                if prior_recoveries >= MAX_DAN_RECOVERIES_PER_JOB:
+                    return {"dispatched": False, "reason": "dan_recovery_budget_exhausted"}
                 compact_result = {
                     "whole_packet_status": result.get("whole_packet_status"),
                     "worker_completion_classification": result.get("worker_completion_classification"),
@@ -232,6 +245,8 @@ class DanRecoveryManager:
         self._last_poll = now
         accepted: list[str] = []
         for receipt in self.relay.results():
+            if str(receipt.get("_relay_author") or "").lower() != "jayagius99":
+                continue
             if receipt.get("principal") != DAN_RECOVERY_ID:
                 continue
             if str(receipt.get("status") or "").upper() != "DAN_COMPLETE":
@@ -239,6 +254,8 @@ class DanRecoveryManager:
             if receipt.get("exact_model_id") != EXPECTED_QWEN_MODEL:
                 continue
             if str(receipt.get("model_sha256") or "").lower() != EXPECTED_QWEN_SHA256:
+                continue
+            if str(receipt.get("server_sha256") or "").lower() != EXPECTED_QWEN_SERVER_SHA256:
                 continue
             if receipt.get("route_id") != EXPECTED_QWEN_ROUTE:
                 continue
@@ -292,6 +309,8 @@ class DanRecoveryManager:
                     return False
                 source_version = int(job["source_shared_state_version"])
                 if source_version != int(job["current_shared_state_version"]):
+                    return False
+                if int(receipt.get("source_shared_state_version") or -1) != source_version:
                     return False
                 if str(job["status"]) != "BLOCKED" or str(job["fabric_state"]) != "QUARANTINED":
                     return False
