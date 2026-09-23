@@ -6,6 +6,7 @@ Before any state-changing action, refresh the relevant current evidence:
 - repository branch head;
 - open PRs and CI;
 - deployment/service status;
+- deployment commit ancestry and per-file diff from the last accepted checkpoint;
 - WATCH control state;
 - canonical assignment/worker/fence;
 - current gate/checkpoint;
@@ -32,3 +33,16 @@ Canonical precedence:
 
 Memory may explain what a component should do. Only current evidence can prove
 what it is doing now.
+
+## Deployment reconciliation rule
+
+When several recent deploy records exist:
+- group records by commit id before counting code states;
+- treat API/new-commit deploys of the same commit as redundant rollout attempts;
+- verify the newest candidate is a descendant of every required accepted commit
+  and is zero commits behind those checkpoints;
+- compare changed files to detect explicit overwrite/revert of required policy;
+- do not declare work missing merely because an intermediate commit has no
+  standalone deployment card;
+- if duplicate deploy triggers are observed, preserve service behavior and report
+  the duplication until the owning automation/trigger is identified.
