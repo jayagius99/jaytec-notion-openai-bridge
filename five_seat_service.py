@@ -8,6 +8,7 @@ import time
 from typing import Any, Callable, Mapping
 
 import psycopg2
+import psycopg2.extras
 
 from durable_tasks import SUCCESS_OVERALL_STATUSES
 from five_seat_adapters import AdapterRegistry, RetryableAdapterError
@@ -325,7 +326,7 @@ class FiveSeatFabricService:
             raise ValueError("job_id is required")
         with psycopg2.connect(self.database_url) as conn:
             conn.set_session(readonly=True, autocommit=True)
-            with conn.cursor() as cur:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     """
                     SELECT j.job_id,j.task_id,j.subtask_id,j.objective,j.status,
@@ -345,36 +346,7 @@ class FiveSeatFabricService:
                     """,
                     (job_id,),
                 )
-                row = cur.fetchone()
-        if row is None:
-            return {"found": False, "job_id": job_id}
-        columns = [item[0] for item in cur.description] if False else None
-        # RealDictCursor is intentionally avoided here; construct via a second
-        # read-only cursor description would add no safety value. Use dict row
-        # support instead by requesting it directly below.
-        with psycopg2.connect(self.database_url) as conn:
-            conn.set_session(readonly=True, autocommit=True)
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur2:
-                cur2.execute(
-                    """
-                    SELECT j.job_id,j.task_id,j.subtask_id,j.objective,j.status,
-                           j.fabric_state,j.priority,j.source_shared_state_version,
-                           j.seat_id,j.worker_id,j.lease_owner,j.lease_expires_at,
-                           j.ownership_epoch,j.fence_token,j.checkpoint_ref,
-                           j.blockers,j.health,j.created_at,j.updated_at,
-                           e.worker_kind,e.authority_class,e.cost_policy,
-                           r.review_id,r.decision AS watch_decision,
-                           r.reason AS watch_reason,r.created_at AS watch_reviewed_at
-                    FROM jaytec_jobs j
-                    JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
-                    LEFT JOIN jaytec_watch_reviews r ON r.job_id=j.job_id
-                    WHERE j.job_id=%s
-                    ORDER BY r.created_at DESC NULLS LAST
-                    LIMIT 1
-                    """,
-                    (job_id,),
-                )
-                record = cur2.fetchone()
+                record = cur.fetchone()
         return {"found": bool(record), "job": dict(record) if record else None}
 
     def status(self) -> dict[str, Any]:
