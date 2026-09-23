@@ -83,8 +83,7 @@ def _call(client: OpenAI, prompt: str, cap: int) -> dict:
     if returned != MODEL:
         raise RuntimeError(f"model_identity_mismatch:{returned}")
     content = response.choices[0].message.content or ""
-    parsed = json.loads(content)
-    return {
+    if not content.strip():\n        raise RuntimeError("empty_model_content:finish_reason=" + str(getattr(response.choices[0], "finish_reason", None)))\n    parsed = json.loads(content)\n    return {
         "response_id": getattr(response, "id", None),
         "model": returned,
         "finish_reason": getattr(response.choices[0], "finish_reason", None),
@@ -97,9 +96,9 @@ def run() -> dict:
         raise RuntimeError("OPENROUTER_API_KEY_MISSING")
     client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
-    baseline = _call(client, BASELINE_PROMPT, 220)
-    hardened = _call(client, HARDENED_PROMPT, 420)
-    adversarial = _call(client, ADVERSARIAL_PROMPT, 300)
+    baseline = _call(client, BASELINE_PROMPT, 1100)
+    hardened = _call(client, HARDENED_PROMPT, 1300)
+    adversarial = _call(client, ADVERSARIAL_PROMPT, 1100)
 
     baseline_pass = (
         baseline["parsed"].get("status") == "HANDOFF_REQUIRED"
