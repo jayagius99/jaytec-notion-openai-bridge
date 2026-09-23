@@ -16,7 +16,8 @@ class TestProductionReady(unittest.TestCase):
         os.environ.pop("OPENAI_API_KEY", None)
         os.environ["OPENROUTER_API_KEY"] = "test"
         os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
-        os.environ["GEMINI_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
+        os.environ["DEEPSEEK_REVIEWER_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
+        os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         server = self._reload()
 
@@ -26,6 +27,37 @@ class TestProductionReady(unittest.TestCase):
                 idempotency_store="postgres",
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
+                reviewer_model=server.REVIEWER_MODEL,
+                mcp_auth_token_present=True,
+                openai_api_key_present=False,
+                openrouter_api_key_present=True,
+            )
+        )
+
+    def test_paid_gemini_is_not_required_for_ordinary_production_readiness(self):
+        server = self._reload()
+        self.assertTrue(
+            server.compute_production_ready(
+                runtime_mode="production",
+                idempotency_store="postgres",
+                codex_model="nvidia/nemotron-3-ultra-550b-a55b:free",
+                reviewer_model="deepseek/deepseek-v4-flash-0731:free",
+                gemini_model="not-configured-paid-reserve",
+                mcp_auth_token_present=True,
+                openai_api_key_present=False,
+                openrouter_api_key_present=True,
+            )
+        )
+
+    def test_wrong_deepseek_reviewer_model_fails_readiness(self):
+        server = self._reload()
+        self.assertFalse(
+            server.compute_production_ready(
+                runtime_mode="production",
+                idempotency_store="postgres",
+                codex_model="nvidia/nemotron-3-ultra-550b-a55b:free",
+                reviewer_model="google/gemini-3.1-pro-preview",
+                gemini_model="google/gemini-3.1-pro-preview",
                 mcp_auth_token_present=True,
                 openai_api_key_present=False,
                 openrouter_api_key_present=True,
@@ -39,7 +71,8 @@ class TestProductionReady(unittest.TestCase):
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ.pop("OPENROUTER_API_KEY", None)
         os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
-        os.environ["GEMINI_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
+        os.environ["DEEPSEEK_REVIEWER_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
+        os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         server = self._reload()
 
@@ -49,6 +82,7 @@ class TestProductionReady(unittest.TestCase):
                 idempotency_store="process_memory",
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
+                reviewer_model=server.REVIEWER_MODEL,
                 mcp_auth_token_present=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=False,
@@ -62,7 +96,8 @@ class TestProductionReady(unittest.TestCase):
         os.environ["OPENAI_API_KEY"] = "test"
         os.environ.pop("OPENROUTER_API_KEY", None)
         os.environ["CODEX_MODEL"] = "nvidia/nemotron-3-ultra-550b-a55b:free"
-        os.environ["GEMINI_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
+        os.environ["DEEPSEEK_REVIEWER_MODEL"] = "deepseek/deepseek-v4-flash-0731:free"
+        os.environ["GEMINI_MODEL"] = "google/gemini-3.1-pro-preview"
 
         server = self._reload()
 
@@ -72,6 +107,7 @@ class TestProductionReady(unittest.TestCase):
                 idempotency_store="postgres",
                 codex_model=server.CODEX_MODEL,
                 gemini_model=server.GEMINI_MODEL,
+                reviewer_model=server.REVIEWER_MODEL,
                 mcp_auth_token_present=True,
                 openai_api_key_present=True,
                 openrouter_api_key_present=bool(server.OPENROUTER_API_KEY),
