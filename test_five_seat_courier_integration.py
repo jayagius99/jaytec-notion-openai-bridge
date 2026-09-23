@@ -19,6 +19,17 @@ class TestFiveSeatCourierIntegration(unittest.TestCase):
         self.assertIn('"watch_leader_matches_instance"', source)
         self.assertIn("seat_ids == expected_seats", source)
 
+    def test_startup_attestation_is_nonblocking_and_waits_for_handoff(self):
+        source = Path(__file__).with_name("notion_courier_server.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("threading.Thread(", source)
+        self.assertIn('name="five-seat-startup-attestation"', source)
+        self.assertIn("FIVE_SEAT_FABRIC_STARTUP_REPORT_TIMEOUT_S", source)
+        self.assertIn('"90"', source)
+        self.assertIn("FIVE_SEAT_WATCH_LEASE_S", source)
+        self.assertIn('"30"', source)
+
     def test_enabled_courier_routes_packets_to_shared_ingress_not_direct_execution(self):
         source = Path(__file__).with_name("notion_courier_server.py").read_text(
             encoding="utf-8"
