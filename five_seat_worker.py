@@ -218,6 +218,9 @@ class FiveSeatWorker:
                 )
                 if retry.get("requeued") is True:
                     return True
+                if retry.get("reason") == "CANCEL_REQUESTED":
+                    self.remedies.acknowledge_cancel(token)
+                    return True
                 partial = (
                     "UNCERTAIN_PARTIAL"
                     if retry.get("reason") == "UNRESOLVED_SIDE_EFFECT"
