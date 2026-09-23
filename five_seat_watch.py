@@ -9,6 +9,8 @@ import psycopg2
 import psycopg2.extras
 
 from five_seat_signals import WORK_AVAILABLE_CHANNEL
+from five_seat_authority import authority_requires_approval, normalize_cost_policy
+from concurrency import UNRESOLVED_OPERATION_STATUSES
 
 
 WATCH_CONTROLLER_ID = "WATCH"
@@ -255,10 +257,27 @@ class PostgresWatchController:
 
                 cur.execute(
                     """
-                    SELECT *
-                    FROM jaytec_jobs
-                    WHERE job_id=%s
-                    FOR UPDATE
+                    SELECT
+                      j.*,
+                      e.envelope_hash,
+                      e.approval_required,
+                      e.authority_class,
+                      e.cost_policy,
+                      a.current_shared_state_version,
+                      p.approval_id,
+                      p.envelope_hash AS approval_envelope_hash,
+                      p.source_shared_state_version AS approval_source_version,
+                      p.authority_class AS approval_authority_class,
+                      p.max_cost_usd AS approval_max_cost_usd
+                    FROM jaytec_jobs j
+                    JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
+                    JOIN jaytec_fabric_authority_state a ON a.authority_id='FABRIC'
+                    LEFT JOIN jaytec_fabric_approvals p
+                      ON p.job_id=j.job_id
+                     AND p.state='APPROVED'
+                     AND (p.expires_at IS NULL OR p.expires_at > now())
+                    WHERE j.job_id=%s
+                    FOR UPDATE OF j,e,a
                     """,
                     (handoff["job_id"],),
                 )
@@ -271,12 +290,72 @@ class PostgresWatchController:
                     or job["checkpoint_ref"] != handoff_id
                 ):
                     raise WatchReviewConflict("job_not_reviewable:" + str(handoff["job_id"]))
+                if decision in {"ACCEPT", "REWORK"}:
+                    current_shared_state_version = int(
+                        job.get("current_shared_state_version") or 0
+                    )
+                    if (
+                        current_shared_state_version <= 0
+                        or int(job.get("source_shared_state_version") or -1)
+                           != current_shared_state_version
+                    ):
+                        raise WatchReviewConflict("stale_source_shared_state_version")
+                    if job.get("cancel_requested_at") is not None:
+                        raise WatchReviewConflict("cancel_requested_cannot_accept_or_rework")
+                    policy = normalize_cost_policy(job.get("cost_policy") or {})
+                    approval_required = bool(
+                        job.get("approval_required")
+                    ) or authority_requires_approval(
+                        job.get("authority_class"),
+                        policy,
+                    )
+                    if approval_required:
+                        if not job.get("approval_id"):
+                            raise WatchReviewConflict("approval_required_or_expired")
+                        if job.get("approval_envelope_hash") != job.get("envelope_hash"):
+                            raise WatchReviewConflict("approval_envelope_mismatch")
+                        if int(job.get("approval_source_version") or -1) != current_shared_state_version:
+                            raise WatchReviewConflict("approval_source_version_stale")
+                        if job.get("approval_authority_class") != job.get("authority_class"):
+                            raise WatchReviewConflict("approval_authority_class_mismatch")
+                        if float(job.get("approval_max_cost_usd") or 0) < float(
+                            policy["max_cost_usd"]
+                        ):
+                            raise WatchReviewConflict("approval_cost_cap_too_low")
+
                 if (
                     job["fabric_state"] == "QUARANTINED"
                     and decision in {"ACCEPT", "REWORK"}
-                    and dict(evidence or {}).get("quarantine_reconciled") is not True
                 ):
-                    raise WatchReviewConflict("quarantine_requires_reconciliation_evidence")
+                    if dict(evidence or {}).get("quarantine_reconciled") is not True:
+                        raise WatchReviewConflict(
+                            "quarantine_requires_reconciliation_evidence"
+                        )
+                    cur.execute(
+                        """
+                        SELECT operation_id,status
+                        FROM jaytec_operations
+                        WHERE job_id=%s
+                          AND status = ANY(%s)
+                        ORDER BY operation_id
+                        FOR UPDATE
+                        """,
+                        (
+                            handoff["job_id"],
+                            list(UNRESOLVED_OPERATION_STATUSES),
+                        ),
+                    )
+                    unresolved_operations = [
+                        dict(row) for row in cur.fetchall()
+                    ]
+                    if unresolved_operations:
+                        raise WatchReviewConflict(
+                            "quarantine_has_unresolved_operations:"
+                            + ",".join(
+                                str(row["operation_id"])
+                                for row in unresolved_operations
+                            )
+                        )
                 if decision == "REWORK":
                     rework_count = int(job.get("fabric_rework_count") or 0)
                     max_reworks = int(job.get("fabric_max_reworks") or 0)
