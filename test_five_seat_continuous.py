@@ -56,7 +56,8 @@ class TestFiveSeatContinuousFabric(unittest.TestCase):
         source = Path(__file__).with_name("five_seat_queue.py").read_text(encoding="utf-8")
         self.assertIn("worker_kind", source)
         self.assertIn("required_capabilities", source)
-        self.assertIn('authority_class == "OWNER_GATED"', source)
+        self.assertIn("authority_requires_approval", source)
+        self.assertIn("approval_required", source)
         self.assertIn('"BLOCKED_OWNER"', source)
 
 
