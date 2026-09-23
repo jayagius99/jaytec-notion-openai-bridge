@@ -27,6 +27,7 @@ import uvicorn
 import server as legacy_server
 from meeting_bus import MeetingBusMiddleware
 from dan_relay_http import DanRelayMiddleware
+from dan_cognition_http import DanCognitionMiddleware
 from five_seat_authority import PostgresFabricAuthority
 from five_seat_queue import PostgresFabricQueue
 from five_seat_reporting import FiveSeatReporter
@@ -594,6 +595,7 @@ def create_http_app(mcp: FastMCP | None = None):
     server = mcp or create_mcp_app()
     return server.http_app(
         middleware=[
+            Middleware(DanCognitionMiddleware),
             Middleware(DanRelayMiddleware),
             Middleware(MeetingBusMiddleware),
         ],
