@@ -99,6 +99,48 @@ class TestDanPcRelayEnvelope(unittest.TestCase):
 
 
 class TestDanFiveSeatWiring(unittest.TestCase):
+    def test_complete_recovery_records_candidate_but_does_not_self_promote_recipe(self):
+        class FakeExperience:
+            def __init__(self):
+                self.events = []
+                self.capabilities = []
+                self.recipes = []
+            def append_event(self, event):
+                row = dict(event)
+                row["event_id"] = "evt-proof"
+                self.events.append(row)
+                return row
+            def update_capability(self, record):
+                self.capabilities.append(dict(record))
+                return {"capability_id": record["capability_id"]}
+            def upsert_recipe(self, record):
+                self.recipes.append(dict(record))
+                return record
+
+        fake = FakeExperience()
+        job = {
+            "principal": "DAN-RECOVERY-SEAT",
+            "task_id": "proof-task",
+            "assignment_name": "proof",
+            "original_job_id": "fabric-job",
+            "original_handoff_id": "handoff",
+            "original_worker_kind": "TASK_PACKET",
+            "watch_reason": "worker capability failure",
+            "worker_failure": {"unresolved_items": ["model unavailable"]},
+        }
+        receipt = {
+            "status": "DAN_COMPLETE",
+            "response_digest": "a" * 64,
+        }
+        with patch.object(dan_pc_relay, "experience_module", return_value=fake):
+            result = dan_pc_relay.record_experience(job, receipt)
+
+        self.assertEqual(result["event_id"], "evt-proof")
+        self.assertEqual(result["capability_id"], "qwen.local.bounded_reasoning")
+        self.assertTrue(result["repair_candidate_id"].startswith("candidate."))
+        self.assertEqual(fake.recipes, [])
+        self.assertTrue(any(x.get("type") == "repair_recipe_candidate" for x in fake.events))
+
     def test_recovered_worker_receives_dan_context_with_fresh_idempotency(self):
         captured = {}
         def fake_execute(packet_json):
