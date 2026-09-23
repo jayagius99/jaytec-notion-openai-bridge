@@ -14,4 +14,4 @@ EXPOSE 8000
 # calls and free-form collaboration are rejected at the HTTP boundary; only
 # exact JAYTEC-authored status/task-packet pass-through commands survive.
 # This Dockerfile change intentionally pins CI to the complete courier stress-test head.
-CMD ["sh", "-c", "python jaytec_read_startup_selftest.py && exec python notion_courier_server.py"]
+CMD ["sh", "-c", "python five_seat_production_migrate.py && python jaytec_read_startup_selftest.py && exec python notion_courier_server.py"]

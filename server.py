@@ -84,6 +84,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 NOTION_AGENT_RUNTIME_ENABLED = False
 NOTION_USAGE_POLICY = "EXPLICIT_ONE_SHOT_MCP_OR_WORKSPACE_AUTHORITY_ONLY"
 
+def five_seat_fabric_enabled() -> bool:
+    """Dynamic cutover flag so tests/staged deploys can fail closed cleanly."""
+    return os.environ.get("FIVE_SEAT_FABRIC_ENABLED", "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
 BRIDGE_ID_CODEX = "BRIDGE_CODEX_ENGINEERING"
 LEGACY_ORCHESTRATION_STATUS_TASK = "JAYTEC_ORCHESTRATION_STATUS"
 LEGACY_EXECUTE_TASK_PACKET_PREFIX = "JAYTEC_EXECUTE_TASK_PACKET_JSON:"
@@ -543,6 +549,16 @@ def create_mcp_app() -> FastMCP:
 
     @mcp.tool
     def execute_task_packet(packet_json: str) -> str:
+        if five_seat_fabric_enabled():
+            return json.dumps(
+                {
+                    "overall_status": "FAILED_CLOSED",
+                    "reason": "FIVE_SEAT_FABRIC_REQUIRES_DURABLE_SUBMIT",
+                    "preferred_path": "submit_task_packet_five_seat",
+                    "side_effects_attempted": [],
+                },
+                sort_keys=True,
+            )
         return _packet_json(packet_json)
 
     @mcp.tool
