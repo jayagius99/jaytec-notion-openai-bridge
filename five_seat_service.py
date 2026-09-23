@@ -18,7 +18,12 @@ from five_seat_queue import PostgresFabricQueue
 from five_seat_reporting import FiveSeatReporter
 from five_seat_runtime import PostgresFiveSeatScheduler
 from five_seat_signals import PostgresFabricSignal
-from five_seat_watch import (\n    PostgresWatchController,\n    WatchLeaderUnavailable,\n    WatchLeaderToken,\n    WatchStaleLeader,\n)
+from five_seat_watch import (
+    PostgresWatchController,
+    WatchLeaderUnavailable,
+    WatchLeaderToken,
+    WatchStaleLeader,
+)
 from five_seat_worker import FiveSeatWorker
 from orchestration import PacketValidationError, parse_packet_json, validate_packet
 from reliability_registry import transient_specialist_statuses
