@@ -188,6 +188,22 @@ def submit_low_risk_task_packet(
 def _bounded_dan_recovery_context(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
+    if value.get("acceptance") == "WATCH_RECOVERY_CONTEXT_ONLY":
+        return {
+            "identity": str(value.get("identity") or "")[:80],
+            "attempt_id": str(value.get("attempt_id") or "")[:160],
+            "source_state_version": value.get("source_state_version"),
+            "ownership_fence": str(value.get("ownership_fence") or "")[:240],
+            "model_id": str(value.get("model_id") or "")[:500],
+            "response_sha256": str(value.get("response_sha256") or "")[:128],
+            "result": str(value.get("result") or "")[:6000],
+            "evidence": [str(item)[:1200] for item in list(value.get("evidence") or [])[:10]],
+            "limitations": str(value.get("limitations") or "")[:3000],
+            "recommended_next_action": str(
+                value.get("recommended_next_action") or ""
+            )[:3000],
+            "acceptance": "WATCH_RECOVERY_CONTEXT_ONLY",
+        }
     receipt = value.get("qwen_receipt")
     if not isinstance(receipt, Mapping):
         return None
@@ -439,6 +455,77 @@ class FiveSeatFabricService:
                 )
         self._started = False
 
+    @staticmethod
+    def _dan_recovery_eligible(
+        handoff: Mapping[str, Any],
+        *,
+        worker_kind: str,
+        overall: str,
+        partial: str,
+    ) -> bool:
+        if worker_kind != TASK_PACKET_WORKER_KIND:
+            return False
+        if partial not in DAN_RECOVERY_SAFE_PARTIAL:
+            return False
+        if overall in {
+            "SUCCESS",
+            "PARTIAL_SUCCESS",
+            "NEEDS_VALIDATION",
+            "POLICY_BLOCKED",
+            "HOLD",
+            "STOPPED",
+            "REJECTED",
+            "CANCELLED",
+        }:
+            return False
+        rework_count = int(handoff.get("fabric_rework_count") or 0)
+        max_reworks = int(handoff.get("fabric_max_reworks") or 0)
+        if max_reworks <= 0 or rework_count >= max_reworks:
+            return False
+        if int(handoff.get("source_shared_state_version") or 0) <= 0:
+            return False
+        if int(handoff.get("job_fence_token") or 0) <= 0:
+            return False
+        return True
+
+    def _dan_recover(
+        self,
+        handoff: Mapping[str, Any],
+        *,
+        overall: str,
+        unresolved: list[Any],
+        worker_kind: str,
+    ) -> dict[str, Any]:
+        if self.dan_relay is None:
+            raise DanWorkerRelayError("dan_worker_relay_not_enabled")
+        handoff_id = str(handoff.get("handoff_id") or "")
+        task_id = str(handoff.get("task_id") or handoff.get("job_id") or "")
+        subtask_id = str(handoff.get("subtask_id") or "") or "WATCH_RECOVERY"
+        objective = str(handoff.get("objective") or "")
+        ownership_fence = (
+            "job:"
+            + str(handoff.get("current_job_fence_token") or "")
+            + "|handoff:"
+            + str(handoff.get("job_fence_token") or "")
+        )
+        recovery = self.dan_relay.recover(
+            handoff_id=handoff_id,
+            task_id=task_id,
+            subtask_id=subtask_id,
+            objective=objective,
+            failure_class=overall,
+            evidence=[str(item)[:2000] for item in unresolved[:20]],
+            source_state_version=int(
+                handoff.get("source_shared_state_version") or 0
+            ),
+            ownership_fence=ownership_fence,
+            return_worker_kind=worker_kind,
+        )
+        bounded = _bounded_dan_recovery_context(recovery)
+        if bounded is None:
+            raise DanWorkerRelayError("dan_worker_recovery_context_invalid")
+        return bounded
+
     def _watch_loop(self) -> None:
         token = None
         last_heartbeat = 0.0
@@ -537,6 +624,35 @@ class FiveSeatFabricService:
                     else:
                         decision = "BLOCK"
                         reason = "worker evidence does not satisfy acceptance contract"
+                        if (
+                            self.dan_relay is not None
+                            and self._dan_recovery_eligible(
+                                handoff,
+                                worker_kind=worker_kind,
+                                overall=overall,
+                                partial=partial,
+                            )
+                        ):
+                            try:
+                                dan_recovery = self._dan_recover(
+                                    handoff,
+                                    overall=overall,
+                                    unresolved=unresolved,
+                                    worker_kind=worker_kind,
+                                )
+                            except Exception as exc:
+                                external_verification["dan_worker_recovery_error"] = (
+                                    type(exc).__name__ + ":" + str(exc)[:500]
+                                )
+                            else:
+                                external_verification["dan_worker_recovery"] = (
+                                    dan_recovery
+                                )
+                                decision = "REWORK"
+                                reason = (
+                                    "DAN-WORKER returned bounded recovery context; "
+                                    "original worker requeued under WATCH"
+                                )
 
                     evidence = {
                         "service_id": FABRIC_SERVICE_ID,
