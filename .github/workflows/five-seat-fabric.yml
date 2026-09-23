@@ -75,7 +75,7 @@ jobs:
 
       - name: Compile five-seat and inherited runtime
         run: |
-          python -m py_compile             five_seat_adapters.py five_seat_guardian.py five_seat_queue.py             five_seat_remedies.py five_seat_runtime.py five_seat_signals.py             five_seat_watch.py five_seat_worker.py             concurrency.py job_runtime.py             test_five_seat_contract.py test_five_seat_runtime.py             test_five_seat_watch.py test_five_seat_continuous.py             test_five_seat_remedies.py test_concurrency.py test_job_runtime.py
+          python -m py_compile             five_seat_adapters.py five_seat_authority.py five_seat_guardian.py five_seat_queue.py             five_seat_remedies.py five_seat_runtime.py five_seat_signals.py             five_seat_watch.py five_seat_worker.py five_seat_canary_server.py             concurrency.py job_runtime.py             test_five_seat_contract.py test_five_seat_runtime.py             test_five_seat_watch.py test_five_seat_continuous.py             test_five_seat_remedies.py test_concurrency.py test_job_runtime.py
 
       - name: Apply existing durable schema
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f job_runtime_schema.sql
@@ -85,6 +85,10 @@ jobs:
 
       - name: Reapply five-seat migration for idempotency
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f five_seat_schema.sql
+
+      - name: Initialize fabric authority test snapshot
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "update jaytec_fabric_authority_state set current_shared_state_version=1, authority_epoch=authority_epoch+1, fence_token=fence_token+1, updated_by='FIVE_SEAT_CI', updated_at=now() where authority_id='FABRIC'"
 
       - name: Verify exact five seats and singleton WATCH row
         run: |
