@@ -161,6 +161,7 @@ class PostgresCanonicalWriterQueue:
         idempotency_key: str,
         requested_by: str,
         priority: int = 100,
+        candidate_manifest: Optional[Mapping[str, Any]] = None,
         deployment_target: Optional[Mapping[str, Any]] = None,
     ) -> dict[str, Any]:
         job_id = _clean(job_id, "job_id", 200)
@@ -180,6 +181,7 @@ class PostgresCanonicalWriterQueue:
         if source_version <= 0:
             raise ValueError("source_shared_state_version_invalid")
         priority = max(0, min(int(priority), 1000))
+        manifest = dict(candidate_manifest or {})
         envelope = {
             "job_id": job_id,
             "handoff_id": handoff_id,
@@ -191,6 +193,9 @@ class PostgresCanonicalWriterQueue:
             "candidate_digest": candidate_digest,
             "source_shared_state_version": source_version,
             "idempotency_key": idempotency_key,
+            "candidate_manifest_sha256": hashlib.sha256(
+                _json(manifest).encode("utf-8")
+            ).hexdigest(),
         }
         write_id = "canonical-" + _digest(envelope)[:24]
 
@@ -246,11 +251,11 @@ class PostgresCanonicalWriterQueue:
                       write_id,job_id,handoff_id,review_id,idempotency_key,
                       repository,pull_request_number,candidate_head_sha,
                       expected_base_sha,candidate_digest,
-                      source_shared_state_version,deployment_target,
-                      requested_by,priority,state
+                      source_shared_state_version,candidate_manifest,
+                      deployment_target,requested_by,priority,state
                     ) VALUES (
-                      %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,
-                      'PENDING_CHATGPT_APPROVAL'
+                      %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,
+                      %s::jsonb,%s,%s,'PENDING_CHATGPT_APPROVAL'
                     )
                     RETURNING *
                     """,
@@ -266,6 +271,7 @@ class PostgresCanonicalWriterQueue:
                         expected_base_sha,
                         candidate_digest,
                         source_version,
+                        _json(manifest),
                         _json(dict(deployment_target or {})),
                         requested_by,
                         priority,
@@ -292,6 +298,7 @@ class PostgresCanonicalWriterQueue:
         expected_candidate_digest: str,
         expected_base_sha: str,
         expected_source_shared_state_version: int,
+        preflight_evidence: Mapping[str, Any],
     ) -> dict[str, Any]:
         write_id = _clean(write_id, "write_id", 240)
         approved_by = _clean(approved_by, "approved_by", 100).upper()
@@ -303,23 +310,42 @@ class PostgresCanonicalWriterQueue:
             raise ValueError("expected_candidate_digest_invalid")
         base_sha = _sha(expected_base_sha, "expected_base_sha")
         source_version = int(expected_source_shared_state_version)
+        preflight = dict(preflight_evidence or {})
+        required_preflight = (
+            "candidate_head_verified",
+            "expected_base_verified",
+            "pr_open_verified",
+            "watch_accept_verified",
+            "ci_green_verified",
+        )
+        missing_preflight = [
+            key for key in required_preflight if preflight.get(key) is not True
+        ]
+        if missing_preflight:
+            raise CanonicalWriterAuthorityError(
+                "canonical_preflight_incomplete:" + ",".join(missing_preflight)
+            )
 
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_QUEUE_LOCK_KEY,))
                 cur.execute(
                     """
-                    SELECT q.*,a.current_shared_state_version
+                    SELECT q.*,a.current_shared_state_version,
+                           r.decision AS watch_decision
                     FROM jaytec_canonical_write_queue q
                     JOIN jaytec_fabric_authority_state a ON a.authority_id='FABRIC'
+                    JOIN jaytec_watch_reviews r ON r.review_id=q.review_id
                     WHERE q.write_id=%s
-                    FOR UPDATE OF q,a
+                    FOR UPDATE OF q,a,r
                     """,
                     (write_id,),
                 )
                 row = cur.fetchone()
                 if row is None:
                     raise CanonicalWriterError("write_not_found:" + write_id)
+                if str(row.get("watch_decision") or "").upper() != "ACCEPT":
+                    raise CanonicalWriterAuthorityError("watch_accept_no_longer_valid")
                 if row["state"] == "APPROVED":
                     same = (
                         row["approved_by"] == approved_by
@@ -327,6 +353,7 @@ class PostgresCanonicalWriterQueue:
                         and row["candidate_digest"] == digest
                         and row["expected_base_sha"] == base_sha
                         and int(row["source_shared_state_version"]) == source_version
+                        and dict(row.get("approval_evidence") or {}) == preflight
                     )
                     if same:
                         return dict(row)
@@ -345,11 +372,17 @@ class PostgresCanonicalWriterQueue:
                     """
                     UPDATE jaytec_canonical_write_queue
                     SET state='APPROVED',approved_by=%s,approval_ref=%s,
+                        approval_evidence=%s::jsonb,
                         approved_at=now(),updated_at=now()
                     WHERE write_id=%s
                     RETURNING *
                     """,
-                    (approved_by, approval_ref, write_id),
+                    (
+                        approved_by,
+                        approval_ref,
+                        _json(preflight),
+                        write_id,
+                    ),
                 )
                 approved = cur.fetchone()
                 self._append_ledger(
@@ -362,6 +395,7 @@ class PostgresCanonicalWriterQueue:
                         "candidate_digest": digest,
                         "expected_base_sha": base_sha,
                         "source_shared_state_version": source_version,
+                        "preflight_evidence": preflight,
                     },
                 )
                 return dict(approved)
@@ -440,6 +474,26 @@ class PostgresCanonicalWriterQueue:
                         payload={"reason": "shared_state_version_moved"},
                     )
                     return None
+                if str(item.get("approved_by") or "").upper() not in CANONICAL_APPROVERS:
+                    raise CanonicalWriterAuthorityError(
+                        "canonical_approval_identity_invalid"
+                    )
+                approval_evidence = dict(item.get("approval_evidence") or {})
+                required_preflight = (
+                    "candidate_head_verified",
+                    "expected_base_verified",
+                    "pr_open_verified",
+                    "watch_accept_verified",
+                    "ci_green_verified",
+                )
+                if any(
+                    approval_evidence.get(key) is not True
+                    for key in required_preflight
+                ):
+                    raise CanonicalWriterAuthorityError(
+                        "canonical_approval_evidence_invalid"
+                    )
+
                 cur.execute(
                     """
                     UPDATE jaytec_canonical_writer_state
@@ -767,6 +821,7 @@ class PostgresCanonicalWriterQueue:
                         row.get("controller_owner") or "WATCH"
                     ),
                     priority=int(row.get("priority") or 100),
+                    candidate_manifest=dict(verification),
                 )
                 enqueued.append(str(item["write_id"]))
             except Exception as exc:
@@ -920,22 +975,27 @@ class PostgresCanonicalWriterQueue:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT write_id,job_id,handoff_id,review_id,state,priority,
-                           repository,pull_request_number,candidate_head_sha,
-                           expected_base_sha,candidate_digest,
-                           source_shared_state_version,requested_by,approved_by,
-                           approval_ref,writer_owner,writer_epoch,
-                           writer_fence_token,canonical_commit_sha,last_error,
-                           created_at,approved_at,started_at,completed_at,updated_at
-                    FROM jaytec_canonical_write_queue
+                    SELECT q.write_id,q.job_id,q.handoff_id,q.review_id,
+                           q.state,q.priority,q.repository,q.pull_request_number,
+                           q.candidate_head_sha,q.expected_base_sha,
+                           q.candidate_digest,q.candidate_manifest,
+                           q.source_shared_state_version,q.requested_by,
+                           q.approved_by,q.approval_ref,q.approval_evidence,
+                           q.writer_owner,q.writer_epoch,q.writer_fence_token,
+                           q.canonical_commit_sha,q.last_error,
+                           q.created_at,q.approved_at,q.started_at,
+                           q.completed_at,q.updated_at,
+                           j.project_id,j.task_id,j.subtask_id,j.objective
+                    FROM jaytec_canonical_write_queue q
+                    JOIN jaytec_jobs j ON j.job_id=q.job_id
                     ORDER BY
-                      CASE state
+                      CASE q.state
                         WHEN 'IN_FLIGHT' THEN 0
                         WHEN 'APPROVED' THEN 1
                         WHEN 'PENDING_CHATGPT_APPROVAL' THEN 2
                         ELSE 3
                       END,
-                      priority ASC,created_at ASC
+                      q.priority ASC,q.created_at ASC
                     LIMIT %s
                     """,
                     (limit,),
