@@ -141,8 +141,15 @@ def qwen_call(key: str, job: dict[str, Any]) -> tuple[dict[str, Any], str]:
     raw = str((((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")).strip()
     if not raw:
         raise RuntimeError("QWEN_EMPTY_RESPONSE")
+    candidate = raw
+    if candidate.startswith("```"):
+        first_nl = candidate.find("\n")
+        if first_nl >= 0:
+            candidate = candidate[first_nl + 1:]
+        if candidate.rstrip().endswith("```"):
+            candidate = candidate.rstrip()[:-3].rstrip()
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(candidate)
         if not isinstance(parsed, dict):
             raise ValueError
     except Exception:
