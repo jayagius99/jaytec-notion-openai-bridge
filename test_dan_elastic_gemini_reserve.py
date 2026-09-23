@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 
 import dan_elastic_gemini_review as review
+import dan_elastic_regression_v12 as regression
+import dan_role_elastic_runtime_proof as role_proof
 
 
 def reserve_packet():
@@ -79,14 +81,22 @@ class _FakeClient:
 
 
 class DanElasticGeminiReserveTests(unittest.TestCase):
-    def test_staging_startup_has_no_gemini_review_import_side_effect(self):
+    def test_staging_startup_has_no_paid_gemini_dan_import_side_effects(self):
         source = Path("staging_server.py").read_text(encoding="utf-8")
         self.assertNotIn("import dan_elastic_gemini_review", source)
+        self.assertNotIn("import dan_elastic_regression_v12", source)
+        self.assertNotIn("import dan_role_elastic_runtime_proof", source)
 
-    def test_review_module_has_no_environment_startup_autorun(self):
-        source = Path("dan_elastic_gemini_review.py").read_text(encoding="utf-8")
-        self.assertNotIn("JAYTEC_DAN_ELASTIC_GEMINI_REVIEW_ON_START", source)
-        self.assertNotIn("_once()", source)
+    def test_paid_gemini_dan_modules_have_no_environment_startup_autorun(self):
+        review_source = Path("dan_elastic_gemini_review.py").read_text(encoding="utf-8")
+        regression_source = Path("dan_elastic_regression_v12.py").read_text(encoding="utf-8")
+        proof_source = Path("dan_role_elastic_runtime_proof.py").read_text(encoding="utf-8")
+        self.assertNotIn("JAYTEC_DAN_ELASTIC_GEMINI_REVIEW_ON_START", review_source)
+        self.assertNotIn("JAYTEC_DAN_V12_REGRESSION_ON_START", regression_source)
+        self.assertNotIn("JAYTEC_DAN_PROOF_ON_START", proof_source)
+        self.assertNotIn("_once()", review_source)
+        self.assertNotIn("def _once", regression_source)
+        self.assertNotIn("def _execute_once", proof_source)
 
     def test_ordinary_direct_call_is_blocked_before_provider(self):
         client = _FakeClient()
@@ -109,6 +119,27 @@ class DanElasticGeminiReserveTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "dan_elastic_workflow_required"):
             review.run(packet, openrouter_client=client)
         self.assertEqual(0, client.completions.calls)
+
+    def test_legacy_regression_direct_call_is_blocked_before_provider(self):
+        client = _FakeClient()
+        with self.assertRaisesRegex(RuntimeError, "GEMINI_PAID_RESERVE_POLICY_BLOCKED"):
+            regression.run({}, openrouter_client=client)
+        self.assertEqual(0, client.completions.calls)
+
+    def test_legacy_role_proof_direct_call_is_blocked_before_provider(self):
+        client = _FakeClient()
+        with self.assertRaisesRegex(RuntimeError, "GEMINI_PAID_RESERVE_POLICY_BLOCKED"):
+            role_proof.run({}, openrouter_client=client)
+        self.assertEqual(0, client.completions.calls)
+
+    def test_legacy_paid_dan_modules_accept_only_their_exact_reserve_workflows(self):
+        regression_packet = reserve_packet()
+        regression_packet["workflow_id"] = regression.WORKFLOW_ID
+        self.assertIs(regression._validate_reserve_packet(regression_packet), regression_packet)
+
+        proof_packet = reserve_packet()
+        proof_packet["workflow_id"] = role_proof.WORKFLOW_ID
+        self.assertIs(role_proof._validate_reserve_packet(proof_packet), proof_packet)
 
     def test_complete_paid_reserve_proof_can_reach_exact_gemini_once(self):
         client = _FakeClient()
