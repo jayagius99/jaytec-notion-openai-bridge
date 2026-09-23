@@ -43,6 +43,24 @@ def _run_id() -> str:
     return value
 
 
+def _apply_canary_migration(database_url: str) -> None:
+    """Explicitly migrate ONLY the isolated FS08 canary database.
+
+    This path is gated by FIVE_SEAT_CANARY_APPLY_MIGRATION=1 and exists only
+    in the dedicated canary server. Production/staging runtimes never call it.
+    """
+    if os.environ.get("FIVE_SEAT_CANARY_APPLY_MIGRATION") != "1":
+        return
+    from pathlib import Path
+
+    migration = Path(__file__).with_name("five_seat_schema.sql").read_text(
+        encoding="utf-8"
+    )
+    with psycopg2.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(migration)
+
+
 def _canary_worker_kind(run_id: str, stage: int) -> str:
     suffix = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:10].upper()
     return f"CANARY_{stage}_{suffix}"
@@ -121,6 +139,7 @@ class CanaryRuntime:
         self.errors: list[str] = []
 
     def start(self) -> None:
+        _apply_canary_migration(self.database_url)
         self.scheduler.verify_schema_ready()
         self.authority.set_current_shared_state_version(
             1,
