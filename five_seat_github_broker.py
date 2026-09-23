@@ -678,6 +678,7 @@ def submit_github_branch_pr_job(
     pull_request: Mapping[str, Any],
     priority: int = 100,
     subtask_id: Optional[str] = None,
+    canonical_write_intent: bool = False,
 ) -> Mapping[str, Any]:
     repository = str(repository or "").strip()
     base_branch = str(base_branch or "").strip()
@@ -733,6 +734,7 @@ def submit_github_branch_pr_job(
             "github_readback_required": True,
             "branch_only": True,
             "merge_forbidden": True,
+            "canonical_writer_required": bool(canonical_write_intent),
         },
         stop_conditions={
             "merge": "FAIL_CLOSED",
@@ -741,7 +743,11 @@ def submit_github_branch_pr_job(
             "scope_expansion": "FAIL_CLOSED",
         },
         result_destination={
-            "type": "WATCH_ATTESTED_GITHUB_PR",
+            "type": (
+                "CANONICAL_WRITE_CANDIDATE"
+                if canonical_write_intent
+                else "WATCH_ATTESTED_GITHUB_PR"
+            ),
             "task_id": task_id,
         },
         payload={
