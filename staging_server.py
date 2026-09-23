@@ -15,6 +15,8 @@ New in C4: optional Postgres-backed idempotency via DATABASE_URL.
 """
 from __future__ import annotations
 
+import dan_role_elastic_runtime_proof  # bounded staging-only owner-authorized proof
+
 import base64
 import gzip
 import hashlib
