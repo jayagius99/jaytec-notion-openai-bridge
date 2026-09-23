@@ -450,7 +450,7 @@ def run() -> dict:
     }
 
     return {
-        "schema":"JAYTEC_DAN_ELASTIC_REGRESSION_V1_2_3",
+        "schema":"JAYTEC_DAN_ELASTIC_REGRESSION_V1_2_4",
         "classification":"OWNER_BOUND_ROLE_ELASTIC_RUNTIME_REGRESSION",
         "evaluator_version":EVALUATOR_VERSION,
         "render_git_commit":RENDER_GIT_COMMIT,
