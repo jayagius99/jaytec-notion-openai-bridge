@@ -223,14 +223,11 @@ class PostgresFabricRemedies:
                     (SCHEDULER_LOCK_KEY,),
                 )
                 job = self._assert_worker(cur, token)
-                if (
+                if not (
                     job.get("fabric_state") == "CANCEL_REQUESTED"
                     or job.get("cancel_requested_at") is not None
                 ):
-                    return {
-                        "requeued": False,
-                        "reason": "CANCEL_REQUESTED",
-                    }
+                    raise FabricRemedyError("cancel_not_requested:" + token.job_id)
                 unresolved = self._unresolved_operations(cur, token.job_id)
                 target_status = "BLOCKED" if unresolved else "CANCELED"
                 target_fabric = "QUARANTINED" if unresolved else "CANCELLED"
