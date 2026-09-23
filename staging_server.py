@@ -18,7 +18,6 @@ from __future__ import annotations
 import dan_role_elastic_runtime_proof  # bounded staging-only owner-authorized proof
 import dan_elastic_regression_v12  # bounded DAN/role-elastic regression v1.2
 import dan_elastic_hardening_consult  # JAYTEC:HELP independent hardening consultation
-import dan_elastic_gemini_review  # JAYTEC Gemini independent DAN/elastic hardening review
 
 import base64
 import gzip
@@ -371,6 +370,8 @@ def orchestration_status() -> str:
             "gemini_requires_paid_reserve_authority": True,
             "gemini_adapter_configured": bool(OPENROUTER_CLIENT),
             "gemini_provider_routing": "exact_model_no_fallback_paid_reserve",
+            "gemini_startup_autorun": False,
+            "gemini_direct_side_doors_allowed": False,
             "gemini_circuit": GEMINI_CIRCUIT.snapshot(),
             "default_research_reviewer": "deepseek",
             "deepseek_reviewer_model": DEEPSEEK_REVIEWER_MODEL,
