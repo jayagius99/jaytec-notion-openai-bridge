@@ -24,6 +24,10 @@ from provider_endpoints import (
     validate_openai_endpoint,
     validate_openrouter_endpoint,
 )
+from deepseek_reviewer import (
+    EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+    build_deepseek_security_review_dispatch,
+)
 from orchestration import (
     ExecutionRegistry,
     PacketValidationError,
@@ -63,6 +67,23 @@ OPENROUTER_BASE_URL = validate_openrouter_endpoint(
     os.environ.get("OPENROUTER_BASE_URL", OPENROUTER_API_BASE).strip()
 )
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
+DEEPSEEK_REVIEWER_MODEL = os.environ.get(
+    "DEEPSEEK_REVIEWER_MODEL",
+    EXPECTED_DEEPSEEK_REVIEWER_MODEL,
+).strip()
+DEEPSEEK_REVIEWER_TIMEOUT_S = float(
+    os.environ.get("DEEPSEEK_REVIEWER_TIMEOUT_S", "120")
+)
+DEEPSEEK_PROVIDER_MODE = os.environ.get(
+    "DEEPSEEK_PROVIDER_MODE", "ACTIVE_FREE_ONLY"
+).strip().upper()
+if DEEPSEEK_PROVIDER_MODE not in {"ACTIVE_FREE_ONLY", "LOCKED_RESERVE"}:
+    raise RuntimeError("invalid DEEPSEEK_PROVIDER_MODE")
+if (
+    DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+    and DEEPSEEK_REVIEWER_MODEL != EXPECTED_DEEPSEEK_REVIEWER_MODEL
+):
+    raise RuntimeError("deepseek_exact_free_model_required")
 
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
 MCP_AUTH_SUBJECT = os.environ.get("MCP_AUTH_SUBJECT", "").strip()
@@ -159,9 +180,10 @@ def compute_production_ready(
     Required conditions:
     - RUNTIME_MODE == 'production'
     - durable idempotency store is 'postgres'
-    - exact specialist model identities match the required locks
+    - exact required engineering model identity matches the required lock
     - MCP auth + provider startup prerequisites are satisfied
-    - Gemini production adapter is actually configured (OPENROUTER_API_KEY present)
+    - OpenRouter credential is present for the default free DeepSeek reviewer
+    - Gemini is optional paid reserve and is NOT a production-readiness dependency
 
     NOTE: Startup may still be allowed in some partially-configured states; this flag
     is strictly about readiness, not liveness.
@@ -176,10 +198,9 @@ def compute_production_ready(
         return False
     if not v2_dispatch_authority_integrated:
         return False
-    if gemini_model != EXPECTED_GEMINI_MODEL:
-        return False
-    if not openrouter_provider_active:
-        return False
+    # Paid Gemini is a terminal reserve, not a readiness dependency.
+    # The OPENROUTER credential is still required below for the free DeepSeek
+    # reviewer route, which has its own ACTIVE_FREE_ONLY policy.
     if not mcp_auth_token_present:
         return False
     if not mcp_auth_token_strong:
@@ -283,6 +304,14 @@ def _orchestration_status_json(
             "openrouter_provider_mode": OPENROUTER_PROVIDER_MODE,
             "codex_model": codex_model,  # legacy compatibility field
             "gemini_model": gemini_model,
+            "gemini_role": "paid_backup_only",
+            "gemini_default_route": False,
+            "gemini_requires_free_routes_exhausted": True,
+            "gemini_requires_specific_need": True,
+            "gemini_requires_paid_reserve_authority": True,
+            "default_research_reviewer": "deepseek",
+            "deepseek_reviewer_model": DEEPSEEK_REVIEWER_MODEL,
+            "deepseek_provider_mode": DEEPSEEK_PROVIDER_MODE,
             "codex_circuit": codex_circuit,
             "gemini_circuit": gemini_circuit,
             "manus_adapter_configured": bool(MANUS_API_KEY),
@@ -307,6 +336,7 @@ def _execute_task_packet_json(
     idempotency_store: str,
     codex_dispatch: Any,
     gemini_dispatch: Any,
+    reviewer_dispatch: Any,
 ) -> str:
     packet, parse_errors = parse_packet_json(packet_json)
     if packet is None:
@@ -352,7 +382,11 @@ def _execute_task_packet_json(
 
     result = execute_task_packet_core(
         packet,
-        {"codex": codex_dispatch, "gemini": gemini_dispatch},
+        {
+            "codex": codex_dispatch,
+            "gemini": gemini_dispatch,
+            "reviewer": reviewer_dispatch,
+        },
         registry_adapter,
     )
     return json.dumps(result, ensure_ascii=False, sort_keys=True)
@@ -461,6 +495,14 @@ def create_mcp_app() -> FastMCP:
         else None
     )
 
+    # Default research/review route. This client is free-only and independent
+    # of the locked paid-Gemini provider door.
+    deepseek_reviewer_client = (
+        OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+        if OPENROUTER_API_KEY and DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+        else None
+    )
+
     # Idempotency registry selection
     if DATABASE_URL:
         from idempotency_postgres import PostgresExecutionRegistry
@@ -504,6 +546,10 @@ def create_mcp_app() -> FastMCP:
         failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
         reset_after_seconds=CIRCUIT_RESET_SECONDS,
     )
+    deepseek_reviewer_circuit = CircuitBreaker(
+        failure_threshold=CIRCUIT_FAILURE_THRESHOLD,
+        reset_after_seconds=CIRCUIT_RESET_SECONDS,
+    )
 
     engineering_dispatch = (
         build_engineering_dispatch(
@@ -537,6 +583,25 @@ def create_mcp_app() -> FastMCP:
             lambda _packet: (_ for _ in ()).throw(RuntimeError(gemini_block_reason))
         )
 
+    reviewer_dispatch = (
+        build_deepseek_security_review_dispatch(
+            openrouter_client=deepseek_reviewer_client,
+            model=DEEPSEEK_REVIEWER_MODEL,
+            timeout_s=DEEPSEEK_REVIEWER_TIMEOUT_S,
+            circuit=deepseek_reviewer_circuit,
+        )
+        if deepseek_reviewer_client is not None
+        else deepseek_reviewer_circuit.guard(
+            lambda _packet: (_ for _ in ()).throw(
+                RuntimeError(
+                    "DEEPSEEK_FREE_SPECIALIST_UNAVAILABLE"
+                    if DEEPSEEK_PROVIDER_MODE == "ACTIVE_FREE_ONLY"
+                    else "DEEPSEEK_PROVIDER_DOOR_LOCKED_RESERVE"
+                )
+            )
+        )
+    )
+
     def _status_json() -> str:
         return _orchestration_status_json(
             runtime_mode=RUNTIME_MODE,
@@ -569,6 +634,7 @@ def create_mcp_app() -> FastMCP:
             idempotency_store=idempotency_store,
             codex_dispatch=codex_dispatch,
             gemini_dispatch=gemini_dispatch,
+            reviewer_dispatch=reviewer_dispatch,
         )
 
     def _manus_dispatch_boundary() -> tuple[bool, str]:
