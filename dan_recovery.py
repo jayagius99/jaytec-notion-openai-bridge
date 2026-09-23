@@ -23,6 +23,7 @@ DAN_RELAY_REPO_DEFAULT = "jayagius99/jaytec-work-engine-v2-g1"
 DAN_RELAY_ISSUE_DEFAULT = 130
 EXPECTED_QWEN_MODEL = r"C:\JAYTEC_BOOTSTRAP\Scratch\local-model-proof\qwen2.5-1.5b-instruct-q4_k_m.gguf"
 EXPECTED_QWEN_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
+EXPECTED_QWEN_SERVER_SHA256 = "06f5c5463753a7a6fe729bb436a6d3ab5e71373527559339b42cec9fd7f1d27f"
 EXPECTED_QWEN_ROUTE = "local-llama-127.0.0.1:18081"
 MAX_DAN_RECOVERIES_PER_JOB = 2
 _HARD_BOUNDARY_TERMS = (
@@ -250,6 +251,8 @@ class DanRecoveryManager:
             if receipt.get("exact_model_id") != EXPECTED_QWEN_MODEL:
                 continue
             if str(receipt.get("model_sha256") or "").lower() != EXPECTED_QWEN_SHA256:
+                continue
+            if str(receipt.get("server_sha256") or "").lower() != EXPECTED_QWEN_SERVER_SHA256:
                 continue
             if receipt.get("route_id") != EXPECTED_QWEN_ROUTE:
                 continue
