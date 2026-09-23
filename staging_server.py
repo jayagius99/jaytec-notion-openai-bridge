@@ -16,6 +16,7 @@ New in C4: optional Postgres-backed idempotency via DATABASE_URL.
 from __future__ import annotations
 
 import dan_elastic_hardening_consult  # JAYTEC:HELP independent hardening consultation
+import notion_dan_pdf_relay  # inert one-shot private Notion DAN evidence PDF relay
 
 import base64
 import gzip
