@@ -12,6 +12,7 @@ import psycopg2
 import psycopg2.extras
 
 from canonical_writer import PostgresCanonicalWriterQueue
+from dan_recovery import DanRecoveryManager
 from durable_tasks import SUCCESS_OVERALL_STATUSES, contains_secret_material
 from five_seat_adapters import AdapterRegistry, RetryableAdapterError
 from five_seat_guardian import FiveSeatGuardian
@@ -249,6 +250,7 @@ class FiveSeatFabricService:
         self.reporter = FiveSeatReporter(database_url)
         self.github_broker = github_broker
         self.canonical_writer_queue = canonical_writer_queue
+        self.dan_recovery = DanRecoveryManager.from_env(database_url)
         self.registry = AdapterRegistry()
         self.registry.register(
             TASK_PACKET_WORKER_KIND,
@@ -375,6 +377,14 @@ class FiveSeatFabricService:
                         self._watch_token = token
                     last_heartbeat = time.time()
 
+                if self.dan_recovery is not None:
+                    try:
+                        recovered = self.dan_recovery.poll_results_and_requeue()
+                        if recovered.get("accepted"):
+                            print("DAN_RECOVERY_REQUEUED=" + json.dumps(recovered, sort_keys=True), flush=True)
+                    except Exception as exc:
+                        self._errors.append("dan_recovery_poll:" + type(exc).__name__ + ":" + str(exc)[:500])
+
                 for handoff in self.watch.pending_reviews(limit=100):
                     payload = handoff.get("payload") or {}
                     if isinstance(payload, str):
@@ -430,8 +440,14 @@ class FiveSeatFabricService:
                             decision = "ACCEPT"
                             reason = "whole packet success independently verified"
                     elif overall in {"PARTIAL_SUCCESS", "NEEDS_VALIDATION"}:
-                        decision = "REWORK"
-                        reason = "bounded hardening/validation required"
+                        reworks = int(handoff.get("fabric_rework_count") or 0)
+                        max_reworks = int(handoff.get("fabric_max_reworks") or 0)
+                        if self.dan_recovery is not None and reworks >= max_reworks:
+                            decision = "BLOCK"
+                            reason = "worker rework budget exhausted; DAN recovery eligible"
+                        else:
+                            decision = "REWORK"
+                            reason = "bounded hardening/validation required"
                     elif overall == "POLICY_BLOCKED":
                         decision = "ESCALATE"
                         reason = "owner/policy decision required"
@@ -457,6 +473,15 @@ class FiveSeatFabricService:
                         reason=reason,
                         evidence=evidence,
                     )
+                    if self.dan_recovery is not None and decision == "BLOCK":
+                        try:
+                            dispatched = self.dan_recovery.dispatch_watch_block(
+                                handoff, result, decision=decision, reason=reason
+                            )
+                            if dispatched.get("dispatched"):
+                                print("DAN_RECOVERY_DISPATCHED=" + json.dumps(dispatched, sort_keys=True), flush=True)
+                        except Exception as exc:
+                            self._errors.append("dan_recovery_dispatch:" + type(exc).__name__ + ":" + str(exc)[:500])
                     destination = handoff.get("result_destination") or {}
                     if isinstance(destination, str):
                         destination = json.loads(destination)
