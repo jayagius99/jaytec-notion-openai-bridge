@@ -17,6 +17,7 @@ from jaytec_read import (
     JAYTEC_READ_WORKFLOW_ID,
     EXPECTED_READ_REVIEWER_MODEL,
 )
+from gemini_paid_reserve import gemini_paid_reserve_errors
 
 PACKET_VERSION = "1.0"
 RETURN_SCHEMA_VERSION = "1.0"
@@ -334,6 +335,12 @@ def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None
             errors.append("unauthorized_operation:" + ",".join(forbidden))
         if len(set(ops)) != len(ops):
             errors.append("duplicate_allowed_operation")
+
+    # Gemini is a paid terminal reserve only. DeepSeek/reviewer remains the
+    # normal research/review path. These checks are duplicated in the Gemini
+    # adapter immediately before provider invocation so bypassing normal packet
+    # validation still fails closed.
+    errors.extend(gemini_paid_reserve_errors(packet))
 
     if packet.get("workflow_id") == JAYTEC_READ_WORKFLOW_ID:
         if plan != [JAYTEC_READ_SPECIALIST]:
