@@ -203,7 +203,10 @@ class PostgresWatchController:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT h.*,j.priority,j.fabric_state,j.checkpoint_ref,
+                    SELECT h.*,j.task_id,j.subtask_id,j.objective,j.priority,
+                           j.fabric_state,j.checkpoint_ref,
+                           j.source_shared_state_version,j.fabric_rework_count,
+                           j.fabric_max_reworks,j.fence_token AS current_job_fence_token,
                            e.worker_kind,e.evidence_standard,e.result_destination
                     FROM jaytec_worker_handoffs h
                     JOIN jaytec_jobs j ON j.job_id=h.job_id

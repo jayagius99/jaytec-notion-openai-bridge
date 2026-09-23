@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import socket
 import threading
 import time
@@ -12,6 +13,11 @@ import psycopg2
 import psycopg2.extras
 
 from canonical_writer import PostgresCanonicalWriterQueue
+from dan_worker_relay import (
+    DanWorkerRelay,
+    DanWorkerRelayConfig,
+    DanWorkerRelayError,
+)
 from durable_tasks import SUCCESS_OVERALL_STATUSES, contains_secret_material
 from five_seat_adapters import AdapterRegistry, RetryableAdapterError
 from five_seat_guardian import FiveSeatGuardian
@@ -39,6 +45,38 @@ TASK_PACKET_WORKER_KIND = "TASK_PACKET"
 TASK_PACKET_CAPABILITY = "jaytec.task_packet.execute"
 FABRIC_SERVICE_ID = "JAYTEC_FIVE_SEAT_PRODUCTION_HOST_V1"
 WATCH_OWNER_PREFIX = "five-seat-watch"
+DAN_RECOVERY_SAFE_PARTIAL = frozenset(
+    {"NONE", "VERIFIED_COMPLETE", "VERIFIED_NOT_DONE"}
+)
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dan_relay_from_env() -> DanWorkerRelay | None:
+    if not _env_enabled("JAYTEC_DAN_WORKER_ENABLED"):
+        return None
+    token = (
+        os.environ.get("JAYTEC_DAN_GITHUB_TOKEN", "").strip()
+        or os.environ.get("JAYTEC_GITHUB_BROKER_TOKEN", "").strip()
+    )
+    repository = os.environ.get(
+        "JAYTEC_DAN_RELAY_REPOSITORY",
+        "jayagius99/jaytec-work-engine-v2-g1",
+    ).strip()
+    issue_number = int(os.environ.get("JAYTEC_DAN_RELAY_ISSUE", "128"))
+    timeout_seconds = float(
+        os.environ.get("JAYTEC_DAN_RECOVERY_TIMEOUT_SECONDS", "180")
+    )
+    return DanWorkerRelay(
+        DanWorkerRelayConfig.build(
+            token,
+            repository,
+            issue_number,
+            timeout_seconds=timeout_seconds,
+        )
+    )
 
 
 def _canonical(value: Any) -> bytes:
@@ -147,6 +185,48 @@ def submit_low_risk_task_packet(
     )
 
 
+def _bounded_dan_recovery_context(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    if value.get("acceptance") == "WATCH_RECOVERY_CONTEXT_ONLY":
+        return {
+            "identity": str(value.get("identity") or "")[:80],
+            "attempt_id": str(value.get("attempt_id") or "")[:160],
+            "source_state_version": value.get("source_state_version"),
+            "ownership_fence": str(value.get("ownership_fence") or "")[:240],
+            "model_id": str(value.get("model_id") or "")[:500],
+            "response_sha256": str(value.get("response_sha256") or "")[:128],
+            "result": str(value.get("result") or "")[:6000],
+            "evidence": [str(item)[:1200] for item in list(value.get("evidence") or [])[:10]],
+            "limitations": str(value.get("limitations") or "")[:3000],
+            "recommended_next_action": str(
+                value.get("recommended_next_action") or ""
+            )[:3000],
+            "acceptance": "WATCH_RECOVERY_CONTEXT_ONLY",
+        }
+    receipt = value.get("qwen_receipt")
+    if not isinstance(receipt, Mapping):
+        return None
+    candidate = receipt.get("candidate")
+    if not isinstance(candidate, Mapping):
+        return None
+    return {
+        "identity": str(value.get("identity") or "")[:80],
+        "attempt_id": str(value.get("attempt_id") or "")[:160],
+        "source_state_version": value.get("source_state_version"),
+        "ownership_fence": str(value.get("ownership_fence") or "")[:240],
+        "model_id": str(receipt.get("model_id") or "")[:500],
+        "response_sha256": str(receipt.get("response_sha256") or "")[:128],
+        "result": str(candidate.get("result") or "")[:6000],
+        "evidence": [str(item)[:1200] for item in list(candidate.get("evidence") or [])[:10]],
+        "limitations": str(candidate.get("limitations") or "")[:3000],
+        "recommended_next_action": str(
+            candidate.get("recommended_next_action") or ""
+        )[:3000],
+        "acceptance": "WATCH_RECOVERY_CONTEXT_ONLY",
+    }
+
+
 def build_task_packet_adapter(
     execute_packet: Callable[[str], Mapping[str, Any]],
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
@@ -161,6 +241,31 @@ def build_task_packet_adapter(
         packet_json = payload.get("packet_json")
         if not isinstance(packet_json, str) or not packet_json.strip():
             raise RuntimeError("TASK_PACKET_PAYLOAD_MISSING")
+
+        fabric_context = payload.get("_fabric_context")
+        if isinstance(fabric_context, Mapping):
+            watch_evidence = fabric_context.get("last_watch_evidence")
+            if isinstance(watch_evidence, Mapping):
+                dan_context = _bounded_dan_recovery_context(
+                    watch_evidence.get("dan_worker_recovery")
+                )
+                if dan_context is not None:
+                    packet_obj = json.loads(packet_json)
+                    if not isinstance(packet_obj, dict):
+                        raise RuntimeError("TASK_PACKET_JSON_NOT_OBJECT")
+                    required_context = packet_obj.get("required_context")
+                    if not isinstance(required_context, dict):
+                        required_context = {}
+                    else:
+                        required_context = dict(required_context)
+                    required_context["dan_worker_recovery"] = dan_context
+                    packet_obj["required_context"] = required_context
+                    packet_json = json.dumps(
+                        packet_obj,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+
         raw = execute_packet(packet_json)
         if isinstance(raw, str):
             try:
@@ -231,6 +336,7 @@ class FiveSeatFabricService:
         report_interval_seconds: float = 3600.0,
         github_broker: GitHubBranchPrBroker | None = None,
         canonical_writer_queue: PostgresCanonicalWriterQueue | None = None,
+        dan_relay: DanWorkerRelay | None = None,
     ):
         if not database_url:
             raise ValueError("database_url is required")
@@ -249,6 +355,15 @@ class FiveSeatFabricService:
         self.reporter = FiveSeatReporter(database_url)
         self.github_broker = github_broker
         self.canonical_writer_queue = canonical_writer_queue
+        self.dan_relay = dan_relay
+        self._dan_relay_startup_error: str | None = None
+        if self.dan_relay is None and _env_enabled("JAYTEC_DAN_WORKER_ENABLED"):
+            try:
+                self.dan_relay = _dan_relay_from_env()
+            except Exception as exc:
+                self._dan_relay_startup_error = (
+                    type(exc).__name__ + ":" + str(exc)[:500]
+                )
         self.registry = AdapterRegistry()
         self.registry.register(
             TASK_PACKET_WORKER_KIND,
@@ -279,6 +394,17 @@ class FiveSeatFabricService:
             return
         self.verify_ready()
         self._stop.clear()
+        print(
+            "FIVE_SEAT_DAN_WORKER_RECOVERY="
+            + json.dumps(
+                {
+                    "enabled": self.dan_relay is not None,
+                    "startup_error": self._dan_relay_startup_error,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
 
         for index in range(1, 6):
             worker = FiveSeatWorker(
@@ -339,6 +465,77 @@ class FiveSeatFabricService:
                     "watch_release:" + type(exc).__name__ + ":" + str(exc)[:500]
                 )
         self._started = False
+
+    @staticmethod
+    def _dan_recovery_eligible(
+        handoff: Mapping[str, Any],
+        *,
+        worker_kind: str,
+        overall: str,
+        partial: str,
+    ) -> bool:
+        if worker_kind != TASK_PACKET_WORKER_KIND:
+            return False
+        if partial not in DAN_RECOVERY_SAFE_PARTIAL:
+            return False
+        if overall in {
+            "SUCCESS",
+            "PARTIAL_SUCCESS",
+            "NEEDS_VALIDATION",
+            "POLICY_BLOCKED",
+            "HOLD",
+            "STOPPED",
+            "REJECTED",
+            "CANCELLED",
+        }:
+            return False
+        rework_count = int(handoff.get("fabric_rework_count") or 0)
+        max_reworks = int(handoff.get("fabric_max_reworks") or 0)
+        if max_reworks <= 0 or rework_count >= max_reworks:
+            return False
+        if int(handoff.get("source_shared_state_version") or 0) <= 0:
+            return False
+        if int(handoff.get("job_fence_token") or 0) <= 0:
+            return False
+        return True
+
+    def _dan_recover(
+        self,
+        handoff: Mapping[str, Any],
+        *,
+        overall: str,
+        unresolved: list[Any],
+        worker_kind: str,
+    ) -> dict[str, Any]:
+        if self.dan_relay is None:
+            raise DanWorkerRelayError("dan_worker_relay_not_enabled")
+        handoff_id = str(handoff.get("handoff_id") or "")
+        task_id = str(handoff.get("task_id") or handoff.get("job_id") or "")
+        subtask_id = str(handoff.get("subtask_id") or "") or "WATCH_RECOVERY"
+        objective = str(handoff.get("objective") or "")
+        ownership_fence = (
+            "job:"
+            + str(handoff.get("current_job_fence_token") or "")
+            + "|handoff:"
+            + str(handoff.get("job_fence_token") or "")
+        )
+        recovery = self.dan_relay.recover(
+            handoff_id=handoff_id,
+            task_id=task_id,
+            subtask_id=subtask_id,
+            objective=objective,
+            failure_class=overall,
+            evidence=[str(item)[:2000] for item in unresolved[:20]],
+            source_state_version=int(
+                handoff.get("source_shared_state_version") or 0
+            ),
+            ownership_fence=ownership_fence,
+            return_worker_kind=worker_kind,
+        )
+        bounded = _bounded_dan_recovery_context(recovery)
+        if bounded is None:
+            raise DanWorkerRelayError("dan_worker_recovery_context_invalid")
+        return bounded
 
     def _watch_loop(self) -> None:
         token = None
@@ -438,6 +635,35 @@ class FiveSeatFabricService:
                     else:
                         decision = "BLOCK"
                         reason = "worker evidence does not satisfy acceptance contract"
+                        if (
+                            self.dan_relay is not None
+                            and self._dan_recovery_eligible(
+                                handoff,
+                                worker_kind=worker_kind,
+                                overall=overall,
+                                partial=partial,
+                            )
+                        ):
+                            try:
+                                dan_recovery = self._dan_recover(
+                                    handoff,
+                                    overall=overall,
+                                    unresolved=unresolved,
+                                    worker_kind=worker_kind,
+                                )
+                            except Exception as exc:
+                                external_verification["dan_worker_recovery_error"] = (
+                                    type(exc).__name__ + ":" + str(exc)[:500]
+                                )
+                            else:
+                                external_verification["dan_worker_recovery"] = (
+                                    dan_recovery
+                                )
+                                decision = "REWORK"
+                                reason = (
+                                    "DAN-WORKER returned bounded recovery context; "
+                                    "original worker requeued under WATCH"
+                                )
 
                     evidence = {
                         "service_id": FABRIC_SERVICE_ID,
@@ -575,4 +801,6 @@ class FiveSeatFabricService:
             "seats": seats,
             "errors": list(self._errors[-20:]),
             "canonical_writer_queue_enabled": self.canonical_writer_queue is not None,
+            "dan_worker_recovery_enabled": self.dan_relay is not None,
+            "dan_worker_recovery_error": self._dan_relay_startup_error,
         }

@@ -465,10 +465,19 @@ class PostgresFiveSeatScheduler:
                       e.stop_conditions,
                       e.result_destination,
                       e.payload,
+                      wr.decision AS last_watch_decision,
+                      wr.evidence AS last_watch_evidence,
                       c.state AS circuit_state,
                       c.open_until AS circuit_open_until
                     FROM jaytec_jobs j
                     JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
+                    LEFT JOIN LATERAL (
+                      SELECT r.decision,r.evidence
+                      FROM jaytec_watch_reviews r
+                      WHERE r.job_id=j.job_id
+                      ORDER BY r.created_at DESC
+                      LIMIT 1
+                    ) wr ON TRUE
                     LEFT JOIN jaytec_fabric_circuits c ON c.worker_kind=e.worker_kind
                     WHERE j.assignment_type='FIVE_SEAT_FABRIC'
                       AND j.status IN ('QUEUED','PAUSED')
