@@ -739,13 +739,63 @@ def create_mcp_app():
                 "reason": "CANONICAL_WRITER_DISABLED_OR_NOT_READY",
             })
         try:
-            reconciled = canonical_writer_queue.reconcile_watch_accepts(limit=100)
             return _json({
                 "available": True,
                 "ready": canonical_writer_queue.verify_ready(),
                 "writer": canonical_writer_queue.writer_state(),
                 "queue": canonical_writer_queue.list_queue(limit=limit),
-                "reconciled": reconciled,
+            })
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
+    def jaytec_control_snapshot(limit: int = 50) -> str:
+        """Read the ordered JAYTEC command chain, active jobs and write queue."""
+        try:
+            workload = (
+                workload_read_model.snapshot(limit=limit)
+                if workload_read_model is not None
+                else None
+            )
+            writer = None
+            if canonical_writer_queue is not None:
+                writer = {
+                    "ready": canonical_writer_queue.verify_ready(),
+                    "state": canonical_writer_queue.writer_state(),
+                    "queue": canonical_writer_queue.list_queue(limit=limit),
+                }
+            return _json({
+                "available": True,
+                "authority_hierarchy": [
+                    "Jay / ROOT_OWNER",
+                    "ChatGPT",
+                    "WATCH",
+                    "worker",
+                    "WATCH review",
+                    "ChatGPT canonical decision",
+                    "CHATGPT-CANONICAL-WRITER",
+                    "canonical state / deployment",
+                ],
+                "authority_rules": {
+                    "root_owner_ultimate": True,
+                    "chatgpt_priority_operational_writer": True,
+                    "watch_may_coordinate_and_enqueue": True,
+                    "watch_may_canonical_write": False,
+                    "worker_may_canonical_write": False,
+                    "max_canonical_writers": 1,
+                    "max_canonical_writes_in_flight": 1,
+                },
+                "five_seat": (
+                    fabric_service.status()
+                    if fabric_service is not None
+                    else None
+                ),
+                "workload": workload,
+                "canonical_writer": writer,
             })
         except Exception as exc:
             return _json({
