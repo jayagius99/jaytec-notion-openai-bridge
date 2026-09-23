@@ -68,6 +68,63 @@ class ProductionAdmissionProbeTests(unittest.TestCase):
         }
         self.assertEqual(admission._recovery_count(report, "job-a"), 1)
 
+    def test_wait_for_local_watch_requires_matching_healthy_leader(self):
+        class Reporter:
+            def __init__(self):
+                self.calls = 0
+
+            def last_60_minutes(self, **_kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return {
+                        "watch": {
+                            "healthy": True,
+                            "leader": "five-seat-watch:previous",
+                        }
+                    }
+                return {
+                    "watch": {
+                        "healthy": True,
+                        "leader": "five-seat-watch:current",
+                        "leader_epoch": 12,
+                        "fence_token": 12,
+                    }
+                }
+
+        reporter = Reporter()
+        result = admission.wait_for_local_watch(
+            reporter=reporter,
+            expected_leader="five-seat-watch:current",
+            timeout_seconds=10,
+            sleep_fn=lambda _seconds: None,
+            monotonic_fn=lambda: 0.0,
+        )
+        self.assertEqual(result["leader"], "five-seat-watch:current")
+        self.assertEqual(reporter.calls, 2)
+
+    def test_wait_for_local_watch_fails_closed_on_timeout(self):
+        class Reporter:
+            def last_60_minutes(self, **_kwargs):
+                return {
+                    "watch": {
+                        "healthy": True,
+                        "leader": "five-seat-watch:previous",
+                    }
+                }
+
+        ticks = iter([0.0, 2.0])
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "admission_probe_local_watch_not_ready",
+        ):
+            admission.wait_for_local_watch(
+                reporter=Reporter(),
+                expected_leader="five-seat-watch:current",
+                timeout_seconds=1,
+                sleep_fn=lambda _seconds: None,
+                monotonic_fn=lambda: next(ticks),
+            )
+
     def test_success_requires_exact_free_model_and_watch_accept(self):
         queue = object()
 
