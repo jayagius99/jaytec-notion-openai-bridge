@@ -16,6 +16,7 @@ New in C4: optional Postgres-backed idempotency via DATABASE_URL.
 from __future__ import annotations
 
 import dan_role_elastic_runtime_proof  # bounded staging-only owner-authorized proof
+import dan_elastic_regression_v12  # bounded DAN/role-elastic regression v1.2
 
 import base64
 import gzip
