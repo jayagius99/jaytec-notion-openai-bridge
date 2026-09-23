@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import notion_courier_policy as p
 import notion_courier_server as s
+import five_seat_production_admission as admission
 
 
 class FakeRuntime:
@@ -156,6 +157,16 @@ class TestNotionCourierServer(unittest.TestCase):
         with patch.object(s.legacy_server, "MCP_AUTH_TOKEN", "test-token"):
             app = s.create_mcp_app(fake)
         return app, fake
+
+    def test_fs08_clean_probe_uses_v2_durable_lineage(self):
+        self.assertEqual(
+            admission.PROBE_TASK_ID,
+            "FS08-PRODUCTION-ADMISSION-002",
+        )
+        self.assertEqual(
+            admission.PROBE_IDEMPOTENCY_KEY,
+            "fs08-production-admission-v2",
+        )
 
     def test_catalog_exposes_exactly_one_tool(self):
         app, _ = self._make_app()
