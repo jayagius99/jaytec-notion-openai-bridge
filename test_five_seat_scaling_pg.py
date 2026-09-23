@@ -18,6 +18,19 @@ class TestFiveSeatScalingPostgres(unittest.TestCase):
     def setUp(self):
         self.url = os.environ["DATABASE_URL"]
         self.jobs = []
+        with psycopg2.connect(self.url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE jaytec_fabric_authority_state
+                    SET current_shared_state_version=1,
+                        authority_epoch=authority_epoch+1,
+                        fence_token=fence_token+1,
+                        updated_by='FS06_SCALING_TEST',
+                        updated_at=now()
+                    WHERE authority_id='FABRIC'
+                    """
+                )
 
     def tearDown(self):
         if not self.jobs:
