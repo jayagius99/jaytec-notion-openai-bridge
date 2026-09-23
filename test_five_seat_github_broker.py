@@ -290,6 +290,24 @@ class TestFs09StaticIntegration(unittest.TestCase):
         self.assertIn('"FIVE_SEAT_GITHUB_BROKER_ENABLED", "0"', source)
         self.assertIn("if FIVE_SEAT_GITHUB_BROKER_ENABLED:", source)
 
+    def test_github_jobs_are_durable_owner_gated_before_claim(self):
+        source = open("five_seat_github_broker.py", encoding="utf-8").read()
+        self.assertIn('authority_class="EXTERNAL_SIDE_EFFECT"', source)
+
+        authority = open("five_seat_authority.py", encoding="utf-8").read()
+        self.assertIn('"EXTERNAL_SIDE_EFFECT"', authority)
+
+        queue = open("five_seat_queue.py", encoding="utf-8").read()
+        self.assertIn(
+            'initial_fabric_state = "BLOCKED_OWNER" if approval_required else "QUEUED"',
+            queue,
+        )
+        self.assertIn("if not approval_required:", queue)
+
+        runtime = open("five_seat_runtime.py", encoding="utf-8").read()
+        self.assertIn("if required:", runtime)
+        self.assertIn('if not row.get("approval_id"):', runtime)
+
     def test_no_merge_or_deploy_surface(self):
         source = open("five_seat_github_broker.py", encoding="utf-8").read()
         self.assertNotIn('"/merge"', source)
