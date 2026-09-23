@@ -13,15 +13,19 @@ from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optio
 from jaytec_read import (
     JAYTEC_READ_ALLOWED_OPERATIONS,
     JAYTEC_READ_REQUIRED_OPERATIONS,
+    JAYTEC_READ_SPECIALIST,
     JAYTEC_READ_WORKFLOW_ID,
+    EXPECTED_READ_REVIEWER_MODEL,
 )
+from gemini_paid_reserve import gemini_paid_reserve_errors
 
 PACKET_VERSION = "1.0"
 RETURN_SCHEMA_VERSION = "1.0"
-ALLOWED_SPECIALISTS = ("codex", "gemini", "sol")
+ALLOWED_SPECIALISTS = ("codex", "reviewer", "gemini", "sol")
 EXPECTED_MODELS = {
     "codex": "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "gemini": "deepseek/deepseek-v4-flash-0731:free",
+    "reviewer": EXPECTED_READ_REVIEWER_MODEL,
+    "gemini": "google/gemini-3.1-pro-preview",
     "sol": "openai/gpt-5.6-sol",
 }
 ALLOWED_STATUSES = {
@@ -283,9 +287,14 @@ def validate_packet(packet: Mapping[str, Any], *, now: Optional[datetime] = None
         if packet.get("side_effect_policy") != "none":
             errors.append("sol_side_effects_forbidden")
 
+    # Gemini is a paid terminal reserve only. DeepSeek/reviewer is the
+    # normal research/review path. This policy is enforced again at the paid
+    # Gemini adapter immediately before any provider call.
+    errors.extend(gemini_paid_reserve_errors(packet))
+
     if packet.get("workflow_id") == JAYTEC_READ_WORKFLOW_ID:
-        if plan != ["gemini"]:
-            errors.append("jaytec_read_requires_gemini_only")
+        if plan != [JAYTEC_READ_SPECIALIST]:
+            errors.append("jaytec_read_requires_reviewer_only")
         allowed_ops = set(ops) if isinstance(ops, list) else set()
         if not JAYTEC_READ_REQUIRED_OPERATIONS.issubset(allowed_ops):
             errors.append("jaytec_read_missing_required_operations")
@@ -337,6 +346,7 @@ def _base_envelope(packet: Mapping[str, Any], *, status: str, execution_id: str)
         "evidence": [],
         "confidence": None,
         "codex_result": None,
+        "reviewer_result": None,
         "gemini_result": None,
         "sol_result": None,
         "conflicts": [],
