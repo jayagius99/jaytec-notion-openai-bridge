@@ -2,6 +2,7 @@ import os
 import time
 import unittest
 import uuid
+from unittest.mock import patch
 
 import psycopg2
 
@@ -10,7 +11,12 @@ os.environ.setdefault("FIVE_SEAT_CANARY_MODE", "1")
 os.environ.setdefault("FIVE_SEAT_CANARY_WORKERS", "2")
 os.environ.setdefault("FIVE_SEAT_CANARY_RUN_ID", "unit-import")
 
-from five_seat_canary_server import CanaryAdapter, CanaryRuntime, _canary_worker_kind
+from five_seat_canary_server import (
+    CanaryAdapter,
+    CanaryRuntime,
+    _apply_canary_migration,
+    _canary_worker_kind,
+)
 
 
 @unittest.skipUnless(os.environ.get("DATABASE_URL"), "DATABASE_URL required")
@@ -56,6 +62,25 @@ class TestFiveSeatCanaryRuntime(unittest.TestCase):
                            version=version+1,updated_at=now()
                        WHERE controller_id='WATCH'"""
                 )
+
+    def test_runtime_migration_flag_fails_before_any_database_connect(self):
+        previous = os.environ.get("FIVE_SEAT_CANARY_APPLY_MIGRATION")
+        os.environ["FIVE_SEAT_CANARY_APPLY_MIGRATION"] = "1"
+        try:
+            with patch("five_seat_canary_server.psycopg2.connect") as connect:
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "FS08_CANARY_RUNTIME_MIGRATION_FORBIDDEN",
+                ):
+                    _apply_canary_migration(
+                        "postgresql://wrong-target.invalid/canary"
+                    )
+                connect.assert_not_called()
+        finally:
+            if previous is None:
+                os.environ.pop("FIVE_SEAT_CANARY_APPLY_MIGRATION", None)
+            else:
+                os.environ["FIVE_SEAT_CANARY_APPLY_MIGRATION"] = previous
 
     def test_run_specific_worker_kind_prevents_stage_inheritance(self):
         one = _canary_worker_kind("run-one", 2)
