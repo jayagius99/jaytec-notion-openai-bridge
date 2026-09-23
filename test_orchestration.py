@@ -159,7 +159,7 @@ class TestOrchestration(unittest.TestCase):
     def test_successful_fan_in_and_deterministic_order(self):
         p = base_packet()
         def codex(_): return {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": ["c"], "evidence": [], "conclusion": {"ok": True}}
-        def reviewer(_): return {"status": "SUCCESS", "model": "google/reviewer-3.1-pro-preview", "findings": ["g"], "evidence": [], "conclusion": {"ok": True}}
+        def reviewer(_): return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": ["g"], "evidence": [], "conclusion": {"ok": True}}
         out = execute_task_packet_core(p, {"codex": codex, "reviewer": reviewer}, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("SUCCESS", out["overall_status"])
         self.assertEqual(["codex", "reviewer"], [x["specialist"] for x in out["worker_trace"]])
@@ -168,7 +168,7 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet()
         out = execute_task_packet_core(p, {
             "codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []},
-            "reviewer": lambda _: {"status": "FAILED_CLOSED", "model": "google/reviewer-3.1-pro-preview", "findings": [], "evidence": []},
+            "reviewer": lambda _: {"status": "FAILED_CLOSED", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("PARTIAL_SUCCESS", out["overall_status"])
 
@@ -176,7 +176,7 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet()
         out = execute_task_packet_core(p, {
             "codex": lambda _: {"status": "FAILED_CLOSED", "model": "gpt-5.6-sol", "findings": [], "evidence": []},
-            "reviewer": lambda _: {"status": "FAILED_CLOSED", "model": "google/reviewer-3.1-pro-preview", "findings": [], "evidence": []},
+            "reviewer": lambda _: {"status": "FAILED_CLOSED", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("FAILED_CLOSED", out["overall_status"])
 
@@ -184,7 +184,7 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet()
         out = execute_task_packet_core(p, {
             "codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": [], "conclusion": "A"},
-            "reviewer": lambda _: {"status": "SUCCESS", "model": "google/reviewer-3.1-pro-preview", "findings": [], "evidence": [], "conclusion": "B"},
+            "reviewer": lambda _: {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": [], "conclusion": "B"},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("NEEDS_VALIDATION", out["overall_status"])
         self.assertTrue(out["conflicts"])
@@ -192,7 +192,7 @@ class TestOrchestration(unittest.TestCase):
     def test_idempotent_replay(self):
         p = base_packet(); reg = ExecutionRegistry(); calls = {"n": 0}
         def codex(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []}
-        def reviewer(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "google/reviewer-3.1-pro-preview", "findings": [], "evidence": []}
+        def reviewer(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []}
         dispatch = {"codex": codex, "reviewer": reviewer}
         first = execute_task_packet_core(p, dispatch, reg, sleep_fn=lambda _: None)
         second = execute_task_packet_core(p, dispatch, reg, sleep_fn=lambda _: None)
@@ -205,7 +205,7 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet(now); p["deadline"] = (now + timedelta(days=3)).isoformat()
         reg = ExecutionRegistry(ttl_seconds=10); calls = {"n": 0}
         def codex(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []}
-        def reviewer(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "google/reviewer-3.1-pro-preview", "findings": [], "evidence": []}
+        def reviewer(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []}
         execute_task_packet_core(p, {"codex": codex, "reviewer": reviewer}, reg, now=now, sleep_fn=lambda _: None)
         execute_task_packet_core(p, {"codex": codex, "reviewer": reviewer}, reg, now=now + timedelta(seconds=11), sleep_fn=lambda _: None)
         self.assertEqual(4, calls["n"])
@@ -214,7 +214,7 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet(); reg = ExecutionRegistry()
         dispatch = {
             "codex": lambda _: {"status": "SUCCESS", "model": "gpt-5.6-sol", "findings": [], "evidence": []},
-            "reviewer": lambda _: {"status": "SUCCESS", "model": "google/reviewer-3.1-pro-preview", "findings": [], "evidence": []},
+            "reviewer": lambda _: {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []},
         }
         execute_task_packet_core(p, dispatch, reg, sleep_fn=lambda _: None)
         p2 = copy.deepcopy(p); p2["request"] = "different"
@@ -287,7 +287,7 @@ class TestOrchestration(unittest.TestCase):
         def worker(_):
             calls["n"] += 1
             if calls["n"] == 1: raise RateLimitError(retry_after="3")
-            return {"status": "SUCCESS", "model": "google/reviewer-3.1-pro-preview", "findings": [], "evidence": []}
+            return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []}
         out = execute_task_packet_core(p, {"reviewer": worker}, ExecutionRegistry(), sleep_fn=lambda x: sleeps.append(x))
         self.assertEqual("SUCCESS", out["overall_status"])
         self.assertEqual([3.0], sleeps)
