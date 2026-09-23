@@ -21,6 +21,7 @@ _ALLOWED_MODELS = {
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{8,}", re.I),
     re.compile(r"(?i)(api[_-]?key|password|secret|bearer|token)\s*[:=]\s*[^\s,;}]+"),
+    re.compile(r"(?i)\\bbearer\\s+[A-Za-z0-9._-]{8,}"),
     re.compile(r"(?i)[A-Z]:\\[^\r\n\"']+"),
     re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
 )
