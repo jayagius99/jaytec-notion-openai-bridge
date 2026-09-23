@@ -158,14 +158,14 @@ class TestNotionCourierServer(unittest.TestCase):
             app = s.create_mcp_app(fake)
         return app, fake
 
-    def test_fs08_clean_probe_uses_v2_durable_lineage(self):
+    def test_fs08_clean_probe_uses_v3_durable_lineage(self):
         self.assertEqual(
             admission.PROBE_TASK_ID,
-            "FS08-PRODUCTION-ADMISSION-002",
+            "FS08-PRODUCTION-ADMISSION-003",
         )
         self.assertEqual(
             admission.PROBE_IDEMPOTENCY_KEY,
-            "fs08-production-admission-v2",
+            "fs08-production-admission-v3",
         )
 
     def test_catalog_exposes_exactly_one_tool(self):
