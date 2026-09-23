@@ -41,11 +41,11 @@ class TestFiveSeatReliableServerIntegration(unittest.TestCase):
         source = Path(__file__).with_name("reliable_server.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('any(item not in {"codex", "gemini"} for item in plan)', source)
         self.assertIn("submit_low_risk_task_packet", source)
         policy = Path(__file__).with_name("five_seat_service.py").read_text(
             encoding="utf-8"
         )
+        self.assertIn('any(item not in {"codex", "gemini"} for item in plan)', policy)
         self.assertIn("FIVE_SEAT_LOW_RISK_V1 requires side_effect_policy=none", policy)
         self.assertIn('"mode": "ZERO_SPEND"', policy)
         self.assertIn('"provider_mode": "FREE_ONLY"', policy)
