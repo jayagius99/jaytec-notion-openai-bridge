@@ -243,11 +243,13 @@ class PostgresDanRelay:
         *,
         ownership_fence: str,
         return_worker_kind: str,
+        require_complete: bool = True,
     ) -> dict[str, Any]:
         checks = {
             "schema": str(result.get("schema") or "") == RESULT_SCHEMA,
             "principal": str(result.get("principal") or "") == RECOVERY_PRINCIPAL,
-            "status": str(result.get("status") or "").upper() == "DAN_COMPLETE",
+            "status": str(result.get("status") or "").upper()
+            in {"DAN_COMPLETE", "DAN_PARTIAL", "DAN_BLOCKED"},
             "task_id": str(result.get("task_id") or "") == str(request["task_id"]),
             "request_digest": str(result.get("request_digest") or "")
             == str(request["request_digest"]),
@@ -268,6 +270,11 @@ class PostgresDanRelay:
         if not all(checks.values()):
             raise DanRelayStoreError(
                 "dan_relay_result_contract_mismatch:" + _canonical(checks)
+            )
+        if require_complete and str(result.get("status") or "").upper() != "DAN_COMPLETE":
+            raise DanRelayStoreError(
+                "dan_relay_candidate_not_complete:"
+                + str(result.get("status") or "").upper()
             )
         return {
             "identity": RECOVERY_PRINCIPAL,
@@ -377,6 +384,7 @@ class PostgresDanRelay:
                             "return_worker_kind", ""
                         )
                     ),
+                    require_complete=False,
                 )
                 if str(row["status"]) == "COMPLETE":
                     return True
