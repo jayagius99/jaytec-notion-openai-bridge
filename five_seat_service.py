@@ -474,7 +474,10 @@ class FiveSeatFabricService:
                            j.blockers,j.health,j.created_at,j.updated_at,
                            e.worker_kind,e.authority_class,e.cost_policy,
                            r.review_id,r.decision AS watch_decision,
-                           r.reason AS watch_reason,r.created_at AS watch_reviewed_at
+                           r.reason AS watch_reason,r.created_at AS watch_reviewed_at,
+                           r.controller_owner AS watch_controller_owner,
+                           r.leader_epoch AS watch_leader_epoch,
+                           r.fence_token AS watch_fence_token
                     FROM jaytec_jobs j
                     JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
                     LEFT JOIN jaytec_worker_seats s
@@ -488,6 +491,18 @@ class FiveSeatFabricService:
                 )
                 record = cur.fetchone()
         return {"found": bool(record), "job": dict(record) if record else None}
+
+    def watch_leader_snapshot(self) -> dict[str, Any] | None:
+        with self._watch_token_lock:
+            token = self._watch_token
+        if token is None:
+            return None
+        return {
+            "owner": token.owner,
+            "leader_epoch": token.leader_epoch,
+            "fence_token": token.fence_token,
+            "lease_expires_at": token.lease_expires_at.isoformat(),
+        }
 
     def status(self) -> dict[str, Any]:
         seats = self.scheduler.list_seats()
