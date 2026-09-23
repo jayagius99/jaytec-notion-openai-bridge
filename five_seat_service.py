@@ -18,6 +18,7 @@ from dan_worker_relay import (
     DanWorkerRelayConfig,
     DanWorkerRelayError,
 )
+from dan_relay_bus import PostgresDanWorkerRelay
 from durable_tasks import SUCCESS_OVERALL_STATUSES, contains_secret_material
 from five_seat_adapters import AdapterRegistry, RetryableAdapterError
 from five_seat_guardian import FiveSeatGuardian
@@ -54,9 +55,24 @@ def _env_enabled(name: str) -> bool:
     return os.environ.get(name, "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _dan_relay_from_env() -> DanWorkerRelay | None:
+def _dan_relay_from_env():
     if not _env_enabled("JAYTEC_DAN_WORKER_ENABLED"):
         return None
+    timeout_seconds = float(
+        os.environ.get("JAYTEC_DAN_RECOVERY_TIMEOUT_SECONDS", "180")
+    )
+    if _env_enabled("JAYTEC_DAN_HTTP_RELAY_ENABLED"):
+        database_url = os.environ.get("DATABASE_URL", "").strip()
+        if not database_url:
+            raise DanWorkerRelayError("dan_http_relay_database_missing")
+        relay = PostgresDanWorkerRelay(
+            database_url,
+            timeout_seconds=timeout_seconds,
+        )
+        if _env_enabled("JAYTEC_DAN_RELAY_SCHEMA_ENABLED"):
+            relay.store.ensure_schema()
+        return relay
+
     token = (
         os.environ.get("JAYTEC_DAN_GITHUB_TOKEN", "").strip()
         or os.environ.get("JAYTEC_GITHUB_BROKER_TOKEN", "").strip()
@@ -65,10 +81,7 @@ def _dan_relay_from_env() -> DanWorkerRelay | None:
         "JAYTEC_DAN_RELAY_REPOSITORY",
         "jayagius99/jaytec-work-engine-v2-g1",
     ).strip()
-    issue_number = int(os.environ.get("JAYTEC_DAN_RELAY_ISSUE", "128"))
-    timeout_seconds = float(
-        os.environ.get("JAYTEC_DAN_RECOVERY_TIMEOUT_SECONDS", "180")
-    )
+    issue_number = int(os.environ.get("JAYTEC_DAN_RELAY_ISSUE", "130"))
     return DanWorkerRelay(
         DanWorkerRelayConfig.build(
             token,
