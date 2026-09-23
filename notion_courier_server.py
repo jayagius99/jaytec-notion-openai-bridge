@@ -14,6 +14,7 @@ import atexit
 import asyncio
 import json
 import os
+import threading
 import time
 from typing import Any, Protocol
 
@@ -29,6 +30,7 @@ from five_seat_authority import PostgresFabricAuthority
 from five_seat_queue import PostgresFabricQueue
 from five_seat_reporting import FiveSeatReporter
 from five_seat_service import FiveSeatFabricService, submit_low_risk_task_packet
+from five_seat_production_admission import run_probe as run_production_admission_probe
 from circuit_breaker import CircuitBreaker
 from orchestration import ExecutionRegistry
 from notion_courier_policy import (
@@ -199,6 +201,82 @@ class JaytecCourierRuntime:
                 == "1"
             ):
                 self._emit_fabric_startup_report()
+            self._maybe_start_production_admission_probe()
+
+    def _maybe_start_production_admission_probe(self) -> None:
+        if (
+            os.environ.get(
+                "FIVE_SEAT_PROD_ADMISSION_PROBE", "0"
+            ).strip()
+            != "1"
+        ):
+            return
+        if (
+            not self.fabric_enabled
+            or not self.fabric_queue
+            or not self.fabric_authority
+            or not self.fabric_service
+            or not self.fabric_reporter
+        ):
+            print(
+                "FIVE_SEAT_PROD_ADMISSION_PROBE="
+                + json.dumps(
+                    {
+                        "schema_version": "JAYTEC_FS08_PRODUCTION_ADMISSION_PROBE_V1",
+                        "passed": False,
+                        "error_class": "FABRIC_NOT_READY",
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            return
+        deadline = os.environ.get(
+            "FIVE_SEAT_PROD_ADMISSION_DEADLINE", ""
+        ).strip()
+        if not deadline:
+            print(
+                "FIVE_SEAT_PROD_ADMISSION_PROBE="
+                + json.dumps(
+                    {
+                        "schema_version": "JAYTEC_FS08_PRODUCTION_ADMISSION_PROBE_V1",
+                        "passed": False,
+                        "error_class": "PROBE_DEADLINE_MISSING",
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            return
+        thread = threading.Thread(
+            target=self._run_production_admission_probe,
+            args=(deadline,),
+            name="fs08-production-admission-probe",
+            daemon=True,
+        )
+        thread.start()
+
+    def _run_production_admission_probe(self, deadline: str) -> None:
+        try:
+            result = run_production_admission_probe(
+                database_url=legacy_server.DATABASE_URL,
+                queue=self.fabric_queue,
+                authority=self.fabric_authority,
+                service=self.fabric_service,
+                reporter=self.fabric_reporter,
+                deadline=deadline,
+            )
+        except Exception as exc:
+            result = {
+                "schema_version": "JAYTEC_FS08_PRODUCTION_ADMISSION_PROBE_V1",
+                "passed": False,
+                "error_class": type(exc).__name__,
+            }
+        print(
+            "FIVE_SEAT_PROD_ADMISSION_PROBE="
+            + json.dumps(result, sort_keys=True, default=str),
+            flush=True,
+        )
 
     def _emit_fabric_startup_report(self) -> None:
         """Emit a bounded read-only fabric/WATCH startup snapshot.
