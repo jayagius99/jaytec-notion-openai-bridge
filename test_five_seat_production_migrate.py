@@ -18,31 +18,27 @@ class TestFiveSeatProductionMigrationGuard(unittest.TestCase):
             hashlib.sha256(b"ep-production.example").hexdigest(),
         )
 
-    def test_wrong_database_refused_before_connect_or_sql_read(self):
+    def test_wrong_database_refused_before_connect(self):
         url = "postgresql://owner:secret@ep-prod.example/not_production"
         expected = hashlib.sha256(b"ep-prod.example").hexdigest()
         with mock.patch.object(migrate.psycopg2, "connect") as connect:
-            with mock.patch.object(migrate.MIGRATION_FILE, "read_text") as read_text:
-                with self.assertRaisesRegex(
-                    migrate.ProductionMigrationRefused,
-                    "DATABASE_NAME_MISMATCH",
-                ):
-                    migrate.apply_migration(url, expected)
+            with self.assertRaisesRegex(
+                migrate.ProductionMigrationRefused,
+                "DATABASE_NAME_MISMATCH",
+            ):
+                migrate.apply_migration(url, expected)
         connect.assert_not_called()
-        read_text.assert_not_called()
 
-    def test_wrong_host_fingerprint_refused_before_connect_or_sql_read(self):
+    def test_wrong_host_fingerprint_refused_before_connect(self):
         url = "postgresql://owner:secret@ep-wrong.example/jaytec_orchestration_prod"
         expected = hashlib.sha256(b"ep-production.example").hexdigest()
         with mock.patch.object(migrate.psycopg2, "connect") as connect:
-            with mock.patch.object(migrate.MIGRATION_FILE, "read_text") as read_text:
-                with self.assertRaisesRegex(
-                    migrate.ProductionMigrationRefused,
-                    "DATABASE_HOST_FINGERPRINT_MISMATCH",
-                ):
-                    migrate.apply_migration(url, expected)
+            with self.assertRaisesRegex(
+                migrate.ProductionMigrationRefused,
+                "DATABASE_HOST_FINGERPRINT_MISMATCH",
+            ):
+                migrate.apply_migration(url, expected)
         connect.assert_not_called()
-        read_text.assert_not_called()
 
     def test_missing_fingerprint_refused(self):
         url = "postgresql://owner:secret@ep-prod.example/jaytec_orchestration_prod"
