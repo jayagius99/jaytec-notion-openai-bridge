@@ -8,9 +8,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from typing import Any, Mapping
 from openai import OpenAI
 
+from gemini_paid_reserve import require_gemini_paid_reserve
+
 MODEL = "google/gemini-3.1-pro-preview"
+WORKFLOW_ID = "JAYTEC_PAID_GEMINI_RESERVE_DAN_ROLE_ELASTIC_PROOF_V1"
 BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 MARKER = "/tmp/jaytec_dan_role_elastic_proof_v1.json"
@@ -84,12 +88,34 @@ def _call(client: OpenAI, prompt: str, cap: int) -> dict:
         "parsed": parsed,
     }
 
-def run() -> dict:
-    if not API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY_MISSING")
-    client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+def _validate_reserve_packet(packet: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(packet, Mapping):
+        raise RuntimeError("GEMINI_PAID_RESERVE_POLICY_BLOCKED:dan_role_elastic_packet_required")
+    require_gemini_paid_reserve(packet)
+    if packet.get("workflow_id") != WORKFLOW_ID:
+        raise RuntimeError("GEMINI_PAID_RESERVE_POLICY_BLOCKED:dan_role_elastic_workflow_required")
+    allowed = packet.get("allowed_operations")
+    if not isinstance(allowed, list) or not set(allowed).issubset({"research", "validate", "test"}):
+        raise RuntimeError("GEMINI_PAID_RESERVE_POLICY_BLOCKED:dan_role_elastic_operations_invalid")
+    return packet
 
-    phase = os.environ.get("JAYTEC_DAN_PROOF_PHASE", "full").strip().lower()
+
+def run(
+    packet: Mapping[str, Any] | None = None,
+    *,
+    openrouter_client: OpenAI | None = None,
+    phase: str = "full",
+) -> dict:
+    _validate_reserve_packet(packet)
+    client = openrouter_client
+    if client is None:
+        if not API_KEY:
+            raise RuntimeError("OPENROUTER_API_KEY_MISSING")
+        client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
+
+    phase = str(phase or "full").strip().lower()
+    if phase not in {"full", "hardened_only"}:
+        raise RuntimeError("invalid_dan_role_elastic_phase")
     if phase == "hardened_only":
         hardened = _call(client, HARDENED_PROMPT, 1000)
         returned_canonical = hardened["parsed"].get("canonical")
@@ -182,20 +208,3 @@ def run() -> dict:
         "passed": all(checks.values()),
     }
 
-def _execute_once() -> None:
-    if os.path.exists(MARKER):
-        print("JAYTEC_DAN_PROOF_ALREADY_RAN", flush=True)
-        return
-    try:
-        result = run()
-        with open(MARKER, "w", encoding="utf-8") as fh:
-            json.dump(result, fh, sort_keys=True)
-        print("JAYTEC_DAN_PROOF_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
-    except Exception as exc:
-        print(
-            "JAYTEC_DAN_PROOF_ERROR=" + type(exc).__name__ + ":" + str(exc),
-            flush=True,
-        )
-
-if os.environ.get("JAYTEC_DAN_PROOF_ON_START", "").strip().lower() in {"1","true","yes","on"}:
-    _execute_once()
