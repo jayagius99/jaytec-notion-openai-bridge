@@ -18,7 +18,11 @@ from five_seat_queue import PostgresFabricQueue
 from five_seat_reporting import FiveSeatReporter
 from five_seat_runtime import PostgresFiveSeatScheduler
 from five_seat_signals import PostgresFabricSignal
-from five_seat_watch import PostgresWatchController, WatchStaleLeader
+from five_seat_watch import (
+    PostgresWatchController,
+    WatchLeaderUnavailable,
+    WatchStaleLeader,
+)
 from five_seat_worker import FiveSeatWorker
 from orchestration import PacketValidationError, parse_packet_json, validate_packet
 from reliability_registry import transient_specialist_statuses
@@ -211,6 +215,7 @@ class FiveSeatFabricService:
         *,
         instance_id: str | None = None,
         lease_seconds: int = 300,
+        watch_lease_seconds: int = 30,
         guardian_interval_seconds: float = 30.0,
         report_interval_seconds: float = 3600.0,
     ):
@@ -221,6 +226,7 @@ class FiveSeatFabricService:
             str(instance_id or "").strip() or socket.gethostname()
         )
         self.lease_seconds = max(30, min(int(lease_seconds), 3600))
+        self.watch_lease_seconds = max(10, min(int(watch_lease_seconds), 120))
         self.guardian_interval_seconds = max(5.0, float(guardian_interval_seconds))
         self.report_interval_seconds = max(60.0, float(report_interval_seconds))
 
@@ -240,6 +246,8 @@ class FiveSeatFabricService:
         self._threads: list[threading.Thread] = []
         self._workers: list[FiveSeatWorker] = []
         self._errors: list[str] = []
+        self._watch_token = None
+        self._watch_contention_count = 0
         self._started = False
 
     def verify_ready(self) -> dict[str, bool]:
@@ -297,14 +305,18 @@ class FiveSeatFabricService:
                 if token is None:
                     token = self.watch.claim_leader(
                         owner=owner,
-                        lease_seconds=self.lease_seconds,
+                        lease_seconds=self.watch_lease_seconds,
                     )
+                    self._watch_token = token
                     last_heartbeat = time.time()
-                elif time.time() - last_heartbeat >= max(10.0, self.lease_seconds / 3):
+                elif time.time() - last_heartbeat >= max(
+                    3.0, self.watch_lease_seconds / 3
+                ):
                     token = self.watch.heartbeat(
                         token,
-                        lease_seconds=self.lease_seconds,
+                        lease_seconds=self.watch_lease_seconds,
                     )
+                    self._watch_token = token
                     last_heartbeat = time.time()
 
                 for handoff in self.watch.pending_reviews(limit=100):
@@ -363,8 +375,16 @@ class FiveSeatFabricService:
                         reason=reason,
                         evidence=evidence,
                     )
+            except WatchLeaderUnavailable:
+                # Normal rolling-deploy contention: another healthy instance
+                # still holds the singleton WATCH lease. Fail closed and retry
+                # without poisoning persistent fabric health.
+                self._watch_contention_count += 1
+                token = None
+                self._watch_token = None
             except WatchStaleLeader:
                 token = None
+                self._watch_token = None
             except Exception as exc:
                 self._errors.append(
                     "watch:" + type(exc).__name__ + ":" + str(exc)[:500]
@@ -449,5 +469,18 @@ class FiveSeatFabricService:
             ),
             "seat_count": len(seats),
             "seats": seats,
+            "watch_lease_seconds": self.watch_lease_seconds,
+            "watch_leader_owned_by_instance": self._watch_token is not None,
+            "watch_leader_epoch": (
+                int(self._watch_token.leader_epoch)
+                if self._watch_token is not None
+                else None
+            ),
+            "watch_fence_token": (
+                int(self._watch_token.fence_token)
+                if self._watch_token is not None
+                else None
+            ),
+            "watch_transient_contention_count": self._watch_contention_count,
             "errors": list(self._errors[-20:]),
         }
