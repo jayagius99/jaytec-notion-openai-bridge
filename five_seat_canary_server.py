@@ -377,10 +377,46 @@ class CanaryRuntime:
         }
 
 
-RUNTIME: CanaryRuntime | None = None
+class RetiredCanaryRuntime:
+    """Inert health-only tombstone for the completed FS08 canary service."""
+
+    def __init__(self) -> None:
+        self.run_id = "RETIRED"
+        self.worker_count = 0
+        self.stop_event = threading.Event()
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "schema_version": "JAYTEC_FS08_CANARY_STATUS_V1",
+            "operational_state": "RETIRED_INERT",
+            "retired": True,
+            "controller_active": False,
+            "worker_threads": 0,
+            "database_connected": False,
+            "pass": True,
+        }
 
 
-def _runtime() -> CanaryRuntime:
+RUNTIME: CanaryRuntime | RetiredCanaryRuntime | None = None
+
+
+def _retired_mode() -> bool:
+    return os.environ.get("FIVE_SEAT_CANARY_RETIRED", "0").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _build_runtime() -> CanaryRuntime | RetiredCanaryRuntime:
+    if _retired_mode():
+        return RetiredCanaryRuntime()
+    if os.environ.get("FIVE_SEAT_CANARY_MODE") != "1":
+        raise RuntimeError("FIVE_SEAT_CANARY_MODE=1 is required")
+    runtime = CanaryRuntime()
+    runtime.start()
+    return runtime
+
+
+def _runtime() -> CanaryRuntime | RetiredCanaryRuntime:
     if RUNTIME is None:
         raise RuntimeError("canary_runtime_not_started")
     return RUNTIME
@@ -402,7 +438,11 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "status": "ok",
-                    "mode": "FS08_CANARY",
+                    "mode": (
+                        "FS08_CANARY_RETIRED"
+                        if isinstance(_runtime(), RetiredCanaryRuntime)
+                        else "FS08_CANARY"
+                    ),
                     "run_id": _runtime().run_id,
                     "stage_workers": _runtime().worker_count,
                 },
@@ -420,10 +460,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     global RUNTIME
-    if os.environ.get("FIVE_SEAT_CANARY_MODE") != "1":
-        raise RuntimeError("FIVE_SEAT_CANARY_MODE=1 is required")
-    RUNTIME = CanaryRuntime()
-    RUNTIME.start()
+    RUNTIME = _build_runtime()
     port = int(os.environ.get("PORT", "10000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     try:
