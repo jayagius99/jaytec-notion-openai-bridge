@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 import psycopg2
 import psycopg2.extras
 
+from canonical_writer import PostgresCanonicalWriterQueue
 from durable_tasks import SUCCESS_OVERALL_STATUSES, contains_secret_material
 from five_seat_adapters import AdapterRegistry, RetryableAdapterError
 from five_seat_guardian import FiveSeatGuardian
@@ -229,6 +230,7 @@ class FiveSeatFabricService:
         guardian_interval_seconds: float = 30.0,
         report_interval_seconds: float = 3600.0,
         github_broker: GitHubBranchPrBroker | None = None,
+        canonical_writer_queue: PostgresCanonicalWriterQueue | None = None,
     ):
         if not database_url:
             raise ValueError("database_url is required")
@@ -246,6 +248,7 @@ class FiveSeatFabricService:
         self.guardian = FiveSeatGuardian(database_url)
         self.reporter = FiveSeatReporter(database_url)
         self.github_broker = github_broker
+        self.canonical_writer_queue = canonical_writer_queue
         self.registry = AdapterRegistry()
         self.registry.register(
             TASK_PACKET_WORKER_KIND,
@@ -446,7 +449,7 @@ class FiveSeatFabricService:
                         "independent_watch_review": True,
                         **external_verification,
                     }
-                    self.watch.review(
+                    review_result = self.watch.review(
                         token,
                         review_id="watch-" + str(handoff["handoff_id"]),
                         handoff_id=str(handoff["handoff_id"]),
@@ -454,6 +457,30 @@ class FiveSeatFabricService:
                         reason=reason,
                         evidence=evidence,
                     )
+                    destination = handoff.get("result_destination") or {}
+                    if isinstance(destination, str):
+                        destination = json.loads(destination)
+                    if (
+                        decision == "ACCEPT"
+                        and isinstance(destination, Mapping)
+                        and destination.get("type") == "CANONICAL_WRITE_CANDIDATE"
+                    ):
+                        if self.canonical_writer_queue is None:
+                            raise RuntimeError(
+                                "canonical_write_candidate_without_writer_queue"
+                            )
+                        reconciled = self.canonical_writer_queue.reconcile_watch_accepts(
+                            limit=20
+                        )
+                        if reconciled.get("errors"):
+                            raise RuntimeError(
+                                "canonical_writer_reconcile_failed:"
+                                + json.dumps(
+                                    reconciled["errors"],
+                                    sort_keys=True,
+                                    default=str,
+                                )[:1000]
+                            )
             except WatchLeaderUnavailable:
                 token = None
                 with self._watch_token_lock:
@@ -547,4 +574,5 @@ class FiveSeatFabricService:
             "seat_count": len(seats),
             "seats": seats,
             "errors": list(self._errors[-20:]),
+            "canonical_writer_queue_enabled": self.canonical_writer_queue is not None,
         }

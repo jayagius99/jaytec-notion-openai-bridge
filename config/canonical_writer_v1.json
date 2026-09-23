@@ -1,0 +1,72 @@
+{
+  "schema_version": "JAYTEC_SINGLE_CANONICAL_WRITER_V1",
+  "control_id": "JAYTEC_CANONICAL_WRITER",
+  "authority_hierarchy": [
+    "ROOT_OWNER",
+    "CHATGPT",
+    "WATCH",
+    "WORKER",
+    "WATCH_REVIEW",
+    "CHATGPT_CANONICAL_DECISION",
+    "CANONICAL_WRITER"
+  ],
+  "root_owner": {
+    "name": "Jay / ROOT_OWNER",
+    "ultimate_authority": true,
+    "may_directly_authorize_canonical_change": true
+  },
+  "operational_canonical_writer": {
+    "identity": "CHATGPT-CANONICAL-WRITER",
+    "singleton_lease_required": true,
+    "max_in_flight": 1,
+    "may_merge_or_deploy": true,
+    "requires_watch_accept": true,
+    "requires_chatgpt_or_root_approval": true,
+    "requires_post_write_verification": true
+  },
+  "watch": {
+    "may_coordinate": true,
+    "may_review_worker_output": true,
+    "may_enqueue_canonical_candidate": true,
+    "may_approve_canonical_write": false,
+    "may_merge": false,
+    "may_deploy": false
+  },
+  "workers": {
+    "candidate_only": true,
+    "may_write_worker_branch": true,
+    "may_open_pull_request": true,
+    "may_write_default_branch": false,
+    "may_merge": false,
+    "may_deploy": false,
+    "may_write_canonical": false
+  },
+  "canonical_queue_states": [
+    "PENDING_CHATGPT_APPROVAL",
+    "APPROVED",
+    "IN_FLIGHT",
+    "VERIFIED_COMPLETE",
+    "FAILED_SAFE",
+    "QUARANTINED",
+    "SUPERSEDED",
+    "CANCELLED"
+  ],
+  "invariants": {
+    "one_canonical_writer": true,
+    "one_canonical_write_in_flight": true,
+    "explicit_canonical_write_intent": true,
+    "watch_accept_before_queue": true,
+    "chatgpt_or_root_approval_before_claim": true,
+    "exact_candidate_head_bound": true,
+    "exact_expected_base_bound": true,
+    "shared_state_version_bound": true,
+    "idempotency_required": true,
+    "append_only_hash_chained_ledger": true,
+    "stale_fence_rejected": true,
+    "expired_writer_quarantines": true,
+    "blind_retry_forbidden": true,
+    "post_write_readback_required": true,
+    "workers_never_canonical": true,
+    "watch_never_canonical": true
+  }
+}

@@ -224,3 +224,126 @@ CREATE TABLE IF NOT EXISTS jaytec_watch_reviews (
 
 CREATE INDEX IF NOT EXISTS jaytec_watch_reviews_job_idx
   ON jaytec_watch_reviews(job_id,created_at);
+
+
+-- JAYTEC Single Canonical Writer V1.
+-- Additive control plane only. WATCH/workers cannot perform canonical writes.
+CREATE TABLE IF NOT EXISTS jaytec_canonical_writer_state (
+  writer_id TEXT PRIMARY KEY CHECK (writer_id='CANONICAL'),
+  lease_owner TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  writer_epoch BIGINT NOT NULL DEFAULT 0,
+  fence_token BIGINT NOT NULL DEFAULT 0,
+  active_write_id TEXT,
+  version BIGINT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO jaytec_canonical_writer_state(writer_id)
+VALUES ('CANONICAL')
+ON CONFLICT (writer_id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS jaytec_canonical_write_queue (
+  write_id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jaytec_jobs(job_id) ON DELETE RESTRICT,
+  handoff_id TEXT NOT NULL REFERENCES jaytec_worker_handoffs(handoff_id) ON DELETE RESTRICT,
+  review_id TEXT NOT NULL UNIQUE REFERENCES jaytec_watch_reviews(review_id) ON DELETE RESTRICT,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  repository TEXT NOT NULL,
+  pull_request_number BIGINT NOT NULL CHECK (pull_request_number > 0),
+  candidate_head_sha TEXT NOT NULL CHECK (candidate_head_sha ~ '^[0-9a-f]{40}$'),
+  expected_base_sha TEXT NOT NULL CHECK (expected_base_sha ~ '^[0-9a-f]{40}$'),
+  candidate_digest TEXT NOT NULL CHECK (candidate_digest ~ '^[0-9a-f]{64}$'),
+  source_shared_state_version BIGINT NOT NULL CHECK (source_shared_state_version > 0),
+  candidate_manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
+  deployment_target JSONB NOT NULL DEFAULT '{}'::jsonb,
+  requested_by TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 100 CHECK (priority BETWEEN 0 AND 1000),
+  state TEXT NOT NULL CHECK (
+    state IN (
+      'PENDING_CHATGPT_APPROVAL','APPROVED','IN_FLIGHT',
+      'VERIFIED_COMPLETE','FAILED_SAFE','QUARANTINED',
+      'SUPERSEDED','CANCELLED'
+    )
+  ),
+  approved_by TEXT,
+  approval_ref TEXT,
+  approval_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+  approved_at TIMESTAMPTZ,
+  writer_owner TEXT,
+  writer_epoch BIGINT,
+  writer_fence_token BIGINT,
+  writer_lease_expires_at TIMESTAMPTZ,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  canonical_commit_sha TEXT CHECK (
+    canonical_commit_sha IS NULL OR canonical_commit_sha ~ '^[0-9a-f]{40}$'
+  ),
+  verification_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_error TEXT,
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(job_id,handoff_id,review_id)
+);
+
+ALTER TABLE jaytec_canonical_write_queue
+  ADD COLUMN IF NOT EXISTS candidate_manifest JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE jaytec_canonical_write_queue
+  ADD COLUMN IF NOT EXISTS approval_evidence JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE UNIQUE INDEX IF NOT EXISTS jaytec_canonical_write_one_inflight_idx
+  ON jaytec_canonical_write_queue((1))
+  WHERE state='IN_FLIGHT';
+
+CREATE INDEX IF NOT EXISTS jaytec_canonical_write_queue_state_idx
+  ON jaytec_canonical_write_queue(state,priority,created_at);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname='jaytec_canonical_writer_active_write_fk'
+  ) THEN
+    ALTER TABLE jaytec_canonical_writer_state
+      ADD CONSTRAINT jaytec_canonical_writer_active_write_fk
+      FOREIGN KEY (active_write_id)
+      REFERENCES jaytec_canonical_write_queue(write_id)
+      ON DELETE RESTRICT;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS jaytec_canonical_write_ledger (
+  event_id BIGSERIAL PRIMARY KEY,
+  write_id TEXT NOT NULL REFERENCES jaytec_canonical_write_queue(write_id) ON DELETE RESTRICT,
+  event_type TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  prev_hash TEXT NOT NULL,
+  event_hash TEXT NOT NULL UNIQUE CHECK (event_hash ~ '^[0-9a-f]{64}$'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS jaytec_canonical_write_ledger_write_idx
+  ON jaytec_canonical_write_ledger(write_id,event_id);
+
+CREATE OR REPLACE FUNCTION jaytec_canonical_ledger_immutable()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'jaytec_canonical_write_ledger is append-only';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS jaytec_canonical_ledger_no_update
+  ON jaytec_canonical_write_ledger;
+CREATE TRIGGER jaytec_canonical_ledger_no_update
+BEFORE UPDATE ON jaytec_canonical_write_ledger
+FOR EACH ROW EXECUTE FUNCTION jaytec_canonical_ledger_immutable();
+
+DROP TRIGGER IF EXISTS jaytec_canonical_ledger_no_delete
+  ON jaytec_canonical_write_ledger;
+CREATE TRIGGER jaytec_canonical_ledger_no_delete
+BEFORE DELETE ON jaytec_canonical_write_ledger
+FOR EACH ROW EXECUTE FUNCTION jaytec_canonical_ledger_immutable();

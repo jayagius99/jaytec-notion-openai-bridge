@@ -6,6 +6,10 @@ on:
       - '.github/workflows/five-seat-fabric.yml'
       - 'five_seat_*.py'
       - 'five_seat_schema.sql'
+      - 'canonical_writer.py'
+      - 'test_canonical_writer.py'
+      - 'config/canonical_writer_v1.json'
+      - 'docs/SINGLE_CANONICAL_WRITER_V1.md'
       - 'test_five_seat_*.py'
       - 'config/five_seat_fabric_v1.json'
       - 'docs/FIVE_SEAT_CONTINUOUS_FABRIC_V1.md'
@@ -21,6 +25,10 @@ on:
       - '.github/workflows/five-seat-fabric.yml'
       - 'five_seat_*.py'
       - 'five_seat_schema.sql'
+      - 'canonical_writer.py'
+      - 'test_canonical_writer.py'
+      - 'config/canonical_writer_v1.json'
+      - 'docs/SINGLE_CANONICAL_WRITER_V1.md'
       - 'test_five_seat_*.py'
       - 'config/five_seat_fabric_v1.json'
       - 'docs/FIVE_SEAT_CONTINUOUS_FABRIC_V1.md'
@@ -75,7 +83,7 @@ jobs:
 
       - name: Compile five-seat and inherited runtime
         run: |
-          python -m py_compile             five_seat_adapters.py five_seat_authority.py five_seat_guardian.py five_seat_queue.py             five_seat_remedies.py five_seat_runtime.py five_seat_signals.py             five_seat_watch.py five_seat_worker.py five_seat_canary_server.py             concurrency.py job_runtime.py             test_five_seat_contract.py test_five_seat_runtime.py             test_five_seat_watch.py test_five_seat_continuous.py             test_five_seat_remedies.py test_concurrency.py test_job_runtime.py
+          python -m py_compile             five_seat_adapters.py five_seat_authority.py five_seat_guardian.py five_seat_queue.py             five_seat_remedies.py five_seat_runtime.py five_seat_signals.py             five_seat_watch.py five_seat_worker.py five_seat_canary_server.py canonical_writer.py             concurrency.py job_runtime.py             test_canonical_writer.py test_five_seat_contract.py test_five_seat_runtime.py             test_five_seat_watch.py test_five_seat_continuous.py             test_five_seat_remedies.py test_concurrency.py test_job_runtime.py
 
       - name: Apply existing durable schema
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f job_runtime_schema.sql
@@ -95,6 +103,8 @@ jobs:
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_worker_seats")" = "5"
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_watch_leader where controller_id='WATCH'")" = "1"
           test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_worker_seats where seat_id='WORKER-SEAT-6'")" = "0"
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_canonical_writer_state where writer_id='CANONICAL'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atc "select count(*) from jaytec_canonical_write_queue where state='IN_FLIGHT'")" = "0"
 
       - name: Prove legacy scheduler cannot bypass seat registry
         run: |
@@ -155,6 +165,9 @@ jobs:
 
       - name: Run five-seat tests
         run: python -m unittest discover -v -p 'test_five_seat*.py'
+
+      - name: Run single canonical writer integration proof
+        run: python -m unittest -v test_canonical_writer.py
 
       - name: Run inherited concurrency and fence regression tests
         run: python -m unittest -v test_concurrency.py test_job_runtime.py

@@ -10,6 +10,11 @@ from typing import Any, Mapping, Optional
 from openai import OpenAI
 
 import server as legacy_server
+from canonical_writer import (
+    CANONICAL_WRITER_ID,
+    CanonicalWriterToken,
+    PostgresCanonicalWriterQueue,
+)
 from circuit_breaker import CircuitBreaker, CircuitOpenError
 from durable_tasks import contains_secret_material
 from durable_tasks_runtime import ReliableDurableTaskQueue, ReliableDurableTaskWorker
@@ -77,6 +82,9 @@ JAYTEC_GITHUB_BROKER_REPOSITORIES = tuple(
     for item in os.environ.get("JAYTEC_GITHUB_BROKER_REPOSITORIES", "").split(",")
     if item.strip()
 )
+JAYTEC_CANONICAL_WRITER_ENABLED = os.environ.get(
+    "JAYTEC_CANONICAL_WRITER_ENABLED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _five_seat_enabled() -> bool:
@@ -330,6 +338,31 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _canonical_writer_token(value: str) -> CanonicalWriterToken:
+    raw = json.loads(value)
+    if not isinstance(raw, dict):
+        raise ValueError("writer token must decode to an object")
+    return CanonicalWriterToken(
+        owner=str(raw.get("owner") or ""),
+        writer_epoch=int(raw.get("writer_epoch") or 0),
+        fence_token=int(raw.get("fence_token") or 0),
+        lease_expires_at=__import__("datetime").datetime.fromisoformat(
+            str(raw.get("lease_expires_at") or "").replace("Z", "+00:00")
+        ),
+        write_id=str(raw.get("write_id") or ""),
+    )
+
+
+def _canonical_writer_token_json(token: CanonicalWriterToken) -> dict[str, Any]:
+    return {
+        "owner": token.owner,
+        "writer_epoch": token.writer_epoch,
+        "fence_token": token.fence_token,
+        "lease_expires_at": token.lease_expires_at.isoformat(),
+        "write_id": token.write_id,
+    }
+
+
 def create_mcp_app():
     mcp = legacy_server.create_mcp_app()
 
@@ -346,6 +379,7 @@ def create_mcp_app():
     fabric_service: Optional[FiveSeatFabricService] = None
     fabric_reporter: Optional[FiveSeatReporter] = None
     github_broker: Optional[GitHubBranchPrBroker] = None
+    canonical_writer_queue: Optional[PostgresCanonicalWriterQueue] = None
     fabric_enabled = _five_seat_enabled()
 
     if legacy_server.DATABASE_URL:
@@ -490,6 +524,13 @@ def create_mcp_app():
                         JAYTEC_GITHUB_BROKER_REPOSITORIES,
                     )
                 )
+            if JAYTEC_CANONICAL_WRITER_ENABLED:
+                canonical_writer_queue = PostgresCanonicalWriterQueue(
+                    legacy_server.DATABASE_URL
+                )
+                canonical_writer_queue.verify_ready()
+                canonical_writer_queue.contain_expired_inflight()
+                canonical_writer_queue.reconcile_watch_accepts(limit=100)
             fabric_service = FiveSeatFabricService(
                 legacy_server.DATABASE_URL,
                 _execute_durable,
@@ -498,6 +539,7 @@ def create_mcp_app():
                 guardian_interval_seconds=FIVE_SEAT_GUARDIAN_INTERVAL_S,
                 report_interval_seconds=FIVE_SEAT_REPORT_INTERVAL_S,
                 github_broker=github_broker,
+                canonical_writer_queue=canonical_writer_queue,
             )
             fabric_service.verify_ready()
             fabric_service.start()
@@ -635,6 +677,9 @@ def create_mcp_app():
                 files=list(spec.get("files") or []),
                 pull_request=dict(spec.get("pull_request") or {}),
                 priority=int(priority),
+                canonical_write_intent=bool(
+                    spec.get("canonical_write_intent", False)
+                ),
             )
             return _json({
                 "available": True,
@@ -686,6 +731,239 @@ def create_mcp_app():
             })
 
     @mcp.tool
+    def canonical_writer_status(limit: int = 50) -> str:
+        """Read the one-editor state, queue and tamper-evident ledger status."""
+        if canonical_writer_queue is None:
+            return _json({
+                "available": False,
+                "reason": "CANONICAL_WRITER_DISABLED_OR_NOT_READY",
+            })
+        try:
+            return _json({
+                "available": True,
+                "ready": canonical_writer_queue.verify_ready(),
+                "writer": canonical_writer_queue.writer_state(),
+                "queue": canonical_writer_queue.list_queue(limit=limit),
+            })
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
+    def jaytec_control_snapshot(limit: int = 50) -> str:
+        """Read the ordered JAYTEC command chain, active jobs and write queue."""
+        try:
+            workload = (
+                workload_read_model.snapshot(limit=limit)
+                if workload_read_model is not None
+                else None
+            )
+            writer = None
+            if canonical_writer_queue is not None:
+                writer = {
+                    "ready": canonical_writer_queue.verify_ready(),
+                    "state": canonical_writer_queue.writer_state(),
+                    "queue": canonical_writer_queue.list_queue(limit=limit),
+                }
+            return _json({
+                "available": True,
+                "authority_hierarchy": [
+                    "Jay / ROOT_OWNER",
+                    "ChatGPT",
+                    "WATCH",
+                    "worker",
+                    "WATCH review",
+                    "ChatGPT canonical decision",
+                    "CHATGPT-CANONICAL-WRITER",
+                    "canonical state / deployment",
+                ],
+                "authority_rules": {
+                    "root_owner_ultimate": True,
+                    "chatgpt_priority_operational_writer": True,
+                    "watch_may_coordinate_and_enqueue": True,
+                    "watch_may_canonical_write": False,
+                    "worker_may_canonical_write": False,
+                    "max_canonical_writers": 1,
+                    "max_canonical_writes_in_flight": 1,
+                },
+                "five_seat": (
+                    fabric_service.status()
+                    if fabric_service is not None
+                    else None
+                ),
+                "workload": workload,
+                "canonical_writer": writer,
+            })
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
+    def canonical_writer_approve(
+        write_id: str,
+        approval_ref: str,
+        expected_candidate_digest: str,
+        expected_base_sha: str,
+        expected_source_shared_state_version: int,
+        preflight_evidence_json: str,
+        authority: str = "CHATGPT",
+    ) -> str:
+        """Approve one WATCH-accepted canonical candidate. No merge occurs here."""
+        if canonical_writer_queue is None:
+            return _json({
+                "available": False,
+                "reason": "CANONICAL_WRITER_DISABLED_OR_NOT_READY",
+            })
+        try:
+            preflight = json.loads(preflight_evidence_json or "{}")
+            if not isinstance(preflight, dict):
+                raise ValueError("preflight_evidence_json must decode to an object")
+            approved = canonical_writer_queue.approve(
+                write_id,
+                approved_by=authority,
+                approval_ref=approval_ref,
+                expected_candidate_digest=expected_candidate_digest,
+                expected_base_sha=expected_base_sha,
+                expected_source_shared_state_version=int(
+                    expected_source_shared_state_version
+                ),
+                preflight_evidence=preflight,
+            )
+            return _json({"available": True, "approved": approved})
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
+    def canonical_writer_claim_next(lease_seconds: int = 600) -> str:
+        """Claim at most one approved write for the sole ChatGPT editor."""
+        if canonical_writer_queue is None:
+            return _json({
+                "available": False,
+                "reason": "CANONICAL_WRITER_DISABLED_OR_NOT_READY",
+            })
+        try:
+            canonical_writer_queue.contain_expired_inflight()
+            canonical_writer_queue.reconcile_watch_accepts(limit=100)
+            token = canonical_writer_queue.claim_next(
+                owner=CANONICAL_WRITER_ID,
+                lease_seconds=lease_seconds,
+            )
+            if token is None:
+                return _json({"available": True, "claimed": False})
+            ticket = canonical_writer_queue.active_ticket(token)
+            return _json({
+                "available": True,
+                "claimed": True,
+                "token": _canonical_writer_token_json(token),
+                "ticket": ticket,
+            })
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
+    def canonical_writer_heartbeat(
+        token_json: str,
+        lease_seconds: int = 600,
+    ) -> str:
+        """Renew the sole writer lease while a bounded merge/deploy is verified."""
+        if canonical_writer_queue is None:
+            return _json({
+                "available": False,
+                "reason": "CANONICAL_WRITER_DISABLED_OR_NOT_READY",
+            })
+        try:
+            token = canonical_writer_queue.heartbeat(
+                _canonical_writer_token(token_json),
+                lease_seconds=lease_seconds,
+            )
+            return _json({
+                "available": True,
+                "token": _canonical_writer_token_json(token),
+            })
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
+    def canonical_writer_complete(
+        token_json: str,
+        outcome: str,
+        canonical_commit_sha: str = "",
+        verification_evidence_json: str = "{}",
+        error: str = "",
+    ) -> str:
+        """Close the writer ticket only after external canonical verification."""
+        if canonical_writer_queue is None:
+            return _json({
+                "available": False,
+                "reason": "CANONICAL_WRITER_DISABLED_OR_NOT_READY",
+            })
+        try:
+            evidence = json.loads(verification_evidence_json or "{}")
+            if not isinstance(evidence, dict):
+                raise ValueError(
+                    "verification_evidence_json must decode to an object"
+                )
+            item = canonical_writer_queue.complete(
+                _canonical_writer_token(token_json),
+                outcome=outcome,
+                canonical_commit_sha=canonical_commit_sha or None,
+                verification_evidence=evidence,
+                error=error,
+            )
+            return _json({"available": True, "item": item})
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
+    def canonical_writer_ledger(
+        write_id: str = "",
+        limit: int = 200,
+    ) -> str:
+        """Read canonical write history and verify its global hash chain."""
+        if canonical_writer_queue is None:
+            return _json({
+                "available": False,
+                "reason": "CANONICAL_WRITER_DISABLED_OR_NOT_READY",
+            })
+        try:
+            return _json({
+                "available": True,
+                "chain": canonical_writer_queue.verify_ledger_chain(),
+                "events": canonical_writer_queue.ledger(
+                    write_id=write_id or None,
+                    limit=limit,
+                ),
+            })
+        except Exception as exc:
+            return _json({
+                "available": True,
+                "error_class": type(exc).__name__,
+                "error": str(exc)[:1000],
+            })
+
+    @mcp.tool
     def task_packet_status(job_id: str = "", idempotency_key: str = "") -> str:
         """Poll a durable specialist packet without rerunning it."""
         if queue is None:
@@ -728,6 +1006,13 @@ def create_mcp_app():
             "five_seat_fabric_enabled": fabric_enabled,
             "five_seat_github_broker_requested": FIVE_SEAT_GITHUB_BROKER_ENABLED,
             "five_seat_github_broker_ready": github_broker is not None,
+            "canonical_writer_requested": JAYTEC_CANONICAL_WRITER_ENABLED,
+            "canonical_writer_ready": canonical_writer_queue is not None,
+            "canonical_writer_state": (
+                canonical_writer_queue.writer_state()
+                if canonical_writer_queue is not None
+                else None
+            ),
             "five_seat_service": fabric_service.status() if fabric_service else None,
             "legacy_durable_worker_suppressed_by_fabric": bool(fabric_enabled),
             "durable_worker_enabled": bool(DURABLE_WORKER_ENABLED and not fabric_enabled),
@@ -829,6 +1114,7 @@ def create_mcp_app():
         "five_seat_authority": fabric_authority,
         "five_seat_service": fabric_service,
         "five_seat_reporter": fabric_reporter,
+        "canonical_writer_queue": canonical_writer_queue,
     }
     return mcp
 
