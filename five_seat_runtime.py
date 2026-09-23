@@ -10,6 +10,7 @@ import psycopg2
 import psycopg2.extras
 
 from five_seat_signals import REVIEW_AVAILABLE_CHANNEL, WORK_AVAILABLE_CHANNEL
+from five_seat_authority import authority_requires_approval, normalize_cost_policy
 
 from concurrency import (
     SCHEDULER_LOCK_KEY,
@@ -159,6 +160,62 @@ class PostgresFiveSeatScheduler:
     def _connect(self):
         return psycopg2.connect(self.database_url)
 
+    def _assert_current_authority(self, cur, job_id: str) -> Dict[str, Any]:
+        cur.execute(
+            """
+            SELECT
+              j.source_shared_state_version,
+              e.envelope_hash,
+              e.approval_required,
+              e.authority_class,
+              e.cost_policy,
+              a.current_shared_state_version,
+              a.authority_epoch,
+              a.fence_token AS authority_fence_token,
+              p.approval_id,
+              p.envelope_hash AS approval_envelope_hash,
+              p.source_shared_state_version AS approval_source_version,
+              p.authority_class AS approval_authority_class,
+              p.max_cost_usd AS approval_max_cost_usd,
+              p.expires_at AS approval_expires_at
+            FROM jaytec_jobs j
+            JOIN jaytec_fabric_envelopes e ON e.job_id=j.job_id
+            JOIN jaytec_fabric_authority_state a ON a.authority_id='FABRIC'
+            LEFT JOIN jaytec_fabric_approvals p
+              ON p.job_id=j.job_id
+             AND p.state='APPROVED'
+             AND (p.expires_at IS NULL OR p.expires_at > now())
+            WHERE j.job_id=%s
+            FOR UPDATE OF j,e,a
+            """,
+            (job_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise FiveSeatStaleLease(job_id)
+        current_version = int(row["current_shared_state_version"])
+        if current_version <= 0:
+            raise FiveSeatStaleLease(job_id)
+        if int(row["source_shared_state_version"]) != current_version:
+            raise FiveSeatStaleLease(job_id)
+        policy = normalize_cost_policy(row.get("cost_policy") or {})
+        required = bool(row.get("approval_required")) or authority_requires_approval(
+            row.get("authority_class"),
+            policy,
+        )
+        if required:
+            if not row.get("approval_id"):
+                raise FiveSeatStaleLease(job_id)
+            if row.get("approval_envelope_hash") != row.get("envelope_hash"):
+                raise FiveSeatStaleLease(job_id)
+            if int(row.get("approval_source_version") or -1) != current_version:
+                raise FiveSeatStaleLease(job_id)
+            if row.get("approval_authority_class") != row.get("authority_class"):
+                raise FiveSeatStaleLease(job_id)
+            if float(row.get("approval_max_cost_usd") or 0) < float(policy["max_cost_usd"]):
+                raise FiveSeatStaleLease(job_id)
+        return dict(row)
+
     def verify_schema_ready(self) -> Dict[str, bool]:
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -248,6 +305,49 @@ class PostgresFiveSeatScheduler:
                 cur.execute(
                     "SELECT pg_advisory_xact_lock(hashtext(%s))",
                     (SCHEDULER_LOCK_KEY,),
+                )
+
+                cur.execute(
+                    """
+                    SELECT current_shared_state_version
+                    FROM jaytec_fabric_authority_state
+                    WHERE authority_id='FABRIC'
+                    FOR UPDATE
+                    """
+                )
+                authority = cur.fetchone()
+                if authority is None:
+                    raise FiveSeatSchemaNotReady("fabric_authority_state_missing")
+                current_shared_state_version = int(
+                    authority["current_shared_state_version"]
+                )
+                if current_shared_state_version <= 0:
+                    return None
+                cur.execute(
+                    """
+                    UPDATE jaytec_jobs
+                    SET status='BLOCKED',
+                        fabric_state='STALE',
+                        blockers=%s::jsonb,
+                        next_attempt_at=NULL,
+                        version=version+1,
+                        updated_at=now()
+                    WHERE assignment_type='FIVE_SEAT_FABRIC'
+                      AND status IN ('QUEUED','PAUSED')
+                      AND fabric_state IN ('QUEUED','REWORK_QUEUED')
+                      AND source_shared_state_version <> %s
+                    """,
+                    (
+                        _json(
+                            [
+                                {
+                                    "source":"STALE_SOURCE_SHARED_STATE",
+                                    "current_shared_state_version":current_shared_state_version,
+                                }
+                            ]
+                        ),
+                        current_shared_state_version,
+                    ),
                 )
 
                 cur.execute(
@@ -357,6 +457,7 @@ class PostgresFiveSeatScheduler:
                 queued = [dict(row) for row in cur.fetchall()]
 
                 for candidate in queued:
+                    self._assert_current_authority(cur, str(candidate["job_id"]))
                     worker_kind = str(candidate.get("worker_kind") or "").upper()
                     if worker_kind not in supported:
                         continue
@@ -406,14 +507,18 @@ class PostgresFiveSeatScheduler:
                         cur.execute(
                             """
                             UPDATE jaytec_fabric_circuits
-                            SET state='HALF_OPEN',version=version+1,updated_at=now()
+                            SET state='HALF_OPEN',
+                                probe_job_id=%s,
+                                probe_started_at=now(),
+                                version=version+1,
+                                updated_at=now()
                             WHERE worker_kind=%s
                               AND state='OPEN'
                               AND open_until IS NOT NULL
                               AND open_until <= now()
                             RETURNING worker_kind
                             """,
-                            (worker_kind,),
+                            (candidate["job_id"], worker_kind),
                         )
                         if cur.fetchone() is None:
                             continue
@@ -567,6 +672,7 @@ class PostgresFiveSeatScheduler:
             raise ValueError("lease_seconds must be between 10 and 3600")
         with self._connect() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                self._assert_current_authority(cur, token.job_id)
                 cur.execute(
                     """
                     UPDATE jaytec_worker_seats
@@ -737,6 +843,8 @@ class PostgresFiveSeatScheduler:
                             "idempotent_replay": True,
                         }
                     raise FiveSeatRuntimeError("handoff_replay_state_mismatch:" + handoff_ref)
+
+                self._assert_current_authority(cur, token.job_id)
 
                 cur.execute(
                     """
