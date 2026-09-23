@@ -9,7 +9,7 @@ from five_seat_v3_quarantine_evidence import (
 
 
 class V3QuarantineDiagnosticTests(unittest.TestCase):
-    def test_exact_v2_target_is_pinned(self):
+    def test_exact_v3_target_is_pinned(self):
         self.assertEqual(
             TARGET_JOB_ID,
             "fabric-b0dfc7bb5516013444ed9480",
@@ -20,7 +20,7 @@ class V3QuarantineDiagnosticTests(unittest.TestCase):
         )
         self.assertEqual(
             DIAGNOSTIC_FLAG,
-            "FIVE_SEAT_PROD_V2_QUARANTINE_DIAGNOSTIC",
+            "FIVE_SEAT_PROD_V3_QUARANTINE_DIAGNOSTIC",
         )
 
     def test_blocker_summary_redacts_operation_details(self):
