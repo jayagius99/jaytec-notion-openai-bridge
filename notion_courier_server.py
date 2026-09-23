@@ -10,6 +10,7 @@ tool is exposed to Notion. No background worker or autonomous loop is started.
 """
 from __future__ import annotations
 
+import atexit
 import asyncio
 import json
 import os
@@ -190,6 +191,7 @@ class JaytecCourierRuntime:
             # Read-only schema gate. Startup never applies transformation DDL.
             self.fabric_service.verify_ready()
             self.fabric_service.start()
+            atexit.register(self.fabric_service.stop)
             if (
                 os.environ.get(
                     "FIVE_SEAT_FABRIC_STARTUP_REPORT", "0"
