@@ -363,7 +363,13 @@ class CanaryRuntime:
         }
 
 
-RUNTIME = CanaryRuntime()
+RUNTIME: CanaryRuntime | None = None
+
+
+def _runtime() -> CanaryRuntime:
+    if RUNTIME is None:
+        raise RuntimeError("canary_runtime_not_started")
+    return RUNTIME
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -383,13 +389,13 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "mode": "FS08_CANARY",
-                    "run_id": RUNTIME.run_id,
-                    "stage_workers": RUNTIME.worker_count,
+                    "run_id": _runtime().run_id,
+                    "stage_workers": _runtime().worker_count,
                 },
             )
             return
         if path == "/status":
-            payload = RUNTIME.status()
+            payload = _runtime().status()
             self._send(200 if payload.get("pass") else 202, payload)
             return
         self._send(404, {"error": "not_found"})
@@ -399,15 +405,17 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global RUNTIME
     if os.environ.get("FIVE_SEAT_CANARY_MODE") != "1":
         raise RuntimeError("FIVE_SEAT_CANARY_MODE=1 is required")
+    RUNTIME = CanaryRuntime()
     RUNTIME.start()
     port = int(os.environ.get("PORT", "10000"))
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     try:
         server.serve_forever()
     finally:
-        RUNTIME.stop_event.set()
+        _runtime().stop_event.set()
         server.server_close()
 
 
