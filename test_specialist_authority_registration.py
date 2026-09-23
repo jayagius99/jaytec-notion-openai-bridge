@@ -17,7 +17,10 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
         self.assertIn("ChatGPT decides whether anything is applied", contract)
         self.assertTrue(specialist_adapters.CODEX_CONTRACT.startswith(contract))
         self.assertTrue(
-            specialist_adapters.GEMINI_RESEARCH_MODE_V1_1.startswith(contract)
+            specialist_adapters.REVIEWER_RESEARCH_MODE_V1_1.startswith(contract)
+        )
+        self.assertTrue(
+            specialist_adapters.GEMINI_PAID_RESERVE_MODE_V1.startswith(contract)
         )
 
     def test_new_provider_dispatch_adapter_requires_explicit_registration_review(self):
@@ -30,7 +33,7 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
         # has been explicitly reviewed.
         self.assertEqual(
             dispatchers,
-            {"build_codex_dispatch", "build_gemini_dispatch", "build_sol_reserve_dispatch"},
+            {"build_codex_dispatch", "build_reviewer_dispatch", "build_gemini_dispatch", "build_sol_reserve_dispatch"},
         )
 
     def test_new_meeting_participant_requires_explicit_registration_review(self):
@@ -82,6 +85,14 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
         self.assertEqual(sol["side_effect_policy"], "none")
         self.assertEqual(reviewer["provider_model"], "deepseek/deepseek-v4-flash-0731:free")
         self.assertEqual(reviewer["cost_profile"], "free_primary")
+        self.assertTrue(reviewer["default_route"])
+        self.assertEqual(gemini["provider_model"], "google/gemini-3.1-pro-preview")
+        self.assertEqual(gemini["cost_profile"], "paid_reserve")
+        self.assertFalse(gemini["default_route"])
+        self.assertTrue(gemini["requires_deepseek_attempt"])
+        self.assertEqual(gemini["max_retries"], 0)
+        self.assertEqual(gemini["side_effect_policy"], "none")
+        self.assertIn("free_routes_exhausted", gemini["activation_policy"])
         self.assertNotIn("coding", reviewer["allowed_task_classes"])
         self.assertIn("engineering_write", reviewer["prohibited_task_classes"])
         self.assertNotIn("coding", manus["allowed_task_classes"])
@@ -105,9 +116,9 @@ class SpecialistAuthorityRegistrationGuardTests(unittest.TestCase):
             {"chat": type("FakeChat", (), {"completions": NoCallCompletions()})()},
         )()
         from circuit_breaker import CircuitBreaker
-        dispatch = specialist_adapters.build_gemini_dispatch(
+        dispatch = specialist_adapters.build_reviewer_dispatch(
             openrouter_client=fake_client,
-            gemini_model=specialist_adapters.EXPECTED_GEMINI_MODEL,
+            gemini_model=specialist_adapters.EXPECTED_REVIEWER_MODEL,
             gemini_timeout_s=5,
             circuit=CircuitBreaker(failure_threshold=3, reset_after_seconds=60),
         )

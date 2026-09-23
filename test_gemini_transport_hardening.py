@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 from circuit_breaker import CircuitBreaker
-from specialist_adapters import EXPECTED_GEMINI_MODEL, build_gemini_dispatch
+from specialist_adapters import EXPECTED_REVIEWER_MODEL, build_reviewer_dispatch
 from worker_json import WorkerJsonError
 
 
@@ -27,7 +27,7 @@ class FakeClient:
         self.chat = SimpleNamespace(completions=FakeCompletions(responses))
 
 
-def response(content, *, model=EXPECTED_GEMINI_MODEL, finish_reason="stop"):
+def response(content, *, model=EXPECTED_REVIEWER_MODEL, finish_reason="stop"):
     return SimpleNamespace(
         model=model,
         choices=[
@@ -52,7 +52,7 @@ def valid_payload():
     return json.dumps(
         {
             "status": "SUCCESS",
-            "model": EXPECTED_GEMINI_MODEL,
+            "model": EXPECTED_REVIEWER_MODEL,
             "findings": ["ok"],
             "evidence": ["fixture"],
             "confidence": "HIGH",
@@ -72,9 +72,9 @@ def valid_payload():
 class TestReviewerTransportHardening(unittest.TestCase):
     def build(self, responses):
         client = FakeClient(responses)
-        dispatch = build_gemini_dispatch(
+        dispatch = build_reviewer_dispatch(
             openrouter_client=client,
-            gemini_model=EXPECTED_GEMINI_MODEL,
+            gemini_model=EXPECTED_REVIEWER_MODEL,
             gemini_timeout_s=10,
             circuit=CircuitBreaker(failure_threshold=5),
         )
@@ -84,13 +84,13 @@ class TestReviewerTransportHardening(unittest.TestCase):
         client, dispatch = self.build([response(valid_payload())])
         out = dispatch(packet())
         self.assertEqual("SUCCESS", out["status"])
-        self.assertEqual(EXPECTED_GEMINI_MODEL, out["model"])
+        self.assertEqual(EXPECTED_REVIEWER_MODEL, out["model"])
         self.assertEqual(1, len(client.chat.completions.calls))
         call = client.chat.completions.calls[0]
         self.assertEqual("json_schema", call["response_format"]["type"])
         self.assertEqual("jaytec_reviewer_result", call["response_format"]["json_schema"]["name"])
         self.assertEqual("stop", out["bridge_diagnostics"]["finish_reason"])
-        self.assertEqual(EXPECTED_GEMINI_MODEL, out["bridge_diagnostics"]["provider_model"])
+        self.assertEqual(EXPECTED_REVIEWER_MODEL, out["bridge_diagnostics"]["provider_model"])
         self.assertEqual(64, len(out["bridge_diagnostics"]["content_sha256"]))
         self.assertNotIn("content", out["bridge_diagnostics"])
 
@@ -137,7 +137,7 @@ class TestReviewerTransportHardening(unittest.TestCase):
     def _read_payload(self, *, verified, title="Example conversation", fetch_status="SUCCESS"):
         return {
             "status": "SUCCESS" if verified else "FAILED_CLOSED",
-            "model": EXPECTED_GEMINI_MODEL,
+            "model": EXPECTED_REVIEWER_MODEL,
             "findings": ["Recovered exact conversation title and details."] if verified else [],
             "evidence": ["Exact shared page fetched."] if verified else [],
             "confidence": "HIGH" if verified else "LOW",
@@ -145,7 +145,7 @@ class TestReviewerTransportHardening(unittest.TestCase):
                 "READ_REPORT": {
                     "READ_REPORT_ID": "READ-example",
                     "SOURCE_URL": "https://chatgpt.com/share/example",
-                    "ACCESS_ROUTE": EXPECTED_GEMINI_MODEL,
+                    "ACCESS_ROUTE": EXPECTED_REVIEWER_MODEL,
                     "FETCH_STATUS": fetch_status,
                     "VERIFIED": verified,
                     "TITLE": title if verified else None,

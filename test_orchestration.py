@@ -28,7 +28,7 @@ def base_packet(now=None):
         "context_digests": {},
         "known_facts": [],
         "constraints": ["no production writes"],
-        "specialist_plan": ["gemini", "codex"],
+        "specialist_plan": ["reviewer", "codex"],
         "allowed_operations": ["research", "validate", "code_staging"],
         "expected_output": "structured envelope",
         "validation_requirements": ["ids preserved"],
@@ -39,6 +39,32 @@ def base_packet(now=None):
         "max_retries": 2,
         "return_schema_version": "1.0",
     }
+
+
+def gemini_paid_packet(now=None):
+    p = base_packet(now)
+    p["specialist_plan"] = ["gemini"]
+    p["max_fanout"] = 1
+    p["max_retries"] = 0
+    p["side_effect_policy"] = "none"
+    p["workflow_id"] = "JAYTEC_PAID_GEMINI_RESERVE_TEST"
+    p["allowed_operations"] = ["research", "validate"]
+    p["required_context"] = {
+        "free_routes_exhausted": True,
+        "free_routes_attempted": ["reviewer"],
+        "free_route_exhaustion_evidence": [
+            "reviewer: unavailable or insufficient for this bounded task"
+        ],
+        "gemini_specifically_required": True,
+        "gemini_required_reason": (
+            "Gemini-specific review is required after the free reviewer route is exhausted."
+        ),
+        "paid_reserve_authorized": True,
+        "cost_policy": "PAID_BACKUP_ONLY",
+        "authority_controller": "CHATGPT_OPENAI_LEAD",
+        "specialist_authority": "SUBORDINATE",
+    }
+    return p
 
 
 class TestOrchestration(unittest.TestCase):
@@ -157,16 +183,16 @@ class TestOrchestration(unittest.TestCase):
     def test_successful_fan_in_and_deterministic_order(self):
         p = base_packet()
         def codex(_): return {"status": "SUCCESS", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "findings": ["c"], "evidence": [], "conclusion": {"ok": True}}
-        def gemini(_): return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": ["g"], "evidence": [], "conclusion": {"ok": True}}
-        out = execute_task_packet_core(p, {"codex": codex, "gemini": gemini}, ExecutionRegistry(), sleep_fn=lambda _: None)
+        def reviewer(_): return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": ["g"], "evidence": [], "conclusion": {"ok": True}}
+        out = execute_task_packet_core(p, {"codex": codex, "reviewer": reviewer}, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("SUCCESS", out["overall_status"])
-        self.assertEqual(["codex", "gemini"], [x["specialist"] for x in out["worker_trace"]])
+        self.assertEqual(["codex", "reviewer"], [x["specialist"] for x in out["worker_trace"]])
 
     def test_one_specialist_failure(self):
         p = base_packet()
         out = execute_task_packet_core(p, {
             "codex": lambda _: {"status": "SUCCESS", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "findings": [], "evidence": []},
-            "gemini": lambda _: {"status": "FAILED_CLOSED", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []},
+            "reviewer": lambda _: {"status": "FAILED_CLOSED", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("PARTIAL_SUCCESS", out["overall_status"])
 
@@ -174,7 +200,7 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet()
         out = execute_task_packet_core(p, {
             "codex": lambda _: {"status": "FAILED_CLOSED", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "findings": [], "evidence": []},
-            "gemini": lambda _: {"status": "FAILED_CLOSED", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []},
+            "reviewer": lambda _: {"status": "FAILED_CLOSED", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("FAILED_CLOSED", out["overall_status"])
 
@@ -182,7 +208,7 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet()
         out = execute_task_packet_core(p, {
             "codex": lambda _: {"status": "SUCCESS", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "findings": [], "evidence": [], "conclusion": "A"},
-            "gemini": lambda _: {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": [], "conclusion": "B"},
+            "reviewer": lambda _: {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": [], "conclusion": "B"},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("NEEDS_VALIDATION", out["overall_status"])
         self.assertTrue(out["conflicts"])
@@ -190,8 +216,8 @@ class TestOrchestration(unittest.TestCase):
     def test_idempotent_replay(self):
         p = base_packet(); reg = ExecutionRegistry(); calls = {"n": 0}
         def codex(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "findings": [], "evidence": []}
-        def gemini(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []}
-        dispatch = {"codex": codex, "gemini": gemini}
+        def reviewer(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []}
+        dispatch = {"codex": codex, "reviewer": reviewer}
         first = execute_task_packet_core(p, dispatch, reg, sleep_fn=lambda _: None)
         second = execute_task_packet_core(p, dispatch, reg, sleep_fn=lambda _: None)
         self.assertEqual(first["execution_id"], second["execution_id"])
@@ -203,16 +229,16 @@ class TestOrchestration(unittest.TestCase):
         p = base_packet(now); p["deadline"] = (now + timedelta(days=3)).isoformat()
         reg = ExecutionRegistry(ttl_seconds=10); calls = {"n": 0}
         def codex(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "findings": [], "evidence": []}
-        def gemini(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []}
-        execute_task_packet_core(p, {"codex": codex, "gemini": gemini}, reg, now=now, sleep_fn=lambda _: None)
-        execute_task_packet_core(p, {"codex": codex, "gemini": gemini}, reg, now=now + timedelta(seconds=11), sleep_fn=lambda _: None)
+        def reviewer(_): calls["n"] += 1; return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []}
+        execute_task_packet_core(p, {"codex": codex, "reviewer": reviewer}, reg, now=now, sleep_fn=lambda _: None)
+        execute_task_packet_core(p, {"codex": codex, "reviewer": reviewer}, reg, now=now + timedelta(seconds=11), sleep_fn=lambda _: None)
         self.assertEqual(4, calls["n"])
 
     def test_conflicting_duplicate_fails_closed(self):
         p = base_packet(); reg = ExecutionRegistry()
         dispatch = {
             "codex": lambda _: {"status": "SUCCESS", "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "findings": [], "evidence": []},
-            "gemini": lambda _: {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []},
+            "reviewer": lambda _: {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []},
         }
         execute_task_packet_core(p, dispatch, reg, sleep_fn=lambda _: None)
         p2 = copy.deepcopy(p); p2["request"] = "different"
@@ -227,9 +253,9 @@ class TestOrchestration(unittest.TestCase):
         self.assertTrue(any("model_mismatch" in x for x in out["unresolved_items"]))
 
     def test_malicious_worker_operation_policy_blocked(self):
-        p = base_packet(); p["specialist_plan"] = ["gemini"]; p["max_fanout"] = 1
+        p = base_packet(); p["specialist_plan"] = ["reviewer"]; p["max_fanout"] = 1
         out = execute_task_packet_core(p, {
-            "gemini": lambda _: {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": [], "requested_operations": ["production_write"]},
+            "reviewer": lambda _: {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": [], "requested_operations": ["production_write"]},
         }, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("POLICY_BLOCKED", out["overall_status"])
 
@@ -240,27 +266,27 @@ class TestOrchestration(unittest.TestCase):
         self.assertEqual("TIMEOUT", out["overall_status"])
 
     def test_gemini_timeout(self):
-        p = base_packet(); p["specialist_plan"] = ["gemini"]; p["max_fanout"] = 1
+        p = gemini_paid_packet()
         def timeout(_): raise TimeoutError("timeout")
         out = execute_task_packet_core(p, {"gemini": timeout}, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("TIMEOUT", out["overall_status"])
 
     def test_rate_limit_retry_after_then_success(self):
-        p = base_packet(); p["specialist_plan"] = ["gemini"]; p["max_fanout"] = 1; p["max_retries"] = 2
+        p = base_packet(); p["specialist_plan"] = ["reviewer"]; p["max_fanout"] = 1; p["max_retries"] = 2
         calls = {"n": 0}; sleeps = []
         def worker(_):
             calls["n"] += 1
             if calls["n"] == 1: raise RateLimitError(retry_after="3")
             return {"status": "SUCCESS", "model": "deepseek/deepseek-v4-flash-0731:free", "findings": [], "evidence": []}
-        out = execute_task_packet_core(p, {"gemini": worker}, ExecutionRegistry(), sleep_fn=lambda x: sleeps.append(x))
+        out = execute_task_packet_core(p, {"reviewer": worker}, ExecutionRegistry(), sleep_fn=lambda x: sleeps.append(x))
         self.assertEqual("SUCCESS", out["overall_status"])
         self.assertEqual([3.0], sleeps)
         self.assertEqual(1, out["usage_summary"]["retry_count"])
 
     def test_rate_limit_budget_exhausted(self):
-        p = base_packet(); p["specialist_plan"] = ["gemini"]; p["max_fanout"] = 1; p["max_retries"] = 1
+        p = base_packet(); p["specialist_plan"] = ["reviewer"]; p["max_fanout"] = 1; p["max_retries"] = 1
         def worker(_): raise RateLimitError(retry_after=0)
-        out = execute_task_packet_core(p, {"gemini": worker}, ExecutionRegistry(), sleep_fn=lambda _: None)
+        out = execute_task_packet_core(p, {"reviewer": worker}, ExecutionRegistry(), sleep_fn=lambda _: None)
         self.assertEqual("RATE_LIMITED", out["overall_status"])
 
     def test_provider_unavailable_retries_and_fails_closed(self):

@@ -57,7 +57,12 @@
       "can_authorize_jaytec_change": false,
       "can_self_initiate": false,
       "cost_profile": "paid_reserve",
-      "activation_policy": "explicitly_funded_or_owner_requested"
+      "activation_policy": "all_suitable_free_routes_exhausted_and_gemini_specifically_required_and_paid_reserve_authorized",
+      "fallback_policy": "fail_closed_no_silent_or_paid_model_substitution",
+      "max_retries": 0,
+      "side_effect_policy": "none",
+      "default_route": false,
+      "requires_deepseek_attempt": true
     },
     "manus": {
       "display_name": "JAYTEC Automation / Orchestration Specialist",
@@ -130,7 +135,8 @@
       "can_authorize_jaytec_change": false,
       "can_self_initiate": false,
       "cost_profile": "free_primary",
-      "fallback_policy": "fail_closed_no_silent_model_substitution"
+      "fallback_policy": "fail_closed_no_silent_model_substitution",
+      "default_route": true
     }
   },
   "future_specialist_requirements": {

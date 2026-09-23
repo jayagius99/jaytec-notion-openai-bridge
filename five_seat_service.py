@@ -53,7 +53,7 @@ def _canonical(value: Any) -> bytes:
 
 def _provider_identity(result: Mapping[str, Any]) -> str:
     observed: list[str] = []
-    for key in ("codex_result", "gemini_result", "sol_result"):
+    for key in ("codex_result", "reviewer_result", "gemini_result", "sol_result"):
         child = result.get(key)
         if isinstance(child, Mapping):
             model = str(child.get("model") or "").strip()
@@ -83,9 +83,9 @@ def submit_low_risk_task_packet(
         raise PacketValidationError("packet_contains_secret_material")
 
     plan = [str(item).strip().lower() for item in packet.get("specialist_plan", [])]
-    if not plan or any(item not in {"codex", "gemini"} for item in plan):
+    if not plan or any(item not in {"codex", "reviewer"} for item in plan):
         raise PacketValidationError(
-            "FIVE_SEAT_LOW_RISK_V1 permits only codex/gemini free-primary roles"
+            "FIVE_SEAT_LOW_RISK_V1 permits only codex/reviewer free-primary roles"
         )
     if str(packet.get("side_effect_policy") or "").strip().lower() != "none":
         raise PacketValidationError(

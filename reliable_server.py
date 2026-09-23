@@ -43,9 +43,11 @@ from orchestration import (
 from reliability_registry import TransientAwareRegistry
 from specialist_adapters import (
     EXPECTED_CODEX_MODEL,
+    EXPECTED_REVIEWER_MODEL,
     EXPECTED_GEMINI_MODEL,
     EXPECTED_SOL_MODEL,
     build_codex_dispatch,
+    build_reviewer_dispatch,
     build_gemini_dispatch,
     build_sol_reserve_dispatch,
     fetch_vercel_gateway_credit_balance,
@@ -93,6 +95,7 @@ def _five_seat_enabled() -> bool:
 
 _ORIGINAL_EXECUTE = legacy_server._execute_task_packet_json
 _ORIGINAL_BUILD_CODEX = legacy_server.build_codex_dispatch
+_ORIGINAL_BUILD_REVIEWER = legacy_server.build_reviewer_dispatch
 _ORIGINAL_BUILD_GEMINI = legacy_server.build_gemini_dispatch
 
 
@@ -155,6 +158,7 @@ def _transient_safe_execute_task_packet_json(
     idempotency_store: str,
     codex_dispatch: Any,
     gemini_dispatch: Any,
+    reviewer_dispatch: Any = None,
     sol_dispatch: Any = None,
 ) -> str:
     return _ORIGINAL_EXECUTE(
@@ -162,6 +166,7 @@ def _transient_safe_execute_task_packet_json(
         registry=TransientAwareRegistry(registry),
         idempotency_store=idempotency_store,
         codex_dispatch=codex_dispatch,
+        reviewer_dispatch=reviewer_dispatch,
         gemini_dispatch=gemini_dispatch,
         sol_dispatch=sol_dispatch,
     )
@@ -193,14 +198,14 @@ def _bounded_legacy_codex_dispatch(
     return _retryable_single_attempt_dispatch(underlying, model=EXPECTED_CODEX_MODEL)
 
 
-def _bounded_legacy_gemini_dispatch(*, openrouter_client, gemini_model, gemini_timeout_s, circuit):
-    underlying = _ORIGINAL_BUILD_GEMINI(
+def _bounded_legacy_reviewer_dispatch(*, openrouter_client, gemini_model, gemini_timeout_s, circuit):
+    underlying = _ORIGINAL_BUILD_REVIEWER(
         openrouter_client=openrouter_client,
         gemini_model=gemini_model,
         gemini_timeout_s=max(1.0, min(float(gemini_timeout_s), LEGACY_SYNC_PROVIDER_TIMEOUT_S)),
         circuit=circuit,
     )
-    read_underlying = _ORIGINAL_BUILD_GEMINI(
+    read_underlying = _ORIGINAL_BUILD_REVIEWER(
         openrouter_client=openrouter_client,
         gemini_model=gemini_model,
         gemini_timeout_s=max(1.0, min(float(gemini_timeout_s), JAYTEC_READ_SYNC_TIMEOUT_S)),
@@ -210,20 +215,28 @@ def _bounded_legacy_gemini_dispatch(*, openrouter_client, gemini_model, gemini_t
     def no_format_retry(packet):
         bounded = copy.deepcopy(dict(packet))
         bounded["max_retries"] = 0
-        # Ordinary compatibility calls remain tightly bounded. JAYTEC:READ is
-        # a dedicated direct retrieval command and gets a larger, still-bounded
-        # window so web_fetch + Gemini can complete without routing elsewhere.
         if bounded.get("workflow_id") == "JAYTEC_READ":
             return read_underlying(bounded)
         return underlying(bounded)
 
-    return _retryable_single_attempt_dispatch(no_format_retry, model=EXPECTED_GEMINI_MODEL)
+    return _retryable_single_attempt_dispatch(no_format_retry, model=EXPECTED_REVIEWER_MODEL)
+
+
+def _bounded_legacy_gemini_dispatch(*, openrouter_client, gemini_model, gemini_timeout_s, circuit):
+    underlying = _ORIGINAL_BUILD_GEMINI(
+        openrouter_client=openrouter_client,
+        gemini_model=gemini_model,
+        gemini_timeout_s=max(1.0, min(float(gemini_timeout_s), LEGACY_SYNC_PROVIDER_TIMEOUT_S)),
+        circuit=circuit,
+    )
+    return _retryable_single_attempt_dispatch(underlying, model=EXPECTED_GEMINI_MODEL)
 
 
 # Compatibility path remains available, but it is tightly bounded and transient
 # failures do not poison idempotent replay. Durable submit/poll is preferred.
 legacy_server._execute_task_packet_json = _transient_safe_execute_task_packet_json
 legacy_server.build_codex_dispatch = _bounded_legacy_codex_dispatch
+legacy_server.build_reviewer_dispatch = _bounded_legacy_reviewer_dispatch
 legacy_server.build_gemini_dispatch = _bounded_legacy_gemini_dispatch
 
 
@@ -372,6 +385,7 @@ def create_mcp_app():
     guardian_loop: Optional[GuardianBackgroundLoop] = None
     workload_read_model: Optional[WorkloadReadModel] = None
     durable_codex_circuit: Optional[CircuitBreaker] = None
+    durable_reviewer_circuit: Optional[CircuitBreaker] = None
     durable_gemini_circuit: Optional[CircuitBreaker] = None
     durable_sol_circuit: Optional[CircuitBreaker] = None
     fabric_queue: Optional[PostgresFabricQueue] = None
@@ -420,6 +434,10 @@ def create_mcp_app():
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
         )
+        durable_reviewer_circuit = CircuitBreaker(
+            failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
+            reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
+        )
         durable_gemini_circuit = CircuitBreaker(
             failure_threshold=legacy_server.CIRCUIT_FAILURE_THRESHOLD,
             reset_after_seconds=legacy_server.CIRCUIT_RESET_SECONDS,
@@ -446,6 +464,15 @@ def create_mcp_app():
                 )
             )
         if durable_openrouter is not None:
+            durable_reviewer_dispatch = _retryable_single_attempt_dispatch(
+                build_reviewer_dispatch(
+                    openrouter_client=durable_openrouter,
+                    gemini_model=legacy_server.REVIEWER_MODEL,
+                    gemini_timeout_s=DURABLE_GEMINI_TIMEOUT_S,
+                    circuit=durable_reviewer_circuit,
+                ),
+                model=EXPECTED_REVIEWER_MODEL,
+            )
             durable_gemini_dispatch = _retryable_single_attempt_dispatch(
                 build_gemini_dispatch(
                     openrouter_client=durable_openrouter,
@@ -456,6 +483,11 @@ def create_mcp_app():
                 model=EXPECTED_GEMINI_MODEL,
             )
         else:
+            durable_reviewer_dispatch = durable_reviewer_circuit.guard(
+                lambda _packet: (_ for _ in ()).throw(
+                    RuntimeError("OPENROUTER_API_KEY is not configured on this bridge")
+                )
+            )
             durable_gemini_dispatch = durable_gemini_circuit.guard(
                 lambda _packet: (_ for _ in ()).throw(
                     RuntimeError("OPENROUTER_API_KEY is not configured on this bridge")
@@ -501,6 +533,7 @@ def create_mcp_app():
                 registry=durable_registry,
                 idempotency_store="postgres",
                 codex_dispatch=durable_codex_dispatch,
+                reviewer_dispatch=durable_reviewer_dispatch,
                 gemini_dispatch=durable_gemini_dispatch,
                 sol_dispatch=durable_sol_dispatch,
             )

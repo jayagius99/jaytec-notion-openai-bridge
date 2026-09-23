@@ -24,7 +24,7 @@ Examples:
 - Nemotron 3 Ultra free: primary coding/engineering specialist for normal JAYTEC and V2 engineering work routed by ChatGPT.
 - Sol: premium engineering/review reserve for meetings, difficult engineering work, and owner-explicit Sol tasks when the paid OpenAI route is funded and available.
 - DeepSeek V4 Flash free: primary independent research / architecture / adversarial review specialist for normal JAYTEC and V2 review work. It is not an engineering-write specialist.
-- Gemini: premium research/review reserve only when funded or explicitly requested. Gemini is not required for normal V2 progress.
+- Gemini: paid last-resort research/review reserve only after suitable free routes are exhausted, DeepSeek/reviewer has been attempted, the remaining task specifically requires Gemini, and explicit paid-reserve authority is present.
 - Manus: automation/orchestration work inside its Manus-specific boundary plus bounded meeting participation. Manus does not inherit Sol coding authority over JAYTEC.
 - Future specialists: only the capabilities explicitly registered for that role.
 
@@ -116,10 +116,20 @@ Allowed use:
 
 DeepSeek does not decide JAYTEC changes, does not self-initiate work, and cannot silently fall back to another model/provider.
 
-## Gemini
+## Gemini paid reserve
 
-Role: premium research / architecture review reserve.
-Allowed only when funded and explicitly routed by ChatGPT/Jay. Gemini is not required for ordinary V2 progress.
+Role: paid last-resort research / architecture / adversarial review reserve.
+
+Gemini is never the default research route and is never a silent fallback. Normal research and review routes to DeepSeek first. Gemini is eligible only when all of the following are proven in the bounded TaskPacket:
+- all suitable free routes are exhausted;
+- DeepSeek/reviewer was attempted and exhaustion evidence is recorded;
+- the remaining task specifically requires Gemini, with a concrete reason;
+- paid-reserve authority is explicit under ChatGPT/OpenAI Lead control;
+- cost policy is `PAID_BACKUP_ONLY`;
+- Gemini is the only specialist in the terminal reserve packet;
+- retries are zero and side effects are none.
+
+Missing any condition = fail closed before the provider call. Provider credentials or model availability never grant spend authority.
 
 ## Sol
 
@@ -131,12 +141,6 @@ Allowed use when the paid OpenAI route is funded and available:
 - any specific task Jay explicitly asks ChatGPT to give Sol.
 
 Sol is not required for ordinary V2 progress and does not decide JAYTEC changes.
-
-## Gemini
-
-Primary role: independent research / architecture / adversarial review.
-Gemini answers the task ChatGPT sends and returns evidence/recommendations.
-Gemini does not decide or apply JAYTEC changes.
 
 ## Manus
 
