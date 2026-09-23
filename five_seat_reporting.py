@@ -393,9 +393,14 @@ class FiveSeatReporter:
             "owner_notifications": owner_events,
             "provider_and_spend": {
                 "provider_usage": provider_usage,
-                "zero_spend_only": zero_spend_only,
+                "zero_spend_policy_only": zero_spend_only,
+                "declared_max_spend_usd": 0.0 if zero_spend_only else None,
                 "paid_fallback_observed": False if zero_spend_only else None,
-                "actual_spend_usd": 0.0 if zero_spend_only else None,
+                "actual_spend_usd": None,
+                "metering_note": (
+                    "No provider billing meter is read by this report; policy and "
+                    "observed provider route are reported separately."
+                ),
             },
             "summary": {
                 "completed": len(completed),
