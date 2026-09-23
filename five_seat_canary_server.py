@@ -13,6 +13,7 @@ import psycopg2
 import psycopg2.extras
 
 from five_seat_adapters import AdapterRegistry
+from five_seat_authority import PostgresFabricAuthority
 from five_seat_guardian import FiveSeatGuardian
 from five_seat_queue import PostgresFabricQueue
 from five_seat_runtime import PostgresFiveSeatScheduler
@@ -103,6 +104,7 @@ class CanaryRuntime:
         self.run_id = _run_id()
         self.worker_kind = _canary_worker_kind(self.run_id, self.worker_count)
         self.scheduler = PostgresFiveSeatScheduler(self.database_url)
+        self.authority = PostgresFabricAuthority(self.database_url)
         self.queue = PostgresFabricQueue(self.database_url)
         self.signal = PostgresFabricSignal(self.database_url)
         self.watch = PostgresWatchController(self.database_url)
@@ -120,6 +122,10 @@ class CanaryRuntime:
 
     def start(self) -> None:
         self.scheduler.verify_schema_ready()
+        self.authority.set_current_shared_state_version(
+            1,
+            updated_by=f"FS08_CANARY:{self.run_id}",
+        )
 
         watch_thread = threading.Thread(
             target=self._watch_loop,
