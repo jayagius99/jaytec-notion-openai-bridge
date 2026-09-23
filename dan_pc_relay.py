@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -30,6 +31,10 @@ MODEL_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e
 SERVER = Path(r"C:\\JAYTEC_BOOTSTRAP\\Scratch\\local-model-proof\\llama\\llama-server.exe")
 SERVER_SHA256 = "06f5c5463753a7a6fe729bb436a6d3ab5e71373527559339b42cec9fd7f1d27f"
 ROUTE_ID = "local-llama-127.0.0.1:18081"
+EXPERIENCE_ROOT = Path(r"C:\JAYTEC\Experience")
+EXPERIENCE_STORE = EXPERIENCE_ROOT / "experience_store.py"
+CAPABILITY_MAP = EXPERIENCE_ROOT / "Capabilities" / "capability-map.json"
+REPAIR_RECIPES = EXPERIENCE_ROOT / "Recipes" / "repair-recipes.json"
 
 
 def canonical(value: Any) -> str:
@@ -50,6 +55,127 @@ def file_sha256(path: Path) -> str:
 
 def parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def load_json_file(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def experience_module():
+    if os.name != "nt" or not EXPERIENCE_STORE.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("jaytec_experience_store", EXPERIENCE_STORE)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def experience_context(job: dict[str, Any]) -> dict[str, Any]:
+    caps = load_json_file(CAPABILITY_MAP, {"capabilities": []})
+    recipes = load_json_file(REPAIR_RECIPES, {"recipes": []})
+    capabilities = []
+    for row in list(caps.get("capabilities") or [])[:16]:
+        if isinstance(row, dict):
+            capabilities.append({
+                "capability_id": row.get("capability_id"),
+                "live_status": row.get("live_status"),
+                "confidence_score": row.get("confidence_score"),
+                "task_classes": row.get("task_classes"),
+                "route_id": row.get("route_id"),
+                "known_limitations": row.get("known_limitations"),
+                "last_attested_at": row.get("last_attested_at"),
+            })
+    failure_text = canonical(job.get("worker_failure") or {}).lower()
+    relevant = []
+    for row in list(recipes.get("recipes") or []):
+        if not isinstance(row, dict):
+            continue
+        sig = str(row.get("failure_signature") or "").lower()
+        if not sig or sig in failure_text or any(
+            token and token in failure_text for token in re.split(r"[^a-z0-9]+", sig) if len(token) >= 6
+        ):
+            relevant.append({
+                "recipe_id": row.get("recipe_id"),
+                "failure_signature": row.get("failure_signature"),
+                "task_class": row.get("task_class"),
+                "preconditions": row.get("preconditions"),
+                "steps": row.get("steps"),
+                "verification": row.get("verification"),
+                "limitations": row.get("limitations"),
+                "successes": row.get("successes"),
+                "failures": row.get("failures"),
+            })
+        if len(relevant) >= 8:
+            break
+    return {"capabilities": capabilities, "relevant_repair_recipes": relevant}
+
+
+def record_experience(job: dict[str, Any], receipt: dict[str, Any]) -> dict[str, Any]:
+    module = experience_module()
+    if module is None:
+        return {"available": False}
+    event = module.append_event({
+        "type": "dan_execution",
+        "principal": job.get("principal"),
+        "task_id": job.get("task_id"),
+        "assignment_name": job.get("assignment_name"),
+        "original_job_id": job.get("original_job_id"),
+        "original_handoff_id": job.get("original_handoff_id"),
+        "status": receipt.get("status"),
+        "route_id": ROUTE_ID,
+        "exact_model_or_runtime": MODEL,
+        "model_sha256": MODEL_SHA256,
+        "server_sha256": SERVER_SHA256,
+        "provider_spend_usd": 0,
+        "response_digest": receipt.get("response_digest"),
+        "side_effects": "NONE",
+    })
+    status = str(receipt.get("status") or "")
+    outcome = "SUCCESS" if status == "DAN_COMPLETE" else ("FAILURE" if status == "DAN_BLOCKED" else None)
+    capability = None
+    if outcome:
+        capability = module.update_capability({
+            "capability_id": "qwen.local.bounded_reasoning",
+            "outcome": outcome,
+            "worker_or_tool": "Local Qwen",
+            "route_id": ROUTE_ID,
+            "exact_model_or_runtime": "Qwen2.5-1.5B-Instruct Q4_K_M",
+            "task_classes": ["bounded_reasoning", "structured_response", "alternate_candidate", "dan_recovery"],
+            "cost_class": "LOCAL_ZERO_PROVIDER_SPEND",
+            "side_effect_class": "MODEL_OUTPUT_ONLY",
+            "required_permissions": ["LOCAL_RUNTIME_AVAILABLE"],
+            "verification_method": "exact model + runtime hash, localhost API receipt, JAYTEC acceptance",
+            "known_limitations": ["candidate output requires independent acceptance before canonical use"],
+        })
+    repair_candidate_id = None
+    if job.get("principal") == "DAN-RECOVERY-SEAT" and status == "DAN_COMPLETE":
+        failure = job.get("worker_failure") if isinstance(job.get("worker_failure"), dict) else {}
+        fingerprint = {
+            "watch_reason": job.get("watch_reason"),
+            "unresolved_items": list(failure.get("unresolved_items") or [])[:20],
+            "original_worker_kind": job.get("original_worker_kind"),
+        }
+        repair_candidate_id = "candidate." + digest(fingerprint)[:20]
+        module.append_event({
+            "type": "repair_recipe_candidate",
+            "candidate_id": repair_candidate_id,
+            "task_id": job.get("task_id"),
+            "original_job_id": job.get("original_job_id"),
+            "failure_fingerprint": fingerprint,
+            "result_digest": receipt.get("response_digest"),
+            "promotion_state": "AWAITING_INDEPENDENT_ACCEPTANCE",
+        })
+    return {
+        "available": True,
+        "event_id": event.get("event_id"),
+        "capability_id": capability.get("capability_id") if isinstance(capability, dict) else None,
+        "repair_candidate_id": repair_candidate_id,
+    }
 
 
 def gh_api(path: str, *, method: str = "GET", payload: dict[str, Any] | None = None) -> Any:
