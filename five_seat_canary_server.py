@@ -44,21 +44,16 @@ def _run_id() -> str:
 
 
 def _apply_canary_migration(database_url: str) -> None:
-    """Explicitly migrate ONLY the isolated FS08 canary database.
+    """Fail closed: the runtime is never allowed to apply schema DDL.
 
-    This path is gated by FIVE_SEAT_CANARY_APPLY_MIGRATION=1 and exists only
-    in the dedicated canary server. Production/staging runtimes never call it.
+    FS08 canary schema provisioning is a separate, explicitly controlled
+    operation. Keeping DDL out of the runtime means a stale/copied DATABASE_URL
+    can never turn a canary process start into a migration against the wrong
+    database.
     """
-    if os.environ.get("FIVE_SEAT_CANARY_APPLY_MIGRATION") != "1":
-        return
-    from pathlib import Path
-
-    migration = Path(__file__).with_name("five_seat_schema.sql").read_text(
-        encoding="utf-8"
-    )
-    with psycopg2.connect(database_url) as conn:
-        with conn.cursor() as cur:
-            cur.execute(migration)
+    _ = database_url
+    if os.environ.get("FIVE_SEAT_CANARY_APPLY_MIGRATION") == "1":
+        raise RuntimeError("FS08_CANARY_RUNTIME_MIGRATION_FORBIDDEN")
 
 
 def _canary_worker_kind(run_id: str, stage: int) -> str:
