@@ -707,7 +707,7 @@ def submit_github_branch_pr_job(
         worker_kind=GITHUB_WORKER_KIND,
         idempotency_key="five-seat-github:" + str(idempotency_key),
         source_shared_state_version=int(source_shared_state_version),
-        authority_class="SCOPED_MUTATION",
+        authority_class="EXTERNAL_SIDE_EFFECT",
         concurrency_class="B",
         priority=int(priority),
         max_attempts=1,
