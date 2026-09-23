@@ -493,6 +493,41 @@ class PostgresWatchController:
                         ),
                     )
 
+                if decision in {"ACCEPT", "ESCALATE"}:
+                    owner_event_kind = (
+                        "WHOLE_JOB_COMPLETE"
+                        if decision == "ACCEPT"
+                        else "NEEDS_OWNER"
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO jaytec_job_events(
+                          job_id,event_type,source,source_version,payload
+                        )
+                        SELECT job_id,
+                               'OWNER_NOTIFICATION_REQUIRED',
+                               'FIVE_SEAT_WATCH',
+                               source_shared_state_version,
+                               %s::jsonb
+                        FROM jaytec_jobs
+                        WHERE job_id=%s
+                        """,
+                        (
+                            _json(
+                                {
+                                    "kind": owner_event_kind,
+                                    "review_id": review_id,
+                                    "handoff_id": handoff_id,
+                                    "decision": decision,
+                                    "reason": reason,
+                                    "leader_epoch": token.leader_epoch,
+                                    "fence_token": token.fence_token,
+                                }
+                            ),
+                            handoff["job_id"],
+                        ),
+                    )
+
                 return {
                     "review": dict(review),
                     "job": dict(updated_job),
