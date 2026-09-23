@@ -30,7 +30,10 @@ from five_seat_authority import PostgresFabricAuthority
 from five_seat_queue import PostgresFabricQueue
 from five_seat_reporting import FiveSeatReporter
 from five_seat_service import FiveSeatFabricService, submit_low_risk_task_packet
-from five_seat_production_admission import run_probe as run_production_admission_probe
+from five_seat_production_admission import (
+    run_probe as run_production_admission_probe,
+    wait_for_local_watch,
+)
 from circuit_breaker import CircuitBreaker
 from orchestration import ExecutionRegistry
 from notion_courier_policy import (
@@ -259,6 +262,19 @@ class JaytecCourierRuntime:
 
     def _run_production_admission_probe(self, deadline: str) -> None:
         try:
+            expected_watch_leader = (
+                "five-seat-watch:" + str(self.fabric_instance_id or "")
+            )
+            wait_for_local_watch(
+                reporter=self.fabric_reporter,
+                expected_leader=expected_watch_leader,
+                timeout_seconds=float(
+                    os.environ.get(
+                        "FIVE_SEAT_PROD_ADMISSION_WATCH_WAIT_S",
+                        "90",
+                    )
+                ),
+            )
             result = run_production_admission_probe(
                 database_url=legacy_server.DATABASE_URL,
                 queue=self.fabric_queue,
@@ -276,6 +292,8 @@ class JaytecCourierRuntime:
                 error_code = "ADMISSION_PROBE_JOB_ID_MISSING"
             elif error_text.startswith("stale_source_shared_state_version:"):
                 error_code = "STALE_SOURCE_SHARED_STATE_VERSION"
+            elif error_text == "admission_probe_local_watch_not_ready":
+                error_code = "LOCAL_WATCH_NOT_READY"
             result = {
                 "schema_version": "JAYTEC_FS08_PRODUCTION_ADMISSION_PROBE_V1",
                 "passed": False,
