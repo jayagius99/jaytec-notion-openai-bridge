@@ -1,7 +1,7 @@
 """Shared specialist adapter contracts + dispatch construction.
 
 This module exists to prevent drift between staging_server.py and server.py.
-It contains the exact staging-tested CODEX_CONTRACT and GEMINI_RESEARCH_MODE_V1_1
+It contains the exact staging-tested CODEX_CONTRACT and REVIEWER_RESEARCH_MODE_V1_1
 strings and the dispatch semantics used by both entrypoints.
 
 Security / safety:
@@ -23,6 +23,7 @@ from typing import Any, Callable, Mapping
 from openai import OpenAI
 
 from circuit_breaker import CircuitBreaker
+from gemini_paid_reserve import require_gemini_paid_reserve
 from orchestration import ProviderUnavailableError, RateLimitError
 from jaytec_read import (
     JAYTEC_READ_FETCH_ENGINES,
@@ -36,7 +37,7 @@ from worker_json import WorkerJsonError, json_object, json_object_with_diagnosti
 
 EXPECTED_CODEX_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 EXPECTED_REVIEWER_MODEL = "deepseek/deepseek-v4-flash-0731:free"
-EXPECTED_GEMINI_MODEL = EXPECTED_REVIEWER_MODEL  # legacy TaskPacket wire role compatibility
+EXPECTED_GEMINI_MODEL = "google/gemini-3.1-pro-preview"
 EXPECTED_SOL_MODEL = "openai/gpt-5.6-sol"
 SOL_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
@@ -94,7 +95,7 @@ REQUIRED SHAPE:
 - requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
 """
 
-GEMINI_RESEARCH_MODE_V1_1 = SPECIALIST_AUTHORITY_CONTRACT + """\nJAYTEC_INDEPENDENT_REVIEW_MODE v1.0.0
+REVIEWER_RESEARCH_MODE_V1_1 = SPECIALIST_AUTHORITY_CONTRACT + """\nJAYTEC_INDEPENDENT_REVIEW_MODE v1.0.0
 ROLE: INDEPENDENT RESEARCH / ARCHITECTURE / ADVERSARIAL REVIEW SPECIALIST. Treat each request as stateless.
 
 Return ONLY one valid JSON object (no markdown fences and no surrounding prose).
@@ -118,7 +119,7 @@ REQUIRED SHAPE (types are strict):
 
 Never expose credentials. Do not perform engineering writes."""
 
-GEMINI_FORMAT_RETRY = """Your previous transport attempt did not produce a complete parseable JSON object.
+REVIEWER_FORMAT_RETRY = """Your previous transport attempt did not produce a complete parseable JSON object.
 Re-answer the ORIGINAL TASK_PACKET_JSON from scratch. Do not quote or repair the prior response.
 Return one compact valid JSON object only, using exactly the required JAYTEC independent reviewer fields.
 Never include markdown fences, comments, trailing prose, NaN/Infinity, or unescaped newlines inside JSON strings."""
@@ -550,14 +551,14 @@ def build_sol_reserve_dispatch(
     return circuit.guard(_dispatch)
 
 
-def build_gemini_dispatch(
+def build_reviewer_dispatch(
     *,
     openrouter_client: OpenAI,
     gemini_model: str,
     gemini_timeout_s: float,
     circuit: CircuitBreaker,
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
-    require_exact_model(gemini_model, EXPECTED_GEMINI_MODEL, context="reviewer")
+    require_exact_model(gemini_model, EXPECTED_REVIEWER_MODEL, context="reviewer")
     if gemini_timeout_s <= 0:
         raise ValueError("gemini_timeout_s must be positive")
 
@@ -567,14 +568,14 @@ def build_gemini_dispatch(
         retry_format: bool = False,
         fetch_engine: str | None = None,
     ) -> str:
-        prefix = GEMINI_RESEARCH_MODE_V1_1
+        prefix = REVIEWER_RESEARCH_MODE_V1_1
         if is_jaytec_read_packet(packet):
             prefix += "\n" + JAYTEC_READ_PROMPT
             prefix += "\nSOURCE_URL: " + source_url_from_packet(packet)
             if fetch_engine:
                 prefix += "\nFETCH_ENGINE: " + fetch_engine
         if retry_format:
-            prefix += "\n" + GEMINI_FORMAT_RETRY
+            prefix += "\n" + REVIEWER_FORMAT_RETRY
         return (
             prefix
             + "\nTASK_ID: "
@@ -739,5 +740,135 @@ def build_gemini_dispatch(
         diagnostics["notion_fallback"] = False
         out["bridge_diagnostics"] = diagnostics
         return out
+
+    return circuit.guard(_dispatch)
+
+
+GEMINI_PAID_RESERVE_MODE_V1 = SPECIALIST_AUTHORITY_CONTRACT + """\nJAYTEC_GEMINI_PAID_RESERVE_MODE v1.0.0
+ROLE: PAID LAST-RESORT RESEARCH / REVIEW RESERVE.
+DeepSeek/reviewer is JAYTEC's normal research/review route. You are eligible
+only after suitable free routes are exhausted, the remaining task specifically
+requires Gemini, and the controller has supplied explicit paid-reserve authority.
+Never present yourself as the default route or a silent fallback.
+
+Return ONLY one valid JSON object (no markdown fences or surrounding prose).
+Preserve TASK_ID and SUBTASK_ID.
+REQUIRED SHAPE:
+- status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
+- model: string exactly google/gemini-3.1-pro-preview
+- findings: JSON array of strings
+- evidence: JSON array of strings
+- confidence: string|null
+- conclusion: any JSON or null
+- unresolved_items: JSON array of strings
+- files_or_artifacts: JSON array
+- architecture_changes_required: JSON array
+- knowledge_writeback_proposal: JSON array
+- side_effects_attempted: JSON array (MUST be [])
+- requested_operations: JSON array of strings (subset of packet.allowed_operations; use [])
+
+Never expose credentials. Never perform engineering writes or side effects."""
+
+
+def build_gemini_dispatch(
+    *,
+    openrouter_client: OpenAI,
+    gemini_model: str,
+    gemini_timeout_s: float,
+    circuit: CircuitBreaker,
+) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
+    """Build the real paid Gemini terminal-reserve dispatcher."""
+    require_exact_model(gemini_model, EXPECTED_GEMINI_MODEL, context="gemini")
+    if gemini_timeout_s <= 0:
+        raise ValueError("gemini_timeout_s must be positive")
+
+    def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
+        # Independent second boundary immediately before the paid provider call.
+        require_gemini_paid_reserve(packet)
+
+        operations = packet.get("allowed_operations") or []
+        if isinstance(operations, list) and any(
+            op in {"code_staging", "engineering_write", "production_write"}
+            for op in operations
+            if isinstance(op, str)
+        ):
+            raise RuntimeError("gemini_reserve_task_not_authorized")
+
+        prompt = (
+            GEMINI_PAID_RESERVE_MODE_V1
+            + "\nTASK_ID: "
+            + str(packet.get("task_id", ""))
+            + "\nSUBTASK_ID: "
+            + str(packet.get("subtask_id", ""))
+            + "\nTASK_PACKET_JSON:\n"
+            + json.dumps(packet, ensure_ascii=False, sort_keys=True)
+        )
+        request_kwargs: dict[str, Any] = {
+            "model": gemini_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "timeout": gemini_timeout_s,
+            "stream": False,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "jaytec_paid_gemini_reserve_result",
+                    "strict": True,
+                    "schema": _specialist_result_schema(),
+                },
+            },
+            "extra_body": {
+                "provider": {
+                    "allow_fallbacks": False,
+                    "require_parameters": True,
+                }
+            },
+        }
+
+        try:
+            response = openrouter_client.chat.completions.create(**request_kwargs)
+        except Exception as exc:
+            _normalize_provider_exception(exc, context="gemini_provider")
+
+        if not response.choices:
+            raise RuntimeError("gemini_no_choices")
+        returned_provider_model = _provider_model(response)
+        if returned_provider_model is None:
+            raise RuntimeError(
+                "gemini_provider_response: provider model identity unavailable"
+            )
+        require_exact_model(
+            returned_provider_model,
+            gemini_model,
+            context="gemini_provider_response",
+        )
+
+        choice = response.choices[0]
+        finish_reason = _finish_reason(choice)
+        content = choice.message.content or ""
+        if finish_reason in {"length", "content_filter"}:
+            digest = hashlib.sha256(
+                content.encode("utf-8", errors="replace")
+            ).hexdigest()
+            raise WorkerJsonError(
+                "TRUNCATED_OR_BLOCKED_RESPONSE",
+                f"finish_reason={finish_reason};bytes={len(content.encode('utf-8', errors='replace'))};sha256={digest}",
+            )
+
+        result, diagnostics = json_object_with_diagnostics(content)
+        result.setdefault("model", gemini_model)
+        result["bridge_diagnostics"] = {
+            **_safe_transport_diagnostics(
+                content=content,
+                finish_reason=finish_reason,
+                provider_model=returned_provider_model,
+                extracted_object=diagnostics.extracted_object,
+            ),
+            "paid_reserve": True,
+            "default_route": False,
+            "provider_fallbacks": False,
+            "model_lock": EXPECTED_GEMINI_MODEL,
+        }
+        return result
 
     return circuit.guard(_dispatch)
