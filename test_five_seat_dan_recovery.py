@@ -7,6 +7,10 @@ from dan_worker_relay import (
     DanWorkerRelay,
     DanWorkerRelayConfig,
     DanWorkerRelayError,
+    EXPECTED_QWEN_MODEL,
+    EXPECTED_QWEN_ROUTE,
+    EXPECTED_QWEN_SERVER_SHA256,
+    EXPECTED_QWEN_SHA256,
 )
 from five_seat_service import (
     FiveSeatFabricService,
@@ -20,44 +24,48 @@ class FakeRelayTransport:
         self.posts = 0
 
     def __call__(self, method, url, headers, body):
+        self.assert_issue_130(url)
         if method == "GET":
             return 200, list(reversed(self.comments))
         if method == "POST":
             self.posts += 1
             request = json.loads(str(body["body"]).split("\n", 1)[1])
-            self.comments.append({"body": body["body"]})
+            self.comments.append({
+                "user": {"login": "jayagius99"},
+                "body": body["body"],
+            })
             result = {
-                "schema": "JAYTEC_DAN_WORKER_RESULT_V1",
-                "identity": "DAN-WORKER",
+                "schema": DAN_WORKER_RESULT_MARKER,
+                "principal": "DAN-RECOVERY-SEAT",
+                "status": "DAN_COMPLETE",
                 "task_id": request["task_id"],
-                "subtask_id": request["subtask_id"],
-                "attempt_id": request["attempt_id"],
-                "source_state_version": request["source_state_version"],
-                "ownership_fence": request["ownership_fence"],
-                "return_worker_kind": request["return_worker_kind"],
-                "qwen_receipt": {
-                    "schema": "JAYTEC_DAN_QWEN_RECEIPT_V1",
-                    "identity": "DAN-WORKER",
-                    "http_status": 200,
-                    "model_id": "Qwen2.5-1.5B-Instruct-Q4_K_M",
-                    "response_sha256": "a" * 64,
-                    "provider_spend_usd": 0,
-                    "candidate": {
-                        "status": "SUCCESS",
-                        "result": "Use the recovered bounded approach.",
-                        "evidence": ["proof"],
-                        "limitations": [],
-                        "recommended_next_action": "retry original worker",
-                    },
-                },
-                "acceptance": "UNACCEPTED_CANDIDATE",
+                "original_handoff_id": request["original_handoff_id"],
+                "source_shared_state_version": request["source_shared_state_version"],
+                "request_digest": request["request_digest"],
+                "response_digest": "a" * 64,
+                "route_id": EXPECTED_QWEN_ROUTE,
+                "exact_model_id": EXPECTED_QWEN_MODEL,
+                "model_sha256": EXPECTED_QWEN_SHA256,
+                "server_sha256": EXPECTED_QWEN_SERVER_SHA256,
                 "provider_spend_usd": 0,
+                "side_effects": "NONE",
+                "result": "Use the recovered bounded approach.",
+                "evidence": ["proof"],
+                "limitations": [],
+                "recommended_next_action": "retry original worker",
+                "package_path": r"C:\JAYTEC\Assignments\Completed\proof",
             }
             self.comments.append({
-                "body": DAN_WORKER_RESULT_MARKER + "\n" + json.dumps(result)
+                "user": {"login": "jayagius99"},
+                "body": DAN_WORKER_RESULT_MARKER + "\n" + json.dumps(result),
             })
             return 201, {"id": 1}
         raise AssertionError(method)
+
+    @staticmethod
+    def assert_issue_130(url):
+        if "/issues/130/" not in url:
+            raise AssertionError(url)
 
 
 class TestDanWorkerRelay(unittest.TestCase):
@@ -67,7 +75,7 @@ class TestDanWorkerRelay(unittest.TestCase):
             DanWorkerRelayConfig.build(
                 "token",
                 "jayagius99/jaytec-work-engine-v2-g1",
-                128,
+                130,
                 timeout_seconds=10,
                 poll_interval_seconds=0.25,
             ),
@@ -87,9 +95,10 @@ class TestDanWorkerRelay(unittest.TestCase):
         )
         first = relay.recover(**kwargs)
         second = relay.recover(**kwargs)
-        self.assertEqual("DAN-WORKER", first["identity"])
+        self.assertEqual("DAN-RECOVERY-SEAT", first["identity"])
         self.assertEqual(first["attempt_id"], second["attempt_id"])
         self.assertEqual(1, transport.posts)
+        self.assertEqual("WATCH_RECOVERY_CONTEXT_ONLY", first["acceptance"])
 
     def test_contract_mismatch_fails_closed(self):
         transport = FakeRelayTransport()
@@ -97,7 +106,7 @@ class TestDanWorkerRelay(unittest.TestCase):
             DanWorkerRelayConfig.build(
                 "token",
                 "owner/repo",
-                1,
+                130,
                 timeout_seconds=10,
                 poll_interval_seconds=0.25,
             ),
@@ -105,34 +114,75 @@ class TestDanWorkerRelay(unittest.TestCase):
             sleep_fn=lambda _seconds: None,
         )
         attempt = relay.attempt_id("handoff-x")
+        request_digest = "b" * 64
         bad = {
-            "identity": "DAN-WORKER",
+            "schema": DAN_WORKER_RESULT_MARKER,
+            "principal": "DAN-RECOVERY-SEAT",
+            "status": "DAN_COMPLETE",
             "task_id": "wrong",
-            "subtask_id": "sub",
-            "attempt_id": attempt,
-            "source_state_version": 1,
-            "ownership_fence": "fence",
-            "return_worker_kind": "TASK_PACKET",
-            "qwen_receipt": {
-                "identity": "DAN-WORKER",
-                "http_status": 200,
-                "provider_spend_usd": 0,
-                "candidate": {"status": "SUCCESS"},
-            },
-            "acceptance": "UNACCEPTED_CANDIDATE",
+            "source_shared_state_version": 1,
+            "request_digest": request_digest,
+            "response_digest": "a" * 64,
+            "route_id": EXPECTED_QWEN_ROUTE,
+            "exact_model_id": EXPECTED_QWEN_MODEL,
+            "model_sha256": EXPECTED_QWEN_SHA256,
+            "server_sha256": EXPECTED_QWEN_SERVER_SHA256,
             "provider_spend_usd": 0,
+            "side_effects": "NONE",
         }
         transport.comments.append({
-            "body": DAN_WORKER_RESULT_MARKER + "\n" + json.dumps(bad)
+            "user": {"login": "jayagius99"},
+            "body": DAN_WORKER_RESULT_MARKER + "\n" + json.dumps(bad),
         })
-        with self.assertRaises(DanWorkerRelayError):
+        self.assertIsNone(
             relay._matching_result(
-                attempt_id=attempt,
-                task_id="task",
-                subtask_id="sub",
+                relay_task_id=attempt,
+                request_digest=request_digest,
                 source_state_version=1,
                 ownership_fence="fence",
                 return_worker_kind="TASK_PACKET",
+                attempt_id=attempt,
+            )
+        )
+
+    def test_matching_identity_with_wrong_runtime_hash_fails_closed(self):
+        transport = FakeRelayTransport()
+        relay = DanWorkerRelay(
+            DanWorkerRelayConfig.build(
+                "token", "owner/repo", 130, timeout_seconds=10
+            ),
+            transport=transport,
+            sleep_fn=lambda _seconds: None,
+        )
+        attempt = relay.attempt_id("handoff-y")
+        request_digest = "c" * 64
+        bad = {
+            "schema": DAN_WORKER_RESULT_MARKER,
+            "principal": "DAN-RECOVERY-SEAT",
+            "status": "DAN_COMPLETE",
+            "task_id": attempt,
+            "source_shared_state_version": 1,
+            "request_digest": request_digest,
+            "response_digest": "a" * 64,
+            "route_id": EXPECTED_QWEN_ROUTE,
+            "exact_model_id": EXPECTED_QWEN_MODEL,
+            "model_sha256": "0" * 64,
+            "server_sha256": EXPECTED_QWEN_SERVER_SHA256,
+            "provider_spend_usd": 0,
+            "side_effects": "NONE",
+        }
+        transport.comments.append({
+            "user": {"login": "jayagius99"},
+            "body": DAN_WORKER_RESULT_MARKER + "\n" + json.dumps(bad),
+        })
+        with self.assertRaises(DanWorkerRelayError):
+            relay._matching_result(
+                relay_task_id=attempt,
+                request_digest=request_digest,
+                source_state_version=1,
+                ownership_fence="fence",
+                return_worker_kind="TASK_PACKET",
+                attempt_id=attempt,
             )
 
 
@@ -198,7 +248,7 @@ class TestDanWatchRecoveryContract(unittest.TestCase):
             "_fabric_context": {
                 "last_watch_evidence": {
                     "dan_worker_recovery": {
-                        "identity": "DAN-WORKER",
+                        "identity": "DAN-RECOVERY-SEAT",
                         "attempt_id": "attempt",
                         "source_state_version": 1,
                         "ownership_fence": "job:1|handoff:2",
@@ -214,7 +264,7 @@ class TestDanWatchRecoveryContract(unittest.TestCase):
             },
         })
         ctx = captured["packet"]["required_context"]["dan_worker_recovery"]
-        self.assertEqual("DAN-WORKER", ctx["identity"])
+        self.assertEqual("DAN-RECOVERY-SEAT", ctx["identity"])
         self.assertEqual("recovery guidance", ctx["result"])
         self.assertEqual("SUCCESS", result["whole_packet_status"])
 
