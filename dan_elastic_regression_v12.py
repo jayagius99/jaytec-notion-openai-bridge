@@ -115,7 +115,13 @@ def run() -> dict:
     boundaries=_call(c,BOUNDARIES,700)
 
     bp=baseline["parsed"] if isinstance(baseline["parsed"],dict) else {}
-    hp=hardened["parsed"] if isinstance(hardened["parsed"],dict) else {}
+    raw_hp=hardened["parsed"]
+    if isinstance(raw_hp,dict):
+        hp=raw_hp
+    elif isinstance(raw_hp,list) and len(raw_hp)==3:
+        hp={"c1":raw_hp[0],"c2":raw_hp[1],"c3":raw_hp[2]}
+    else:
+        hp={}
     xp=boundaries["parsed"] if isinstance(boundaries["parsed"],dict) else {}
 
     def _case(container, key):
@@ -199,7 +205,8 @@ def run() -> dict:
             "c1_returned":returned_canonical,
             "parsed_types":{
                 "baseline":type(baseline["parsed"]).__name__,
-                "hardened":type(hardened["parsed"]).__name__,
+                "hardened_raw":type(hardened["parsed"]).__name__,
+                "hardened_normalized":type(hp).__name__,
                 "boundaries":type(boundaries["parsed"]).__name__,
                 "c1":type(hp.get("c1")).__name__,
                 "c2":type(hp.get("c2")).__name__,
