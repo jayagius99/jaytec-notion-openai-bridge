@@ -75,6 +75,21 @@ CREATE INDEX IF NOT EXISTS jaytec_worker_seats_lease_idx
   ON jaytec_worker_seats(lease_expires_at)
   WHERE state <> 'FREE';
 
+-- Admission freshness snapshot. This is a guard projection, not a second source of truth.
+CREATE TABLE IF NOT EXISTS jaytec_fabric_authority_state (
+  authority_id TEXT PRIMARY KEY CHECK (authority_id='FABRIC'),
+  current_shared_state_version BIGINT NOT NULL DEFAULT 0
+    CHECK (current_shared_state_version >= 0),
+  authority_epoch BIGINT NOT NULL DEFAULT 0,
+  fence_token BIGINT NOT NULL DEFAULT 0,
+  updated_by TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO jaytec_fabric_authority_state(authority_id)
+VALUES ('FABRIC')
+ON CONFLICT (authority_id) DO NOTHING;
+
 -- Immutable generic assignment envelope. jaytec_jobs remains state authority.
 CREATE TABLE IF NOT EXISTS jaytec_fabric_envelopes (
   job_id TEXT PRIMARY KEY REFERENCES jaytec_jobs(job_id) ON DELETE RESTRICT,
@@ -82,6 +97,7 @@ CREATE TABLE IF NOT EXISTS jaytec_fabric_envelopes (
   idempotency_key TEXT NOT NULL UNIQUE,
   worker_kind TEXT NOT NULL,
   required_capabilities JSONB NOT NULL DEFAULT '[]'::jsonb,
+  approval_required BOOLEAN NOT NULL DEFAULT FALSE,
   authority_class TEXT NOT NULL CHECK (
     authority_class IN (
       'READ_ONLY','SCOPED_MUTATION','CANONICAL_SHARED',
@@ -99,6 +115,38 @@ CREATE TABLE IF NOT EXISTS jaytec_fabric_envelopes (
 CREATE INDEX IF NOT EXISTS jaytec_fabric_envelopes_worker_idx
   ON jaytec_fabric_envelopes(worker_kind,job_id);
 
+ALTER TABLE jaytec_fabric_envelopes
+  ADD COLUMN IF NOT EXISTS approval_required BOOLEAN NOT NULL DEFAULT FALSE;
+
+UPDATE jaytec_fabric_envelopes
+SET approval_required=TRUE
+WHERE authority_class IN (
+  'CANONICAL_SHARED','EXTERNAL_SIDE_EFFECT','GLOBAL_EXCLUSIVE','OWNER_GATED'
+);
+
+CREATE TABLE IF NOT EXISTS jaytec_fabric_approvals (
+  approval_id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jaytec_jobs(job_id) ON DELETE RESTRICT,
+  envelope_hash TEXT NOT NULL,
+  source_shared_state_version BIGINT NOT NULL,
+  authority_class TEXT NOT NULL,
+  approved_by TEXT NOT NULL,
+  approval_ref TEXT NOT NULL,
+  max_cost_usd NUMERIC(12,4) NOT NULL DEFAULT 0 CHECK (max_cost_usd >= 0),
+  state TEXT NOT NULL CHECK (state IN ('APPROVED','REVOKED')),
+  expires_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS jaytec_fabric_approvals_one_active_idx
+  ON jaytec_fabric_approvals(job_id)
+  WHERE state='APPROVED';
+
+CREATE INDEX IF NOT EXISTS jaytec_fabric_approvals_state_idx
+  ON jaytec_fabric_approvals(state,expires_at,job_id);
+
 -- Durable worker-kind circuit state prevents provider/adapter retry storms.
 CREATE TABLE IF NOT EXISTS jaytec_fabric_circuits (
   worker_kind TEXT PRIMARY KEY,
@@ -108,6 +156,8 @@ CREATE TABLE IF NOT EXISTS jaytec_fabric_circuits (
   failure_threshold INTEGER NOT NULL DEFAULT 3
     CHECK (failure_threshold BETWEEN 1 AND 20),
   open_until TIMESTAMPTZ,
+  probe_job_id TEXT REFERENCES jaytec_jobs(job_id) ON DELETE SET NULL,
+  probe_started_at TIMESTAMPTZ,
   last_failure JSONB,
   version BIGINT NOT NULL DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -115,6 +165,11 @@ CREATE TABLE IF NOT EXISTS jaytec_fabric_circuits (
 
 CREATE INDEX IF NOT EXISTS jaytec_fabric_circuits_open_idx
   ON jaytec_fabric_circuits(state,open_until);
+
+ALTER TABLE jaytec_fabric_circuits
+  ADD COLUMN IF NOT EXISTS probe_job_id TEXT REFERENCES jaytec_jobs(job_id) ON DELETE SET NULL;
+ALTER TABLE jaytec_fabric_circuits
+  ADD COLUMN IF NOT EXISTS probe_started_at TIMESTAMPTZ;
 
 -- Worker output becomes immutable candidate evidence before the seat is freed.
 CREATE TABLE IF NOT EXISTS jaytec_worker_handoffs (
