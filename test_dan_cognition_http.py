@@ -22,7 +22,7 @@ class _FakeResponse:
 
 
 class DanCognitionPolicyTests(unittest.TestCase):
-    def base(self, seat="DEEP", model="openai/gpt-oss-20b:free"):
+    def base(self, seat="DEEP", model="inclusionai/ling-3.0-flash:free"):
         return {
             "relay_id": "DAN-CORE-TRIAD-01",
             "request_id": "req-1",
@@ -47,13 +47,17 @@ class DanCognitionPolicyTests(unittest.TestCase):
         self.assertEqual(out["seat"], "CRITIC")
 
     def test_nonfree_or_wrong_model_refused(self):
-        bad = self.base(model="openai/gpt-oss-20b")
+        bad = self.base(model="inclusionai/ling-3.0-flash")
         with self.assertRaises(cognition.DanCognitionPolicyError):
             cognition._validate_request(bad)
 
+        stale_deep = self.base(model="openai/gpt-oss-20b:free")
+        with self.assertRaises(cognition.DanCognitionPolicyError):
+            cognition._validate_request(stale_deep)
+
         wrong = self.base(
             seat="CRITIC",
-            model="openai/gpt-oss-20b:free",
+            model="inclusionai/ling-3.0-flash:free",
         )
         with self.assertRaises(cognition.DanCognitionPolicyError):
             cognition._validate_request(wrong)
@@ -97,7 +101,7 @@ class DanCognitionPolicyTests(unittest.TestCase):
             captured["body"] = json.loads(request.data.decode("utf-8"))
             return _FakeResponse(
                 {
-                    "model": "openai/gpt-oss-20b:free",
+                    "model": "inclusionai/ling-3.0-flash:free",
                     "choices": [
                         {"message": {"content": '{"conclusion":"ok"}'}}
                     ],
