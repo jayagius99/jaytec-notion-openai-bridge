@@ -15,7 +15,7 @@ MAX_INPUT_CHARS = 8_000
 MAX_OUTPUT_TOKENS = 1_200
 _RELAY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,119}$")
 _ALLOWED_MODELS = {
-    "DEEP": "openai/gpt-oss-20b:free",
+    "DEEP": "inclusionai/ling-3.0-flash:free",
     "CRITIC": "nvidia/nemotron-3-ultra-550b-a55b:free",
 }
 _SECRET_PATTERNS = (
