@@ -17,7 +17,7 @@ class TestFiveSeatWatchContract(unittest.TestCase):
     def test_review_targets(self):
         self.assertEqual(review_target("ACCEPT"), ("SUCCEEDED", "SUCCEEDED"))
         self.assertEqual(review_target("REWORK"), ("QUEUED", "REWORK_QUEUED"))
-        self.assertEqual(review_target("BLOCK"), ("BLOCKED", "QUARANTINED"))
+        self.assertEqual(review_target("BLOCK"), ("FAILED_SAFE", "FAILED_SAFE"))
         self.assertEqual(review_target("ESCALATE"), ("BLOCKED", "ESCALATED"))
 
     def test_schema_has_exactly_one_control_plane_definition_each(self):
@@ -57,6 +57,12 @@ class TestFiveSeatWatchContract(unittest.TestCase):
     def test_accept_requires_independent_evidence(self):
         source = Path(__file__).with_name("five_seat_watch.py").read_text(encoding="utf-8")
         self.assertIn('if decision == "ACCEPT" and not dict(evidence or {})', source)
+
+    def test_safe_block_does_not_poison_resource_scope(self):
+        source = Path(__file__).with_name("five_seat_watch.py").read_text(encoding="utf-8")
+        self.assertIn('"BLOCK": ("FAILED_SAFE", "FAILED_SAFE")', source)
+        self.assertIn('decision == "BLOCK" and job["fabric_state"] == "QUARANTINED"', source)
+        self.assertIn('target_status, target_fabric_state = ("BLOCKED", "QUARANTINED")', source)
 
     def test_unresolved_side_effects_block_handoff(self):
         source = Path(__file__).with_name("five_seat_runtime.py").read_text(encoding="utf-8")

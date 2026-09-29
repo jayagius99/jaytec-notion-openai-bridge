@@ -54,7 +54,7 @@ def review_target(decision: str) -> tuple[str, str]:
     mapping = {
         "ACCEPT": ("SUCCEEDED", "SUCCEEDED"),
         "REWORK": ("QUEUED", "REWORK_QUEUED"),
-        "BLOCK": ("BLOCKED", "QUARANTINED"),
+        "BLOCK": ("FAILED_SAFE", "FAILED_SAFE"),
         "ESCALATE": ("BLOCKED", "ESCALATED"),
     }
     normalized = str(decision or "").upper()
@@ -321,6 +321,13 @@ class PostgresWatchController:
                     or job["checkpoint_ref"] != handoff_id
                 ):
                     raise WatchReviewConflict("job_not_reviewable:" + str(handoff["job_id"]))
+                # A normal WATCH BLOCK after a verified no-side-effect handoff is a
+                # terminal safe failure, not a live resource quarantine. Preserve
+                # QUARANTINED only when the worker handoff was already quarantined
+                # because side effects or operations are genuinely unresolved.
+                if decision == "BLOCK" and job["fabric_state"] == "QUARANTINED":
+                    target_status, target_fabric_state = ("BLOCKED", "QUARANTINED")
+
                 if decision in {"ACCEPT", "REWORK"}:
                     current_shared_state_version = int(
                         job.get("current_shared_state_version") or 0

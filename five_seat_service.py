@@ -67,8 +67,12 @@ def _dan_relay_from_env() -> DanWorkerRelay | None:
         "jayagius99/jaytec-work-engine-v2-g1",
     ).strip()
     issue_number = int(os.environ.get("JAYTEC_DAN_RELAY_ISSUE", "128"))
-    timeout_seconds = float(
-        os.environ.get("JAYTEC_DAN_RECOVERY_TIMEOUT_SECONDS", "180")
+    timeout_seconds = max(
+        5.0,
+        min(
+            float(os.environ.get("JAYTEC_DAN_RECOVERY_TIMEOUT_SECONDS", "20")),
+            30.0,
+        ),
     )
     return DanWorkerRelay(
         DanWorkerRelayConfig.build(
@@ -362,8 +366,12 @@ class FiveSeatFabricService:
             try:
                 self.dan_relay = PostgresDanRelay(
                     database_url,
-                    timeout_seconds=float(
-                        os.environ.get("DAN_RELAY_RECOVERY_TIMEOUT_SECONDS", "180")
+                    timeout_seconds=max(
+                        5.0,
+                        min(
+                            float(os.environ.get("DAN_RELAY_RECOVERY_TIMEOUT_SECONDS", "20")),
+                            30.0,
+                        ),
                     ),
                 )
                 self.dan_relay.ensure_schema()
