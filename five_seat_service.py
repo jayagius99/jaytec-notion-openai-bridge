@@ -162,8 +162,8 @@ def submit_low_risk_task_packet(
         max_reworks=max(
             2,
             min(
-                12,
-                int(os.environ.get("JAYTEC_WATCH_MAX_REWORKS", "6")),
+                5,
+                int(os.environ.get("JAYTEC_WATCH_MAX_REWORKS", "5")),
             ),
         ),
         required_capabilities={TASK_PACKET_CAPABILITY},
