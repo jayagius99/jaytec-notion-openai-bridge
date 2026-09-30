@@ -129,7 +129,7 @@ class PostgresDanRelay:
             "cost_policy": "ZERO_SPEND",
             "side_effect_policy": "PACKAGE_ONLY",
             "created_at": now.isoformat(),
-            "expires_at": (now + timedelta(minutes=30)).isoformat(),
+            "expires_at": (now + timedelta(hours=2)).isoformat(),
         }
         payload["request_digest"] = _digest(payload)
         return payload
