@@ -268,8 +268,23 @@ class PostgresDanRelay:
             == "NONE",
         }
         if not all(checks.values()):
+            received_identity = {
+                "status": str(result.get("status") or "")[:80],
+                "exact_model_id": str(result.get("exact_model_id") or "")[:500],
+                "model_sha256": str(result.get("model_sha256") or "")[:128],
+                "server_sha256": str(result.get("server_sha256") or "")[:128],
+                "route_id": str(result.get("route_id") or "")[:200],
+                "provider_spend_usd": result.get("provider_spend_usd"),
+                "side_effects": str(result.get("side_effects") or "")[:80],
+            }
             raise DanRelayStoreError(
-                "dan_relay_result_contract_mismatch:" + _canonical(checks)
+                "dan_relay_result_contract_mismatch:"
+                + _canonical(
+                    {
+                        "checks": checks,
+                        "received_identity": received_identity,
+                    }
+                )
             )
         if require_complete and str(result.get("status") or "").upper() != "DAN_COMPLETE":
             raise DanRelayStoreError(
