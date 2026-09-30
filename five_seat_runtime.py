@@ -670,6 +670,8 @@ class PostgresFiveSeatScheduler:
                         "stop_conditions",
                         "result_destination",
                         "payload",
+                        "last_watch_decision",
+                        "last_watch_evidence",
                     ):
                         result[key] = candidate.get(key)
                     result["seat_id"] = seat_id
