@@ -1,0 +1,51 @@
+name: Build JAYTEC Chat APK
+
+on:
+  push:
+    branches:
+      - android/jaytec-chat-apk-v1
+    paths:
+      - 'mobile/jaytec-chat/**'
+      - '.github/workflows/build-jaytec-chat-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        working-directory: mobile/jaytec-chat
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Stage APK
+        run: cp mobile/jaytec-chat/app/build/outputs/apk/debug/app-debug.apk JAYTEC-Chat.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JAYTEC-Chat-APK
+          path: JAYTEC-Chat.apk
+          if-no-files-found: error
+          retention-days: 14
