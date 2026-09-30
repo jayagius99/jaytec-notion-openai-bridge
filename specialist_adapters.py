@@ -22,7 +22,7 @@ from typing import Any, Callable, Mapping
 
 from openai import OpenAI
 
-from circuit_breaker import CircuitBreaker
+from circuit_breaker import CircuitBreaker, CircuitIgnoredError
 from orchestration import ProviderUnavailableError, RateLimitError
 from jaytec_read import (
     JAYTEC_READ_FETCH_ENGINES,
@@ -236,7 +236,11 @@ def build_codex_dispatch(
     circuit: CircuitBreaker,
     codex_timeout_s: float = 45.0,
     provider_mode: str = "OPENROUTER_FREE_PRIMARY",
-    allowed_workflow_prefixes: tuple[str, ...] = ("JAYTEC_V2_", "JAYTEC_ENGINEERING_"),
+    allowed_workflow_prefixes: tuple[str, ...] = (
+        "JAYTEC_V2_",
+        "JAYTEC_ENGINEERING_",
+        "JAYTEC_WATCH_RECOVERY_",
+    ),
     max_output_tokens: int = 2000,
     max_packet_retries: int = 1,
 ) -> Callable[[Mapping[str, Any]], Mapping[str, Any]]:
@@ -356,19 +360,19 @@ def build_codex_dispatch(
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         workflow_id = str(packet.get("workflow_id", ""))
         if not any(workflow_id.startswith(prefix) for prefix in allowed_workflow_prefixes):
-            raise RuntimeError("engineering_workflow_not_authorized")
+            raise CircuitIgnoredError("engineering_workflow_not_authorized")
         authority = packet.get("required_context") or {}
         if not isinstance(authority, Mapping):
-            raise RuntimeError("engineering_authority_context_required")
+            raise CircuitIgnoredError("engineering_authority_context_required")
         if authority.get("authority_controller") != "CHATGPT_OPENAI_LEAD":
-            raise RuntimeError("engineering_chatgpt_authority_required")
+            raise CircuitIgnoredError("engineering_chatgpt_authority_required")
         if authority.get("specialist_authority") != "SUBORDINATE":
-            raise RuntimeError("engineering_specialist_must_be_subordinate")
+            raise CircuitIgnoredError("engineering_specialist_must_be_subordinate")
         requested_retries = packet.get("max_retries", 0)
         if type(requested_retries) is not int or requested_retries < 0:
-            raise RuntimeError("engineering_invalid_retry_budget")
+            raise CircuitIgnoredError("engineering_invalid_retry_budget")
         if requested_retries > max_packet_retries:
-            raise RuntimeError("engineering_retry_budget_exceeded")
+            raise CircuitIgnoredError("engineering_retry_budget_exceeded")
 
         try:
             return _single_call(packet, retry_format=False)
@@ -697,14 +701,28 @@ def build_gemini_dispatch(
 
     def _dispatch(packet: Mapping[str, Any]) -> Mapping[str, Any]:
         operations = packet.get("allowed_operations") or []
+        reviewer_packet: Mapping[str, Any] = packet
+        disallowed_reviewer_ops = {
+            "code_staging", "engineering_write", "production_write"
+        }
         if isinstance(operations, list) and any(
-            op in {"code_staging", "engineering_write", "production_write"}
+            op in disallowed_reviewer_ops
             for op in operations
             if isinstance(op, str)
         ):
-            raise RuntimeError("reviewer_role_task_not_authorized")
-        if not is_jaytec_read_packet(packet):
-            return _single_with_format_retry(packet)
+            workflow_id = str(packet.get("workflow_id") or "")
+            if workflow_id.startswith("JAYTEC_WATCH_RECOVERY_"):
+                scoped = dict(packet)
+                scoped["allowed_operations"] = [
+                    op for op in operations
+                    if isinstance(op, str)
+                    and op not in disallowed_reviewer_ops
+                ]
+                reviewer_packet = scoped
+            else:
+                raise CircuitIgnoredError("reviewer_role_task_not_authorized")
+        if not is_jaytec_read_packet(reviewer_packet):
+            return _single_with_format_retry(reviewer_packet)
 
         attempts: list[dict[str, Any]] = []
         last_result: Mapping[str, Any] | None = None

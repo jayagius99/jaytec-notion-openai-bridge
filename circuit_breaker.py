@@ -10,6 +10,11 @@ class CircuitOpenError(RuntimeError):
     pass
 
 
+class CircuitIgnoredError(RuntimeError):
+    """Local policy/config rejection that must not poison provider health."""
+    pass
+
+
 @dataclass
 class CircuitState:
     consecutive_failures: int = 0
@@ -75,6 +80,8 @@ class CircuitBreaker:
                 raise CircuitOpenError("specialist circuit is open")
             try:
                 result = dispatcher(packet)
+            except CircuitIgnoredError:
+                raise
             except Exception:
                 self.record_failure()
                 raise
