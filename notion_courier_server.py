@@ -112,7 +112,7 @@ class JaytecCourierRuntime:
             self.gemini_dispatch = legacy_server.build_gemini_dispatch(
                 openrouter_client=self.openrouter_client,
                 gemini_model=legacy_server.GEMINI_MODEL,
-                gemini_timeout_s=legacy_server.GEMINI_TIMEOUT_S,
+                gemini_timeout_s=legacy_server.DURABLE_GEMINI_TIMEOUT_S,
                 circuit=self.gemini_circuit,
             )
         else:
