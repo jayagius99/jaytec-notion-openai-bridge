@@ -662,33 +662,10 @@ class PostgresFabricRemedies:
                     attempts = int(job.get("fabric_attempt_count") or 0)
                     max_attempts = int(job.get("fabric_max_attempts") or 1)
                     worker_kind = str(seat.get("worker_kind") or "").upper()
-                    if worker_kind == "TASK_PACKET":
-                        envelope_payload = seat.get("envelope_payload") or {}
-                        if isinstance(envelope_payload, str):
-                            try:
-                                envelope_payload = json.loads(envelope_payload)
-                            except Exception:
-                                envelope_payload = {}
-                        packet_json = (
-                            envelope_payload.get("packet_json")
-                            if isinstance(envelope_payload, Mapping)
-                            else None
-                        )
-                        if isinstance(packet_json, str):
-                            try:
-                                packet = json.loads(packet_json)
-                            except Exception:
-                                packet = {}
-                            retry_budget = (
-                                packet.get("max_retries")
-                                if isinstance(packet, Mapping)
-                                else None
-                            )
-                            if type(retry_budget) is int and retry_budget >= 0:
-                                max_attempts = min(
-                                    max_attempts,
-                                    retry_budget + 1,
-                                )
+                    # Fabric/lease retries are independent from a TaskPacket's
+                    # specialist-internal max_retries. A packet may deliberately
+                    # set max_retries=0 while the durable worker fabric still has
+                    # multiple safe transport/lease recovery attempts available.
 
                     if stale_source:
                         new_status = "BLOCKED"
