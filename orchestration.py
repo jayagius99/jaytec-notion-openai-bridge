@@ -556,13 +556,20 @@ def _invoke_with_retries(
                 )
             sleep_fn(delay)
         except Exception as exc:
+            safe_message = redact(str(exc))
+            if not isinstance(safe_message, str):
+                safe_message = ""
+            safe_message = " ".join(safe_message.split())[:500]
+            reason = f"worker_error:{type(exc).__name__}"
+            if safe_message:
+                reason += ":" + safe_message
             return (
                 {
                     "status": "FAILED_CLOSED",
                     "model": EXPECTED_MODELS[specialist],
                     "findings": [],
                     "evidence": [],
-                    "unresolved_items": [f"worker_error:{type(exc).__name__}"],
+                    "unresolved_items": [reason],
                 },
                 retry_trace,
             )
