@@ -41,7 +41,7 @@ ENGINEER_MODEL = os.environ.get(
 ).strip()
 SOL_MODEL = os.environ.get("MEETING_SOL_MODEL", "gpt-5.6-sol").strip()
 REVIEWER_MODEL = os.environ.get(
-    "MEETING_REVIEWER_MODEL", "deepseek/deepseek-v4-flash-0731:free"
+    "MEETING_REVIEWER_MODEL", "inclusionai/ling-3.0-flash-fin:free"
 ).strip()
 OPENROUTER_BASE_URL = os.environ.get(
     "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
@@ -426,7 +426,7 @@ def _call_engineer(request: Mapping[str, Any], client: Optional[OpenAI] = None):
 def _call_reviewer(request: Mapping[str, Any], client: Optional[OpenAI] = None):
     if not REVIEWER_ENABLED:
         raise MeetingPolicyError("reviewer_meeting_lane_disabled")
-    if REVIEWER_MODEL != "deepseek/deepseek-v4-flash-0731:free":
+    if REVIEWER_MODEL != "inclusionai/ling-3.0-flash-fin:free":
         raise MeetingPolicyError("reviewer_model_lock_mismatch")
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if client is None and not api_key:

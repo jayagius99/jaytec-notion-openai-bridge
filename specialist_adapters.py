@@ -34,8 +34,8 @@ from jaytec_read import (
 )
 from worker_json import WorkerJsonError, json_object, json_object_with_diagnostics
 
-EXPECTED_CODEX_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
-EXPECTED_REVIEWER_MODEL = "deepseek/deepseek-v4-flash-0731:free"
+EXPECTED_CODEX_MODEL = "nex-agi/nex-n2.5-mini:free"
+EXPECTED_REVIEWER_MODEL = "qwen/qwen3.8-27b:free"
 EXPECTED_GEMINI_MODEL = EXPECTED_REVIEWER_MODEL  # legacy TaskPacket wire role compatibility
 EXPECTED_SOL_MODEL = "openai/gpt-5.6-sol"
 SOL_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
@@ -56,7 +56,7 @@ CODEX_CONTRACT = SPECIALIST_AUTHORITY_CONTRACT + """\nReturn ONLY one JSON objec
 
 REQUIRED SHAPE (types are strict):
 - status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
-- model: string exactly nvidia/nemotron-3-ultra-550b-a55b:free
+- model: string exactly nex-agi/nex-n2.5-mini:free
 - findings: JSON array of strings (NOT an object)
 - evidence: JSON array of strings (NOT an object)
 - confidence: string|null
@@ -104,7 +104,7 @@ analysis in conclusion rather than expanding many duplicated fields.
 
 REQUIRED SHAPE (types are strict):
 - status: string enum (SUCCESS, PARTIAL_SUCCESS, NEEDS_VALIDATION, POLICY_BLOCKED, FAILED_CLOSED, INVALID_PACKET, TIMEOUT, RATE_LIMITED)
-- model: string exactly deepseek/deepseek-v4-flash-0731:free
+- model: string exactly qwen/qwen3.8-27b:free
 - findings: JSON array of strings
 - evidence: JSON array of strings
 - confidence: string|null
@@ -263,7 +263,7 @@ def build_codex_dispatch(
 
     def _prompt(packet: Mapping[str, Any], *, retry_format: bool = False) -> str:
         prefix = (
-            "ROLE: JAYTEC PRIMARY ENGINEERING SPECIALIST (NVIDIA NEMOTRON 3 ULTRA FREE)\n"
+            "ROLE: JAYTEC PRIMARY ENGINEERING SPECIALIST (NEX N2.5 MINI FREE)\n"
             + CODEX_CONTRACT
         )
         if retry_format:

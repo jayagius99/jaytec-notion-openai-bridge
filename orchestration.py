@@ -20,8 +20,8 @@ PACKET_VERSION = "1.0"
 RETURN_SCHEMA_VERSION = "1.0"
 ALLOWED_SPECIALISTS = ("codex", "gemini", "sol")
 EXPECTED_MODELS = {
-    "codex": "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "gemini": "deepseek/deepseek-v4-flash-0731:free",
+    "codex": "nex-agi/nex-n2.5-mini:free",
+    "gemini": "qwen/qwen3.8-27b:free",
     "sol": "openai/gpt-5.6-sol",
 }
 ALLOWED_STATUSES = {

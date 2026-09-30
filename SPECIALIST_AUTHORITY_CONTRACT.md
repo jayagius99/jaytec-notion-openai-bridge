@@ -23,7 +23,7 @@ Each specialist must have an explicit designated role and allowed task classes. 
 Examples:
 - Nemotron 3 Ultra free: primary coding/engineering specialist for normal JAYTEC and V2 engineering work routed by ChatGPT.
 - Sol: premium engineering/review reserve for meetings, difficult engineering work, and owner-explicit Sol tasks when the paid OpenAI route is funded and available.
-- DeepSeek V4 Flash free: primary independent research / architecture / adversarial review specialist for normal JAYTEC and V2 review work. It is not an engineering-write specialist.
+- Ling 3.0 Flash Fin free: primary independent research / architecture / adversarial review specialist for normal JAYTEC and V2 review work. It is not an engineering-write specialist.
 - Gemini: premium research/review reserve only when funded or explicitly requested. Gemini is not required for normal V2 progress.
 - Manus: automation/orchestration work inside its Manus-specific boundary plus bounded meeting participation. Manus does not inherit Sol coding authority over JAYTEC.
 - Future specialists: only the capabilities explicitly registered for that role.
@@ -104,10 +104,10 @@ Allowed use:
 
 Nemotron does not decide JAYTEC changes, does not self-initiate work, and cannot silently fall back to another model/provider.
 
-## Primary independent reviewer — DeepSeek V4 Flash free
+## Primary independent reviewer — Ling 3.0 Flash Fin free
 
 Primary role: independent research / architecture / adversarial review.
-Exact registered model: `deepseek/deepseek-v4-flash-0731:free` through OpenRouter.
+Exact registered model: `inclusionai/ling-3.0-flash-fin:free` through OpenRouter.
 Allowed use:
 - research and architecture analysis assigned by ChatGPT;
 - adversarial review and challenge/verification;
