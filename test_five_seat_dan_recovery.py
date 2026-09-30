@@ -241,12 +241,19 @@ class TestDanWatchRecoveryContract(unittest.TestCase):
         packet = {
             "task_id": "task",
             "subtask_id": "sub",
+            "idempotency_key": "parent-idem",
             "required_context": {"existing": True},
         }
         result = adapter({
             "packet_json": json.dumps(packet),
             "_fabric_context": {
+                "job_fence_token": 9,
+                "last_watch_decision": "REWORK",
                 "last_watch_evidence": {
+                    "watch_reason": "amend the rejected evidence",
+                    "whole_packet_status": "FAILED_CLOSED",
+                    "unresolved_count": 1,
+                    "result_sha256": "b" * 64,
                     "dan_worker_recovery": {
                         "identity": "DAN-RECOVERY-SEAT",
                         "attempt_id": "attempt",
@@ -263,6 +270,15 @@ class TestDanWatchRecoveryContract(unittest.TestCase):
                 }
             },
         })
+        watch_ctx = captured["packet"]["required_context"]["watch_rework"]
+        self.assertEqual("REWORK", watch_ctx["last_watch_decision"])
+        self.assertEqual("amend the rejected evidence", watch_ctx["watch_reason"])
+        self.assertEqual("parent-idem", watch_ctx["parent_idempotency_key"])
+        self.assertEqual("9", watch_ctx["attempt_marker"])
+        self.assertEqual(
+            "parent-idem:watch-rework:9",
+            captured["packet"]["idempotency_key"],
+        )
         ctx = captured["packet"]["required_context"]["dan_worker_recovery"]
         self.assertEqual("DAN-RECOVERY-SEAT", ctx["identity"])
         self.assertEqual("recovery guidance", ctx["result"])

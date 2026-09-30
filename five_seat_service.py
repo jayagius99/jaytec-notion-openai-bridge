@@ -270,7 +270,22 @@ def build_task_packet_adapter(
                     required_context = dict(required_context)
 
                 bounded_watch_evidence = dict(watch_evidence or {})
+                parent_idempotency_key = str(
+                    packet_obj.get("idempotency_key") or ""
+                ).strip()
+                attempt_marker = str(
+                    fabric_context.get("job_fence_token") or "0"
+                ).strip()
+                if parent_idempotency_key:
+                    rework_idempotency_key = (
+                        parent_idempotency_key[:160]
+                        + ":watch-rework:"
+                        + attempt_marker[:24]
+                    )
+                    packet_obj["idempotency_key"] = rework_idempotency_key[:200]
                 required_context["watch_rework"] = {
+                    "parent_idempotency_key": parent_idempotency_key[:200],
+                    "attempt_marker": attempt_marker[:80],
                     "last_watch_decision": watch_decision[:40],
                     "watch_reason": str(
                         bounded_watch_evidence.get("watch_reason") or ""
