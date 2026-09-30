@@ -1,0 +1,43 @@
+name: Build JAYTEC portable Android APKs
+
+on:
+  push:
+    branches:
+      - portable-android-apps-20260930
+    paths:
+      - "portable-android/**"
+      - ".github/workflows/build-jaytec-portable-apks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Build APKs
+        run: gradle -p portable-android :jobstatus:assembleDebug :danchat:assembleDebug --stacktrace
+      - name: Collect APKs
+        run: |
+          mkdir -p dist
+          cp portable-android/jobstatus/build/outputs/apk/debug/jobstatus-debug.apk dist/JAYTEC-DAN-Job-Status.apk
+          cp portable-android/danchat/build/outputs/apk/debug/danchat-debug.apk dist/JAYTEC-DAN-1to1-Chat.apk
+          sha256sum dist/*.apk | tee dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JAYTEC-Portable-APKs
+          path: |
+            dist/JAYTEC-DAN-Job-Status.apk
+            dist/JAYTEC-DAN-1to1-Chat.apk
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
