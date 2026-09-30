@@ -693,8 +693,22 @@ class FiveSeatFabricService:
                             decision = "ACCEPT"
                             reason = "whole packet success independently verified"
                     elif overall in {"PARTIAL_SUCCESS", "NEEDS_VALIDATION"}:
-                        decision = "REWORK"
-                        reason = "bounded hardening/validation required"
+                        rework_count = int(
+                            handoff.get("fabric_rework_count") or 0
+                        )
+                        max_reworks = int(
+                            handoff.get("fabric_max_reworks") or 0
+                        )
+                        if rework_count < max_reworks:
+                            decision = "REWORK"
+                            reason = "bounded hardening/validation required"
+                        else:
+                            decision = "ESCALATE"
+                            reason = (
+                                "automated rework budget exhausted after partial/"
+                                "validation result; preserve parent as resumable "
+                                "escalation instead of crashing WATCH"
+                            )
                     elif overall == "POLICY_BLOCKED":
                         decision = "ESCALATE"
                         reason = "owner/policy decision required"
