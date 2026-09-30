@@ -158,8 +158,20 @@ class DanRelayMiddleware:
                 send, 400, {"ok": False, "error": str(exc)[:160]}
             )
         except DanRelayStoreError as exc:
+            safe_error = str(exc)[:500]
+            print(
+                "DAN_RELAY_STORE_REJECTED="
+                + json.dumps(
+                    {
+                        "path": path,
+                        "error": safe_error,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
             return await self._json_response(
-                send, 409, {"ok": False, "error": str(exc)[:200]}
+                send, 409, {"ok": False, "error": safe_error[:200]}
             )
         except DanRelayHttpError as exc:
             return await self._json_response(
