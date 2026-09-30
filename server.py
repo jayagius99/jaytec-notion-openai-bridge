@@ -46,6 +46,8 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", EXPECTED_GEMINI_MODEL).strip()
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
 GEMINI_TIMEOUT_S = float(os.environ.get("GEMINI_TIMEOUT_S", "90"))
+DURABLE_CODEX_TIMEOUT_S = float(os.environ.get("DURABLE_CODEX_TIMEOUT_S", "90"))
+DURABLE_GEMINI_TIMEOUT_S = float(os.environ.get("DURABLE_GEMINI_TIMEOUT_S", "120"))
 
 # Optional GPT-5.6 Sol reserve. Disabled by default and fail-closed unless the
 # owner has explicitly attested that this Gateway account is free-credit-only.
@@ -98,6 +100,7 @@ def engineering_dispatch_kwargs() -> Dict[str, Any]:
     """Single source of truth for the zero-cost primary engineering adapter."""
     return {
         "provider_mode": ENGINEERING_PROVIDER_MODE,
+        "codex_timeout_s": DURABLE_CODEX_TIMEOUT_S,
         "max_output_tokens": ENGINEERING_OUTPUT_TOKEN_CAP,
         "max_packet_retries": ENGINEERING_MAX_PACKET_RETRIES,
     }
