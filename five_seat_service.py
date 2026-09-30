@@ -159,7 +159,13 @@ def submit_low_risk_task_packet(
         concurrency_class="A",
         priority=int(priority),
         max_attempts=max(1, min(3, int(bounded.get("max_retries") or 0) + 1)),
-        max_reworks=2,
+        max_reworks=max(
+            2,
+            min(
+                12,
+                int(os.environ.get("JAYTEC_WATCH_MAX_REWORKS", "6")),
+            ),
+        ),
         required_capabilities={TASK_PACKET_CAPABILITY},
         read_scope={f"specialist:{name}" for name in plan},
         mutation_scope=set(),
@@ -250,26 +256,49 @@ def build_task_packet_adapter(
         fabric_context = payload.get("_fabric_context")
         if isinstance(fabric_context, Mapping):
             watch_evidence = fabric_context.get("last_watch_evidence")
-            if isinstance(watch_evidence, Mapping):
+            watch_decision = str(
+                fabric_context.get("last_watch_decision") or ""
+            ).upper()
+            if isinstance(watch_evidence, Mapping) or watch_decision:
+                packet_obj = json.loads(packet_json)
+                if not isinstance(packet_obj, dict):
+                    raise RuntimeError("TASK_PACKET_JSON_NOT_OBJECT")
+                required_context = packet_obj.get("required_context")
+                if not isinstance(required_context, dict):
+                    required_context = {}
+                else:
+                    required_context = dict(required_context)
+
+                bounded_watch_evidence = dict(watch_evidence or {})
+                required_context["watch_rework"] = {
+                    "last_watch_decision": watch_decision[:40],
+                    "watch_reason": str(
+                        bounded_watch_evidence.get("watch_reason") or ""
+                    )[:1000],
+                    "whole_packet_status": str(
+                        bounded_watch_evidence.get("whole_packet_status") or ""
+                    )[:80],
+                    "unresolved_count": int(
+                        bounded_watch_evidence.get("unresolved_count") or 0
+                    ),
+                    "result_sha256": str(
+                        bounded_watch_evidence.get("result_sha256") or ""
+                    )[:128],
+                    "dan_worker_recovery_error": str(
+                        bounded_watch_evidence.get("dan_worker_recovery_error") or ""
+                    )[:500],
+                }
                 dan_context = _bounded_dan_recovery_context(
-                    watch_evidence.get("dan_worker_recovery")
+                    bounded_watch_evidence.get("dan_worker_recovery")
                 )
                 if dan_context is not None:
-                    packet_obj = json.loads(packet_json)
-                    if not isinstance(packet_obj, dict):
-                        raise RuntimeError("TASK_PACKET_JSON_NOT_OBJECT")
-                    required_context = packet_obj.get("required_context")
-                    if not isinstance(required_context, dict):
-                        required_context = {}
-                    else:
-                        required_context = dict(required_context)
                     required_context["dan_worker_recovery"] = dan_context
-                    packet_obj["required_context"] = required_context
-                    packet_json = json.dumps(
-                        packet_obj,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    )
+                packet_obj["required_context"] = required_context
+                packet_json = json.dumps(
+                    packet_obj,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
 
         raw = execute_packet(packet_json)
         if isinstance(raw, str):
@@ -657,38 +686,72 @@ class FiveSeatFabricService:
                     else:
                         decision = "BLOCK"
                         reason = "worker evidence does not satisfy acceptance contract"
-                        if (
-                            self.dan_relay is not None
-                            and self._dan_recovery_eligible(
-                                handoff,
-                                worker_kind=worker_kind,
-                                overall=overall,
-                                partial=partial,
+                        safe_task_recovery = (
+                            worker_kind == TASK_PACKET_WORKER_KIND
+                            and partial in DAN_RECOVERY_SAFE_PARTIAL
+                        )
+                        if safe_task_recovery:
+                            rework_count = int(
+                                handoff.get("fabric_rework_count") or 0
                             )
-                        ):
-                            try:
-                                dan_recovery = self._dan_recover(
-                                    handoff,
-                                    overall=overall,
-                                    unresolved=unresolved,
-                                    worker_kind=worker_kind,
-                                )
-                            except Exception as exc:
-                                external_verification["dan_worker_recovery_error"] = (
-                                    type(exc).__name__ + ":" + str(exc)[:500]
-                                )
-                            else:
-                                external_verification["dan_worker_recovery"] = (
-                                    dan_recovery
-                                )
+                            max_reworks = int(
+                                handoff.get("fabric_max_reworks") or 0
+                            )
+                            if rework_count < max_reworks:
+                                if (
+                                    self.dan_relay is not None
+                                    and self._dan_recovery_eligible(
+                                        handoff,
+                                        worker_kind=worker_kind,
+                                        overall=overall,
+                                        partial=partial,
+                                    )
+                                ):
+                                    try:
+                                        dan_recovery = self._dan_recover(
+                                            handoff,
+                                            overall=overall,
+                                            unresolved=unresolved,
+                                            worker_kind=worker_kind,
+                                        )
+                                    except Exception as exc:
+                                        external_verification[
+                                            "dan_worker_recovery_error"
+                                        ] = type(exc).__name__ + ":" + str(exc)[:500]
+                                    else:
+                                        external_verification[
+                                            "dan_worker_recovery"
+                                        ] = dan_recovery
+
                                 decision = "REWORK"
+                                if "dan_worker_recovery" in external_verification:
+                                    reason = (
+                                        "safe recoverable worker failure; DAN-WORKER "
+                                        "returned bounded recovery context; original "
+                                        "worker requeued under WATCH"
+                                    )
+                                elif "dan_worker_recovery_error" in external_verification:
+                                    reason = (
+                                        "safe recoverable worker failure; DAN recovery "
+                                        "attempt failed but parent job remains live; "
+                                        "original worker requeued with WATCH rejection context"
+                                    )
+                                else:
+                                    reason = (
+                                        "safe recoverable worker failure; parent job "
+                                        "remains live and original worker is requeued "
+                                        "with WATCH rejection context"
+                                    )
+                            else:
+                                decision = "ESCALATE"
                                 reason = (
-                                    "DAN-WORKER returned bounded recovery context; "
-                                    "original worker requeued under WATCH"
+                                    "automated rework budget exhausted; preserve parent "
+                                    "job as resumable escalation instead of FAILED_SAFE"
                                 )
 
                     evidence = {
                         "service_id": FABRIC_SERVICE_ID,
+                        "watch_reason": reason,
                         "worker_kind": worker_kind,
                         "whole_packet_status": overall,
                         "partial_side_effect_status": partial,
